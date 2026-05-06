@@ -1,0 +1,36 @@
+# Node
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+
+# Next.js
+.next/
+out/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Database
+*.db
+
+# Misc
+coverage/
