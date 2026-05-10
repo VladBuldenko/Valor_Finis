@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 
+from app.modules.expenses.router import router as expenses_router
+
+
 app = FastAPI(
     title="Valor API",
     description="Backend API for Valor personal finance application.",
@@ -7,13 +10,33 @@ app = FastAPI(
 )
 
 
-@app.get("/health", tags=["System"])
-def health_check():
-    """
-    Health check endpoint.
+app.include_router(expenses_router, prefix="/api/v1")
 
-    Used to verify that the backend service is running.
-    """
+# Returns basic API information.
+# This function exists to provide a simple root endpoint instead of returning 404.
+# Parameters:
+# - None.
+# Returns:
+# - Basic API metadata and useful documentation links.
+@app.get("/", tags=["System"])
+def root() -> dict[str, str]:
+    return {
+        "service": "Valor API",
+        "version": "0.1.0",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
+# Checks if the backend service is running.
+# This function exists to verify that the API is alive and reachable.
+# Parameters:
+# - None.
+# Returns:
+# - Basic service status information.
+@app.get("/health", tags=["System"])
+def health_check() -> dict[str, str]:
     return {
         "status": "ok",
         "service": "valor-api",
