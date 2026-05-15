@@ -4,6 +4,7 @@ from app.modules.expenses.router import router as expenses_router
 from app.modules.categories.router import router as categories_router
 from app.modules.budgets.budget_router import router as budgets_router
 from app.modules.goals.goal_router import router as goals_router
+from app.modules.analytics.analytics_router import router as analytics_router
 
 app = FastAPI(
     title="Valor API",
@@ -16,6 +17,7 @@ app.include_router(expenses_router, prefix="/api/v1")
 app.include_router(categories_router, prefix="/api/v1")
 app.include_router(budgets_router, prefix="/api/v1")
 app.include_router(goals_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
 
 # Returns basic API information.
 # This function exists to provide a simple root endpoint instead of returning 404.
