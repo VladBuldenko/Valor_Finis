@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.modules.expenses.schemas import ExpenseCreate
+from app.modules.expenses.expenses_schemas import ExpenseCreate
 
 
 # Tests that valid expense input is accepted by the schema.

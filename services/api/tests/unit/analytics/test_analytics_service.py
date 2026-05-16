@@ -4,8 +4,8 @@ from decimal import Decimal
 from app.modules.analytics import analytics_service
 from app.modules.budgets import budget_repository as budgets_repository
 from app.modules.budgets.budget_schemas import BudgetCreate
-from app.modules.expenses import repository as expenses_repository
-from app.modules.expenses.schemas import ExpenseCreate
+from app.modules.expenses import expenses_repository as expenses_repository
+from app.modules.expenses.expenses_schemas import ExpenseCreate
 from app.modules.goals import goal_repository as goals_repository
 from app.modules.goals.goal_schemas import GoalCreate
 

@@ -1,30 +1,21 @@
 from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import MagicMock
 
-from app.modules.expenses import repository
-from app.modules.expenses.schemas import ExpenseCreate, ExpenseResponse
+from app.modules.expenses import expenses_repository
+from app.modules.expenses.expenses_models import ExpenseModel
+from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseResponse
 
 
-# Resets the in-memory expense repository state before each test.
-# This helper exists to keep repository tests independent from each other.
+# Tests that the repository creates a new expense in the database session.
+# This test exists to verify that expense data is converted into ExpenseModel and persisted through SQLAlchemy.
 # Parameters:
 # - None.
 # Returns:
-# - None.
-def reset_repository_state() -> None:
-    repository.expenses_storage.clear()
-    repository.next_expense_id = 1
-
-
-# Tests that the repository creates a new expense successfully.
-# This test exists to verify that expense data can be stored in memory.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if the created expense contains expected data.
+# - None. The test passes if the database session receives the expected calls and response data is correct.
 def test_create_expense_creates_new_expense() -> None:
     # Arrange
-    reset_repository_state()
+    db_session = MagicMock()
 
     expense_data = ExpenseCreate(
         amount=Decimal("24.99"),
@@ -34,95 +25,53 @@ def test_create_expense_creates_new_expense() -> None:
     )
 
     # Act
-    created_expense = repository.create_expense(expense_data)
+    created_expense = expenses_repository.create_expense(db_session, expense_data)
 
     # Assert
+    db_session.add.assert_called_once()
+    db_session.commit.assert_called_once()
+    db_session.refresh.assert_called_once()
+
+    saved_model = db_session.add.call_args.args[0]
+
+    assert isinstance(saved_model, ExpenseModel)
+    assert saved_model.amount == Decimal("24.99")
+    assert saved_model.category == "food"
+    assert saved_model.description == "Lidl groceries"
+    assert saved_model.date == date(2026, 5, 7)
     assert isinstance(created_expense, ExpenseResponse)
-    assert created_expense.amount == Decimal("24.99")
-    assert created_expense.category == "food"
-    assert created_expense.description == "Lidl groceries"
-    assert created_expense.date == date(2026, 5, 7)
 
 
-# Tests that the repository generates an auto-incremented expense ID.
-# This test exists to verify that each created expense receives a unique identifier.
+# Tests that the repository returns expense records from the database session.
+# This test exists to verify that database models are converted into ExpenseResponse objects.
 # Parameters:
 # - None.
 # Returns:
-# - None. The test passes if expense IDs are generated in sequence.
-def test_create_expense_generates_incremental_id() -> None:
+# - None. The test passes if get_expenses returns expected response objects.
+def test_get_expenses_returns_expenses_from_database() -> None:
     # Arrange
-    reset_repository_state()
+    db_session = MagicMock()
 
-    first_expense = ExpenseCreate(
-        amount=Decimal("10.00"),
-        category="food",
-        description="First expense",
-        date=date(2026, 5, 7),
-    )
-
-    second_expense = ExpenseCreate(
-        amount=Decimal("20.00"),
-        category="cafe",
-        description="Second expense",
-        date=date(2026, 5, 8),
-    )
-
-    # Act
-    created_first_expense = repository.create_expense(first_expense)
-    created_second_expense = repository.create_expense(second_expense)
-
-    # Assert
-    assert created_first_expense.id == 1
-    assert created_second_expense.id == 2
-
-
-# Tests that the repository adds creation timestamp to a new expense.
-# This test exists to verify that created_at is generated automatically.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if created_at is a datetime value.
-def test_create_expense_generates_created_at_timestamp() -> None:
-    # Arrange
-    reset_repository_state()
-
-    expense_data = ExpenseCreate(
+    expense_model = ExpenseModel(
+        id=1,
         amount=Decimal("24.99"),
         category="food",
         description="Lidl groceries",
         date=date(2026, 5, 7),
+        created_at=datetime(2026, 5, 7, 12, 0, 0),
     )
 
-    # Act
-    created_expense = repository.create_expense(expense_data)
-
-    # Assert
-    assert isinstance(created_expense.created_at, datetime)
-
-
-# Tests that the repository returns all saved expenses.
-# This test exists to verify that stored expenses can be retrieved.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if get_expenses returns previously created expenses.
-def test_get_expenses_returns_saved_expenses() -> None:
-    # Arrange
-    reset_repository_state()
-
-    expense_data = ExpenseCreate(
-        amount=Decimal("24.99"),
-        category="food",
-        description="Lidl groceries",
-        date=date(2026, 5, 7),
-    )
-
-    created_expense = repository.create_expense(expense_data)
+    db_session.query.return_value.all.return_value = [expense_model]
 
     # Act
-    expenses = repository.get_expenses()
+    expenses = expenses_repository.get_expenses(db_session)
 
     # Assert
     assert len(expenses) == 1
-    assert expenses[0] == created_expense
+    assert expenses[0].id == 1
+    assert expenses[0].amount == Decimal("24.99")
+    assert expenses[0].category == "food"
+    assert expenses[0].description == "Lidl groceries"
+    assert expenses[0].date == date(2026, 5, 7)
+
+    db_session.query.assert_called_once_with(ExpenseModel)

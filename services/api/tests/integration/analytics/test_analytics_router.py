@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.modules.budgets import budget_repository as budgets_repository
-from app.modules.expenses import repository as expenses_repository
+from app.modules.expenses import expenses_repository as expenses_repository
 from app.modules.goals import goal_repository as goals_repository
 
 

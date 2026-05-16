@@ -1,5 +1,224 @@
+promt:
+Я строю production-like fintech backend проект Valor на FastAPI.
+
+ВАЖНО:
+
+* Объясняй всё очень подробно, как senior mentor для junior developer.
+* Перед каждым файлом и кодом ВСЕГДА объясняй:
+
+  1. Что это
+  2. Зачем это нужно
+  3. Как это работает
+  4. Какие best practices используются
+  5. Только потом код
+* Всегда объясняй архитектуру, flow данных и зачем нужен каждый слой.
+* Пиши комментарии в коде на английском.
+* Комментарии должны объяснять:
+
+  * what function does
+  * why it exists
+  * parameters
+  * returns
+* Следуй принципам:
+
+  * SOLID
+  * DRY
+  * KISS
+  * YAGNI
+  * Clean Architecture
+  * Separation of Concerns
+  * Single Responsibility
+  * Readable Code First
+
+ТЕКУЩАЯ АРХИТЕКТУРА:
+
+backend structure:
+
+router → service → repository → storage/database
+
+Что делает каждый слой:
+
+* router.py → HTTP layer / FastAPI endpoints
+* service.py → business logic
+* repository.py → data access layer
+* schemas.py → Pydantic validation schemas
+* models.py → SQLAlchemy ORM models
+
+ТЕКУЩАЯ СТРУКТУРА ПРОЕКТА:
+
+services/api/app/modules/
+
+modules:
+
+* expenses
+* categories
+* budgets
+* goals
+* analytics
+
+Naming convention:
+
+Внутри каждого модуля файлы называются так:
+
+* expenses_router.py
+* expenses_service.py
+* expenses_repository.py
+* expenses_schemas.py
+* expenses_models.py
+
+То же для:
+
+* budgets
+* goals
+* analytics
+
+Пример:
+app/modules/analytics/analytics_service.py
+
+НЕ использовать generic names:
+
+* service.py
+* schemas.py
+* router.py
+
+Использовать module-prefixed names.
+
+ТЕКУЩЕЕ СОСТОЯНИЕ ПРОЕКТА:
+
+ГОТОВО:
+
+* FastAPI backend
+* Swagger/OpenAPI
+* Health endpoint
+* Root endpoint
+
+Modules completed:
+
+* Expenses
+* Categories
+* Budgets
+* Goals
+* Analytics
+
+ГОТОВО В КАЖДОМ МОДУЛЕ:
+
+* schemas
+* repository
+* service
+* router
+* tests
+
+ТЕСТЫ:
+
+* unit tests
+* integration tests
+
+Test naming:
+
+* test_expenses_service.py
+* test_goals_router.py
+* test_analytics_service.py
+
+НЕ использовать:
+
+* test_service.py
+* test_router.py
+
+Analytics module already implemented:
+
+* monthly summary
+* category summary
+* budget status
+* goal progress
+
+Analytics logic:
+
+* total spending
+* grouped categories
+* exceeded budget
+* remaining goal amount
+
+Current backend uses:
+
+* in-memory storage lists
+
+СЕЙЧАС МЫ НА ЭТАПЕ:
+DATABASE INTEGRATION
+
+УЖЕ УСТАНОВЛЕНО:
+
+* sqlalchemy
+* psycopg2-binary
+* alembic
+* python-dotenv
+
+CURRENT DATABASE STRUCTURE:
+
+Created:
+
+* app/core/app_config.py
+* app/db/database_base.py
+* app/db/database_session.py
+
+Created folders:
+
+* app/core
+* app/db
+
+Created env files:
+
+* .env
+* .env.example
+
+Current naming:
+
+* app_config.py
+* database_base.py
+* database_session.py
+
+Current database architecture:
+
+* SQLAlchemy 2.x style
+* PostgreSQL
+* Alembic
+* .env config
+
+ВАЖНО:
+Всегда использовать современные production-like решения.
+Не использовать outdated patterns.
+
+ВСЕГДА:
+
+* объясняй flow
+* объясняй architecture decisions
+* объясняй why this approach is used
+* объясняй tradeoffs
+* объясняй production best practices
+
+Следующий шаг roadmap:
+создать database models для:
+
+* expenses
+* budgets
+* goals
+
+Потом:
+
+* Alembic migrations
+* PostgreSQL integration
+* replace in-memory repositories with DB repositories
+
+Потом:
+
+* Auth module
+* Receipts module
+* OCR module
+* Categorization rules
+* Docker
+* CI/CD
 
 ⚠️ Notes:
+
 - OCR is **not perfect**
 - Errors are common
 - User confirmation is required

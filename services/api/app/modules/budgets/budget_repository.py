@@ -1,40 +1,43 @@
-from datetime import datetime
+from sqlalchemy.orm import Session
 
+from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.budgets.budget_schemas import BudgetCreate, BudgetResponse
 
 
-budgets_storage: list[BudgetResponse] = []
-next_budget_id = 1
-
-
-# Creates a new budget limit in temporary in-memory storage.
-# This function exists to isolate budget storage logic from business logic.
+# Creates a new budget limit record in PostgreSQL.
+# This function exists to isolate database write logic from business logic.
 # Parameters:
-# - budget_data: validated budget input data.
+# - db_session: active SQLAlchemy database session.
+# - budget_data: validated budget input data from the service layer.
 # Returns:
-# - BudgetResponse object with generated id and created_at timestamp.
-def create_budget(budget_data: BudgetCreate) -> BudgetResponse:
-    global next_budget_id
-
-    budget = BudgetResponse(
-        id=next_budget_id,
+# - BudgetResponse object created from the saved database model.
+def create_budget(
+    db_session: Session,
+    budget_data: BudgetCreate,
+) -> BudgetResponse:
+    budget_model = BudgetModel(
         category=budget_data.category,
         monthly_limit=budget_data.monthly_limit,
         month=budget_data.month,
-        created_at=datetime.utcnow(),
     )
 
-    budgets_storage.append(budget)
-    next_budget_id += 1
+    db_session.add(budget_model)
+    db_session.commit()
+    db_session.refresh(budget_model)
 
-    return budget
+    return BudgetResponse.model_validate(budget_model)
 
 
-# Returns all budget limits from temporary in-memory storage.
-# This function exists to keep budget retrieval logic inside the repository layer.
+# Returns all budget limit records from PostgreSQL.
+# This function exists to isolate database read logic from business logic.
 # Parameters:
-# - None.
+# - db_session: active SQLAlchemy database session.
 # Returns:
-# - List of BudgetResponse objects.
-def get_budgets() -> list[BudgetResponse]:
-    return budgets_storage
+# - List of BudgetResponse objects created from database models.
+def get_budgets(db_session: Session) -> list[BudgetResponse]:
+    budget_models = db_session.query(BudgetModel).all()
+
+    return [
+        BudgetResponse.model_validate(budget_model)
+        for budget_model in budget_models
+    ]
