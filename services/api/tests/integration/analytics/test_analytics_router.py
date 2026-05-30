@@ -1,41 +1,18 @@
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.modules.budgets import budget_repository as budgets_repository
-from app.modules.expenses import expenses_repository as expenses_repository
-from app.modules.goals import goal_repository as goals_repository
-
-
-client = TestClient(app)
-
-
-# Resets all in-memory repositories before each analytics integration test.
-# This helper exists to keep API tests independent from each other.
-# Parameters:
-# - None.
-# Returns:
-# - None.
-def reset_repository_state() -> None:
-    expenses_repository.expenses_storage.clear()
-    expenses_repository.next_expense_id = 1
-
-    budgets_repository.budgets_storage.clear()
-    budgets_repository.next_budget_id = 1
-
-    goals_repository.goals_storage.clear()
-    goals_repository.next_goal_id = 1
-
 
 # Tests that the monthly summary endpoint returns total spending data.
 # This test exists to verify that analytics monthly summary is exposed through the API.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before the test.
 # Returns:
 # - None. The test passes if the API returns correct monthly summary values.
-def test_monthly_summary_endpoint_returns_summary() -> None:
+def test_monthly_summary_endpoint_returns_summary(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
-
     client.post(
         "/api/v1/expenses",
         json={
@@ -53,20 +30,22 @@ def test_monthly_summary_endpoint_returns_summary() -> None:
     response_data = response.json()
 
     assert response.status_code == 200
-    assert response_data["total_spent"] == "50"
+    assert response_data["total_spent"] == "50.00"
     assert response_data["expenses_count"] == 1
 
 
 # Tests that the category summary endpoint groups expenses by category.
 # This test exists to verify category analytics API calculations.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before the test.
 # Returns:
 # - None. The test passes if grouped category totals are returned correctly.
-def test_category_summary_endpoint_returns_grouped_categories() -> None:
+def test_category_summary_endpoint_returns_grouped_categories(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
-
     client.post(
         "/api/v1/expenses",
         json={
@@ -96,19 +75,21 @@ def test_category_summary_endpoint_returns_grouped_categories() -> None:
     assert response.status_code == 200
     assert len(response_data) == 1
     assert response_data[0]["category"] == "food"
-    assert response_data[0]["total_spent"] == "50"
+    assert response_data[0]["total_spent"] == "50.00"
 
 
 # Tests that the budget status endpoint returns exceeded budget information.
 # This test exists to verify budget analytics calculations through the API.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before the test.
 # Returns:
 # - None. The test passes if exceeded budget information is returned correctly.
-def test_budget_status_endpoint_returns_budget_status() -> None:
+def test_budget_status_endpoint_returns_budget_status(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
-
     client.post(
         "/api/v1/expenses",
         json={
@@ -136,22 +117,24 @@ def test_budget_status_endpoint_returns_budget_status() -> None:
 
     assert response.status_code == 200
     assert response_data[0]["category"] == "food"
-    assert response_data[0]["spent"] == "120"
+    assert response_data[0]["spent"] == "120.00"
     assert response_data[0]["remaining"] == "0"
-    assert response_data[0]["exceeded_amount"] == "20"
+    assert response_data[0]["exceeded_amount"] == "20.00"
     assert response_data[0]["is_exceeded"] is True
 
 
 # Tests that the goal progress endpoint returns remaining goal amount.
 # This test exists to verify financial goal analytics through the API.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before the test.
 # Returns:
 # - None. The test passes if remaining goal amount is returned correctly.
-def test_goal_progress_endpoint_returns_goal_progress() -> None:
+def test_goal_progress_endpoint_returns_goal_progress(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
-
     client.post(
         "/api/v1/goals",
         json={
@@ -170,4 +153,4 @@ def test_goal_progress_endpoint_returns_goal_progress() -> None:
 
     assert response.status_code == 200
     assert response_data[0]["name"] == "Vacation"
-    assert response_data[0]["remaining_amount"] == "1500"
+    assert response_data[0]["remaining_amount"] == "1500.00"
