@@ -195,6 +195,7 @@ Current database architecture:
 * объясняй tradeoffs
 * объясняй production best practices
 
+
 Следующий шаг roadmap:
 создать database models для:
 

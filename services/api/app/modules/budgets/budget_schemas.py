@@ -1,52 +1,102 @@
-from datetime import date as Date, datetime
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal, Optional
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class BudgetBase(BaseModel):
     """
-    Base budget schema.
+    Base schema containing fields shared by budget operations.
 
-    This schema contains common budget fields
-    shared across budget-related schemas.
-
-    Fields:
-    - category: expense category key
-    - monthly_limit: maximum allowed spending amount per month
-    - month: month for which this budget limit is active
+    Why:
+        Prevents field duplication between request and response schemas.
     """
 
-    category: str = Field(
+    user_id: UUID
+
+    category_id: Optional[UUID] = None
+
+    name: str = Field(
         ...,
         min_length=1,
-        description="Expense category key.",
-        examples=["food"],
+        max_length=120,
+        examples=["Monthly groceries"],
     )
 
-    monthly_limit: Decimal = Field(
+    limit_amount: Decimal = Field(
         ...,
         gt=0,
-        description="Monthly spending limit. Must be greater than 0.",
-        examples=[400],
+        max_digits=12,
+        decimal_places=2,
+        examples=["400.00"],
     )
 
-    month: Date = Field(
-        ...,
-        description="Month for which the budget limit is active.",
-        examples=["2026-05-01"],
+    currency: str = Field(
+        default="EUR",
+        min_length=3,
+        max_length=3,
+        examples=["EUR"],
     )
+
+    period: Literal["weekly", "monthly", "yearly"] = "monthly"
+
+    start_date: date
+
+    end_date: Optional[date] = None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        """
+        Normalizes the currency code to uppercase.
+
+        Why:
+            Prevents values such as eur and EUR from being stored differently.
+
+        Parameters:
+            value: Currency code received from the client.
+
+        Returns:
+            Uppercase currency code.
+        """
+
+        return value.upper()
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "BudgetBase":
+        """
+        Validates that the budget end date is not before its start date.
+
+        Why:
+            Prevents logically invalid budget periods.
+
+        Returns:
+            Validated budget schema.
+
+        Raises:
+            ValueError: If end_date is earlier than start_date.
+        """
+
+        if self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("end_date must be greater than or equal to start_date")
+
+        return self
 
 
 class BudgetCreate(BudgetBase):
     """
-    Schema for creating a new budget limit.
+    Schema for creating a budget.
 
-    This schema validates incoming budget data
-    before it is processed and stored.
-
-    Inherits:
-    - BudgetBase
+    Why:
+        Validates incoming data before it reaches business and database layers.
     """
 
     pass
@@ -54,18 +104,14 @@ class BudgetCreate(BudgetBase):
 
 class BudgetResponse(BudgetBase):
     """
-    Schema for returning budget limit data.
+    Schema returned by the API for a budget.
 
-    This schema defines what data the backend
-    returns to the client after creating or
-    retrieving budget limits.
-
-    Additional Fields:
-    - id: unique budget limit identifier
-    - created_at: timestamp when budget limit was created
+    Why:
+        Keeps the public API contract separate from the SQLAlchemy model.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: UUID
     created_at: datetime
+    updated_at: datetime

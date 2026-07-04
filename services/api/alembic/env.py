@@ -7,8 +7,8 @@ from app.core.app_config import settings
 from app.db.database_base import Base
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.expenses.expenses_models import ExpenseModel
-from app.modules.goals.goals_models import GoalModel
-
+from app.modules.goals.goal_models import GoalModel
+from app.modules.categories.category_models import CategoryModel
 
 config = context.config
 

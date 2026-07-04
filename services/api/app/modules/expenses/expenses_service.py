@@ -1,3 +1,6 @@
+from typing import Optional
+from uuid import UUID
+
 from sqlalchemy.orm import Session
 
 from app.modules.expenses import expenses_repository
@@ -10,19 +13,36 @@ from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseResponse
 # - db_session: active SQLAlchemy database session.
 # - expense_data: validated expense input data.
 # Returns:
-# - ExpenseResponse object created by the repository.
+# - ExpenseResponse object created from the saved database model.
 def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
 ) -> ExpenseResponse:
-    return expenses_repository.create_expense(db_session, expense_data)
+    expense_model = expenses_repository.create_expense(
+        db_session=db_session,
+        expense_data=expense_data,
+    )
+
+    return ExpenseResponse.model_validate(expense_model)
 
 
-# Returns all created expenses.
-# This function exists to provide a clean service layer between router and repository.
+# Returns expenses for a user or all expenses if user_id is not provided.
+# This function exists to keep response mapping outside the repository layer.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
+# - user_id: optional user identifier used to filter expenses.
 # Returns:
 # - List of ExpenseResponse objects.
-def get_expenses(db_session: Session) -> list[ExpenseResponse]:
-    return expenses_repository.get_expenses(db_session)
+def get_expenses(
+    db_session: Session,
+    user_id: Optional[UUID] = None,
+) -> list[ExpenseResponse]:
+    expense_models = expenses_repository.get_expenses(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    return [
+        ExpenseResponse.model_validate(expense_model)
+        for expense_model in expense_models
+    ]

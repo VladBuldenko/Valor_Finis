@@ -1,10 +1,10 @@
-from datetime import date as Date
-from datetime import datetime
+import uuid
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date as SQLDate
-from sqlalchemy import DateTime, Integer, Numeric, String
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database_base import Base
@@ -14,16 +14,55 @@ class ExpenseModel(Base):
     """
     SQLAlchemy ORM model for the expenses table.
 
-    This model represents how expense records are stored in PostgreSQL.
+    What:
+        Represents expense records stored in PostgreSQL.
+
+    Why:
+        Allows the application to persist user expenses in a real database
+        instead of using temporary in-memory lists.
+
+    Fields:
+        id: Unique expense identifier.
+        user_id: Owner of the expense.
+        category_id: Optional category connected to the expense.
+        title: Short expense name.
+        amount: Expense value stored as Decimal-safe numeric type.
+        currency: Currency code such as EUR or USD.
+        expense_date: Date when the expense happened.
+        description: Optional user note.
+        source: Origin of the expense, for example manual or receipt.
+        created_at: Record creation timestamp.
+        updated_at: Record update timestamp.
     """
 
     __tablename__ = "expenses"
 
-    id: Mapped[int] = mapped_column(
-        Integer,
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_expenses_amount_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
         index=True,
-        autoincrement=True,
+    )
+
+    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
     )
 
     amount: Mapped[Decimal] = mapped_column(
@@ -31,25 +70,40 @@ class ExpenseModel(Base):
         nullable=False,
     )
 
-    category: Mapped[str] = mapped_column(
-        String(100),
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        default="EUR",
+        server_default="EUR",
+    )
+
+    expense_date: Mapped[date] = mapped_column(
+        Date,
         nullable=False,
         index=True,
     )
 
     description: Mapped[Optional[str]] = mapped_column(
-        String(255),
+        String(500),
         nullable=True,
     )
 
-    date: Mapped[Date] = mapped_column(
-        SQLDate,
+    source: Mapped[str] = mapped_column(
+        String(30),
         nullable=False,
-        index=True,
+        default="manual",
+        server_default="manual",
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=False,
-        default=datetime.utcnow,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

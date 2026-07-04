@@ -1,3 +1,6 @@
+from typing import Optional
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
@@ -12,13 +15,6 @@ router = APIRouter(
 )
 
 
-# Creates a new expense through the API.
-# This function exists to expose expense creation to mobile and web clients.
-# Parameters:
-# - expense_data: validated request body containing expense details.
-# - db_session: active SQLAlchemy database session injected by FastAPI.
-# Returns:
-# - ExpenseResponse object with generated id and created_at timestamp.
 @router.post(
     "",
     response_model=ExpenseResponse,
@@ -28,21 +24,57 @@ def create_expense(
     expense_data: ExpenseCreate,
     db_session: Session = Depends(get_db_session),
 ) -> ExpenseResponse:
-    return expenses_service.create_expense(db_session, expense_data)
+    """
+    Creates a new expense.
+
+    What:
+        Handles POST /expenses HTTP requests.
+
+    Why:
+        Keeps HTTP request handling in the router layer and delegates
+        business logic to the service layer.
+
+    Parameters:
+        expense_data: Validated request body for creating an expense.
+        db_session: Active SQLAlchemy database session provided by FastAPI.
+
+    Returns:
+        ExpenseResponse with the saved expense data.
+    """
+
+    return expenses_service.create_expense(
+        db_session=db_session,
+        expense_data=expense_data,
+    )
 
 
-# Returns all expenses through the API.
-# This function exists to expose expense history to mobile and web clients.
-# Parameters:
-# - db_session: active SQLAlchemy database session injected by FastAPI.
-# Returns:
-# - List of ExpenseResponse objects.
 @router.get(
     "",
     response_model=list[ExpenseResponse],
-    status_code=status.HTTP_200_OK,
 )
 def get_expenses(
+    user_id: Optional[UUID] = None,
     db_session: Session = Depends(get_db_session),
 ) -> list[ExpenseResponse]:
-    return expenses_service.get_expenses(db_session)
+    """
+    Returns expenses.
+
+    What:
+        Handles GET /expenses HTTP requests.
+
+    Why:
+        Keeps HTTP filtering input in the router layer and delegates
+        data retrieval to the service layer.
+
+    Parameters:
+        user_id: Optional user identifier used to filter expenses.
+        db_session: Active SQLAlchemy database session provided by FastAPI.
+
+    Returns:
+        List of ExpenseResponse objects.
+    """
+
+    return expenses_service.get_expenses(
+        db_session=db_session,
+        user_id=user_id,
+    )

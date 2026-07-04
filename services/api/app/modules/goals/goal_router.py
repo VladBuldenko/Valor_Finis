@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, status
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -13,12 +16,13 @@ router = APIRouter(
 
 
 # Creates a new financial goal through the API.
-# This function exists to expose financial goal creation to mobile and web clients.
+# This function exists to receive validated HTTP input
+# and delegate goal creation to the service layer.
 # Parameters:
-# - goal_data: validated request body containing financial goal details.
-# - db_session: active SQLAlchemy database session injected by FastAPI.
+# - goal_data: validated request body containing financial goal data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
-# - GoalResponse object with generated id and created_at timestamp.
+# - GoalResponse containing the saved financial goal.
 @router.post(
     "",
     response_model=GoalResponse,
@@ -28,13 +32,18 @@ def create_goal(
     goal_data: GoalCreate,
     db_session: Session = Depends(get_db_session),
 ) -> GoalResponse:
-    return goal_service.create_goal(db_session, goal_data)
+    return goal_service.create_goal(
+        db_session=db_session,
+        goal_data=goal_data,
+    )
 
 
-# Returns all financial goals through the API.
-# This function exists to expose financial goals to mobile and web clients.
+# Returns financial goals through the API.
+# This function exists to receive HTTP filtering parameters
+# and delegate goal retrieval to the service layer.
 # Parameters:
-# - db_session: active SQLAlchemy database session injected by FastAPI.
+# - user_id: optional query parameter used to filter goals by owner.
+# - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - List of GoalResponse objects.
 @router.get(
@@ -43,6 +52,13 @@ def create_goal(
     status_code=status.HTTP_200_OK,
 )
 def get_goals(
+    user_id: Optional[UUID] = Query(
+        default=None,
+        description="Filter goals by user identifier.",
+    ),
     db_session: Session = Depends(get_db_session),
 ) -> list[GoalResponse]:
-    return goal_service.get_goals(db_session)
+    return goal_service.get_goals(
+        db_session=db_session,
+        user_id=user_id,
+    )
