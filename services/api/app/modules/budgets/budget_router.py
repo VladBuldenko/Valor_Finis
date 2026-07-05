@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.database_session import get_db_session
 from app.modules.budgets import budget_service
 from app.modules.budgets.budget_schemas import BudgetCreate, BudgetResponse
-from app.modules.budgets.errors import BudgetAlreadyExistsError
+from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
 
 
 router = APIRouter(

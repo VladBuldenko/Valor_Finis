@@ -1,128 +1,114 @@
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
+from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository
-from app.modules.goals.goal_schemas import GoalCreate, GoalResponse
+from app.modules.goals.goal_models import GoalModel
+from app.modules.goals.goal_schemas import GoalCreate
 
 
-# Resets the in-memory goal repository state before each test.
-# This helper exists to keep repository tests independent from each other.
+# Tests that the repository creates a new financial goal in the database.
+# This test exists to verify that goal data is converted into GoalModel and persisted through SQLAlchemy.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None.
-def reset_repository_state() -> None:
-    goal_repository.goals_storage.clear()
-    goal_repository.next_goal_id = 1
-
-
-# Tests that the repository creates a new financial goal successfully.
-# This test exists to verify that goal data can be stored in memory.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if the created goal contains expected data.
-def test_create_goal_creates_new_goal() -> None:
+# - None. The test passes if the created database model contains the expected values.
+def test_create_goal_creates_new_goal(clean_database: None) -> None:
     # Arrange
-    reset_repository_state()
+    db_session = SessionLocal()
+    user_id = uuid4()
 
     goal_data = GoalCreate(
+        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
+        currency="EUR",
+        target_date=date(2026, 12, 31),
+        status="active",
     )
 
-    # Act
-    created_goal = goal_repository.create_goal(goal_data)
+    try:
+        # Act
+        created_goal = goal_repository.create_goal(
+            db_session=db_session,
+            goal_data=goal_data,
+        )
 
-    # Assert
-    assert isinstance(created_goal, GoalResponse)
-    assert created_goal.name == "Vacation"
-    assert created_goal.target_amount == Decimal("2000")
-    assert created_goal.current_amount == Decimal("500")
-    assert created_goal.deadline == date(2026, 12, 31)
+        # Assert
+        assert isinstance(created_goal, GoalModel)
+        assert created_goal.user_id == user_id
+        assert created_goal.name == goal_data.name
+        assert created_goal.target_amount == Decimal("2000")
+        assert created_goal.current_amount == Decimal("500")
+        assert created_goal.currency == goal_data.currency
+        assert created_goal.target_date == goal_data.target_date
+        assert created_goal.status == goal_data.status
+        assert created_goal.id is not None
+        assert created_goal.created_at is not None
+        assert created_goal.updated_at is not None
+    finally:
+        db_session.close()
 
 
-# Tests that the repository generates an auto-incremented goal ID.
-# This test exists to verify that each created goal receives a unique identifier.
+# Tests that the repository returns goal records for a specific user.
+# This test exists to verify that users only receive their own goals from the repository layer.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if goal IDs are generated in sequence.
-def test_create_goal_generates_incremental_id() -> None:
+# - None. The test passes if only the requested user's goal is returned.
+def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
     # Arrange
-    reset_repository_state()
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
 
-    first_goal = GoalCreate(
+    user_goal_data = GoalCreate(
+        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
+        currency="EUR",
+        target_date=date(2026, 12, 31),
+        status="active",
     )
 
-    second_goal = GoalCreate(
+    other_user_goal_data = GoalCreate(
+        user_id=other_user_id,
         name="Laptop",
         target_amount=Decimal("1500"),
         current_amount=Decimal("300"),
-        deadline=date(2026, 10, 31),
+        currency="EUR",
+        target_date=date(2026, 10, 31),
+        status="active",
     )
 
-    # Act
-    created_first_goal = goal_repository.create_goal(first_goal)
-    created_second_goal = goal_repository.create_goal(second_goal)
+    try:
+        goal_repository.create_goal(
+            db_session=db_session,
+            goal_data=user_goal_data,
+        )
+        goal_repository.create_goal(
+            db_session=db_session,
+            goal_data=other_user_goal_data,
+        )
 
-    # Assert
-    assert created_first_goal.id == 1
-    assert created_second_goal.id == 2
+        # Act
+        goals = goal_repository.get_goals(
+            db_session=db_session,
+            user_id=user_id,
+        )
 
-
-# Tests that the repository adds creation timestamp to a new goal.
-# This test exists to verify that created_at is generated automatically.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if created_at is a datetime value.
-def test_create_goal_generates_created_at_timestamp() -> None:
-    # Arrange
-    reset_repository_state()
-
-    goal_data = GoalCreate(
-        name="Vacation",
-        target_amount=Decimal("2000"),
-        current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
-    )
-
-    # Act
-    created_goal = goal_repository.create_goal(goal_data)
-
-    # Assert
-    assert isinstance(created_goal.created_at, datetime)
-
-
-# Tests that the repository returns all saved financial goals.
-# This test exists to verify that stored goals can be retrieved.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if get_goals returns previously created goals.
-def test_get_goals_returns_saved_goals() -> None:
-    # Arrange
-    reset_repository_state()
-
-    goal_data = GoalCreate(
-        name="Vacation",
-        target_amount=Decimal("2000"),
-        current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
-    )
-
-    created_goal = goal_repository.create_goal(goal_data)
-
-    # Act
-    goals = goal_repository.get_goals()
-
-    # Assert
-    assert len(goals) == 1
-    assert goals[0] == created_goal
+        # Assert
+        assert len(goals) == 1
+        assert isinstance(goals[0], GoalModel)
+        assert goals[0].user_id == user_id
+        assert goals[0].name == user_goal_data.name
+        assert goals[0].target_amount == Decimal("2000")
+        assert goals[0].current_amount == Decimal("500")
+        assert goals[0].currency == user_goal_data.currency
+        assert goals[0].target_date == user_goal_data.target_date
+        assert goals[0].status == user_goal_data.status
+    finally:
+        db_session.close()

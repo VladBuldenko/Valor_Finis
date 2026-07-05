@@ -1,38 +1,96 @@
+from uuid import uuid4
+
+from app.db.database_session import SessionLocal
 from app.modules.categories import service
-from app.modules.categories.schemas import CategoryResponse
+from app.modules.categories.schemas import CategoryCreate, CategoryResponse
 
 
-# Tests that the service returns available categories.
-# This test exists to verify that the service layer correctly provides category data.
+# Tests that the service creates a category and returns a response schema.
+# This test exists to verify that the service layer maps database models to API responses.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if categories are returned successfully.
-def test_get_categories_returns_categories() -> None:
+# - None. The test passes if the created category response contains the expected values.
+def test_create_category_returns_category_response(clean_database: None) -> None:
     # Arrange
-    expected_categories_count = 8
+    db_session = SessionLocal()
+    user_id = uuid4()
 
-    # Act
-    categories = service.get_categories()
+    category_data = CategoryCreate(
+        user_id=user_id,
+        name="Food",
+        color="#FF5733",
+        icon="utensils",
+    )
 
-    # Assert
-    assert len(categories) == expected_categories_count
-    assert all(isinstance(category, CategoryResponse) for category in categories)
+    try:
+        # Act
+        category = service.create_category(
+            db_session=db_session,
+            category_data=category_data,
+        )
+
+        # Assert
+        assert isinstance(category, CategoryResponse)
+        assert category.user_id == user_id
+        assert category.name == category_data.name
+        assert category.color == category_data.color
+        assert category.icon == category_data.icon
+        assert category.is_default is False
+    finally:
+        db_session.close()
 
 
-# Tests that the service returns the food category.
-# This test exists to verify that core default categories are available through the service layer.
+# Tests that the service returns categories for a specific user.
+# This test exists to verify that the service layer provides user-scoped category responses.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the food category exists.
-def test_get_categories_includes_food_category() -> None:
+# - None. The test passes if the service returns only the requested user's categories.
+def test_get_categories_returns_user_category_responses(
+    clean_database: None,
+) -> None:
     # Arrange
-    expected_category_key = "food"
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
 
-    # Act
-    categories = service.get_categories()
-    category_keys = [category.key for category in categories]
+    user_category_data = CategoryCreate(
+        user_id=user_id,
+        name="Transport",
+        color="#2563EB",
+        icon="car",
+    )
 
-    # Assert
-    assert expected_category_key in category_keys
+    other_user_category_data = CategoryCreate(
+        user_id=other_user_id,
+        name="Food",
+        color="#FF5733",
+        icon="utensils",
+    )
+
+    try:
+        service.create_category(
+            db_session=db_session,
+            category_data=user_category_data,
+        )
+        service.create_category(
+            db_session=db_session,
+            category_data=other_user_category_data,
+        )
+
+        # Act
+        categories = service.get_categories(
+            db_session=db_session,
+            user_id=user_id,
+        )
+
+        # Assert
+        assert len(categories) == 1
+        assert isinstance(categories[0], CategoryResponse)
+        assert categories[0].user_id == user_id
+        assert categories[0].name == user_category_data.name
+        assert categories[0].color == user_category_data.color
+        assert categories[0].icon == user_category_data.icon
+    finally:
+        db_session.close()

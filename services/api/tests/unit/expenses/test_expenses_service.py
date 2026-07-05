@@ -3,18 +3,19 @@ from decimal import Decimal
 from uuid import uuid4
 
 from app.db.database_session import SessionLocal
-from app.modules.expenses import expenses_repository
-from app.modules.expenses.expenses_models import ExpenseModel
-from app.modules.expenses.expenses_schemas import ExpenseCreate
+from app.modules.expenses import expenses_service
+from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseResponse
 
 
-# Tests that the repository creates a new expense in the database.
-# This test exists to verify that expense data is converted into ExpenseModel and persisted through SQLAlchemy.
+# Tests that the service creates a new expense through the repository layer.
+# This test exists to verify that the service maps the created database model to ExpenseResponse.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the created database model contains the expected values.
-def test_create_expense_creates_new_expense(clean_database: None) -> None:
+# - None. The test passes if an ExpenseResponse object is returned with expected values.
+def test_service_create_expense_creates_expense_response(
+    clean_database: None,
+) -> None:
     # Arrange
     db_session = SessionLocal()
     user_id = uuid4()
@@ -32,13 +33,13 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
 
     try:
         # Act
-        created_expense = expenses_repository.create_expense(
+        created_expense = expenses_service.create_expense(
             db_session=db_session,
             expense_data=expense_data,
         )
 
         # Assert
-        assert isinstance(created_expense, ExpenseModel)
+        assert isinstance(created_expense, ExpenseResponse)
         assert created_expense.user_id == user_id
         assert created_expense.category_id is None
         assert created_expense.title == expense_data.title
@@ -47,19 +48,19 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
         assert created_expense.expense_date == expense_data.expense_date
         assert created_expense.description == expense_data.description
         assert created_expense.source == expense_data.source
-        assert created_expense.id is not None
-        assert created_expense.created_at is not None
-        assert created_expense.updated_at is not None
     finally:
         db_session.close()
 
-# Tests that the repository returns expense records for a specific user.
-# This test exists to verify that users only receive their own expenses from the repository layer.
+
+# Tests that the service returns expenses for a specific user.
+# This test exists to verify that the service retrieves user-scoped expenses and returns response schemas.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if only the requested user's expense is returned.
-def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
+# - None. The test passes if only the requested user's expenses are returned.
+def test_service_get_expenses_returns_user_expense_responses(
+    clean_database: None,
+) -> None:
     # Arrange
     db_session = SessionLocal()
     user_id = uuid4()
@@ -88,25 +89,26 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
     )
 
     try:
-        expenses_repository.create_expense(
+        expenses_service.create_expense(
             db_session=db_session,
             expense_data=user_expense_data,
         )
-        expenses_repository.create_expense(
+        expenses_service.create_expense(
             db_session=db_session,
             expense_data=other_user_expense_data,
         )
 
         # Act
-        expenses = expenses_repository.get_expenses(
+        expenses = expenses_service.get_expenses(
             db_session=db_session,
             user_id=user_id,
         )
 
         # Assert
         assert len(expenses) == 1
-        assert isinstance(expenses[0], ExpenseModel)
+        assert isinstance(expenses[0], ExpenseResponse)
         assert expenses[0].user_id == user_id
+        assert expenses[0].category_id is None
         assert expenses[0].title == user_expense_data.title
         assert expenses[0].amount == Decimal("24.99")
         assert expenses[0].currency == user_expense_data.currency

@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 
@@ -5,7 +7,7 @@ from fastapi.testclient import TestClient
 # This test exists to verify that analytics monthly summary is exposed through the API.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the API returns correct monthly summary values.
 def test_monthly_summary_endpoint_returns_summary(
@@ -13,18 +15,27 @@ def test_monthly_summary_endpoint_returns_summary(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
     client.post(
         "/api/v1/expenses",
         json={
+            "user_id": user_id,
+            "category_id": None,
+            "title": "Groceries",
             "amount": 50,
-            "category": "food",
+            "currency": "EUR",
+            "expense_date": "2026-05-07",
             "description": "Groceries",
-            "date": "2026-05-07",
+            "source": "manual",
         },
     )
 
     # Act
-    response = client.get("/api/v1/analytics/monthly-summary")
+    response = client.get(
+        "/api/v1/analytics/monthly-summary",
+        params={"user_id": user_id},
+    )
 
     # Assert
     response_data = response.json()
@@ -38,7 +49,7 @@ def test_monthly_summary_endpoint_returns_summary(
 # This test exists to verify category analytics API calculations.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if grouped category totals are returned correctly.
 def test_category_summary_endpoint_returns_grouped_categories(
@@ -46,43 +57,69 @@ def test_category_summary_endpoint_returns_grouped_categories(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
+    category_response = client.post(
+        "/api/v1/categories",
+        json={
+            "user_id": user_id,
+            "name": "Food",
+            "color": "#FF5733",
+            "icon": "utensils",
+        },
+    )
+    category_id = category_response.json()["id"]
+
     client.post(
         "/api/v1/expenses",
         json={
+            "user_id": user_id,
+            "category_id": category_id,
+            "title": "Groceries",
             "amount": 20,
-            "category": "food",
+            "currency": "EUR",
+            "expense_date": "2026-05-07",
             "description": "Groceries",
-            "date": "2026-05-07",
+            "source": "manual",
         },
     )
 
     client.post(
         "/api/v1/expenses",
         json={
+            "user_id": user_id,
+            "category_id": category_id,
+            "title": "Dinner",
             "amount": 30,
-            "category": "food",
+            "currency": "EUR",
+            "expense_date": "2026-05-08",
             "description": "Dinner",
-            "date": "2026-05-08",
+            "source": "manual",
         },
     )
 
     # Act
-    response = client.get("/api/v1/analytics/category-summary")
+    response = client.get(
+        "/api/v1/analytics/category-summary",
+        params={"user_id": user_id},
+    )
 
     # Assert
     response_data = response.json()
 
     assert response.status_code == 200
     assert len(response_data) == 1
-    assert response_data[0]["category"] == "food"
+    assert response_data[0]["category_id"] == category_id
+    assert response_data[0]["category_name"] == "Food"
     assert response_data[0]["total_spent"] == "50.00"
+    assert response_data[0]["expenses_count"] == 2
 
 
 # Tests that the budget status endpoint returns exceeded budget information.
 # This test exists to verify budget analytics calculations through the API.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if exceeded budget information is returned correctly.
 def test_budget_status_endpoint_returns_budget_status(
@@ -90,35 +127,64 @@ def test_budget_status_endpoint_returns_budget_status(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
+    category_response = client.post(
+        "/api/v1/categories",
+        json={
+            "user_id": user_id,
+            "name": "Food",
+            "color": "#FF5733",
+            "icon": "utensils",
+        },
+    )
+    category_id = category_response.json()["id"]
+
     client.post(
         "/api/v1/expenses",
         json={
+            "user_id": user_id,
+            "category_id": category_id,
+            "title": "Groceries",
             "amount": 120,
-            "category": "food",
+            "currency": "EUR",
+            "expense_date": "2026-05-07",
             "description": "Groceries",
-            "date": "2026-05-07",
+            "source": "manual",
         },
     )
 
     client.post(
         "/api/v1/budgets",
         json={
-            "category": "food",
-            "monthly_limit": 100,
-            "month": "2026-05-01",
+            "user_id": user_id,
+            "category_id": category_id,
+            "name": "Food budget",
+            "limit_amount": 100,
+            "currency": "EUR",
+            "period": "monthly",
+            "start_date": "2026-05-01",
+            "end_date": None,
         },
     )
 
     # Act
-    response = client.get("/api/v1/analytics/budget-status")
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        params={"user_id": user_id},
+    )
 
     # Assert
     response_data = response.json()
 
     assert response.status_code == 200
-    assert response_data[0]["category"] == "food"
+    assert len(response_data) == 1
+    assert response_data[0]["budget_name"] == "Food budget"
+    assert response_data[0]["category_id"] == category_id
+    assert response_data[0]["category_name"] == "Food"
+    assert response_data[0]["limit_amount"] == "100.00"
     assert response_data[0]["spent"] == "120.00"
-    assert response_data[0]["remaining"] == "0"
+    assert response_data[0]["remaining"] in ["0", "0.00"]
     assert response_data[0]["exceeded_amount"] == "20.00"
     assert response_data[0]["is_exceeded"] is True
 
@@ -127,7 +193,7 @@ def test_budget_status_endpoint_returns_budget_status(
 # This test exists to verify financial goal analytics through the API.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if remaining goal amount is returned correctly.
 def test_goal_progress_endpoint_returns_goal_progress(
@@ -135,22 +201,36 @@ def test_goal_progress_endpoint_returns_goal_progress(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
     client.post(
         "/api/v1/goals",
         json={
+            "user_id": user_id,
             "name": "Vacation",
             "target_amount": 2000,
             "current_amount": 500,
-            "deadline": "2026-12-31",
+            "currency": "EUR",
+            "target_date": "2026-12-31",
+            "status": "active",
         },
     )
 
     # Act
-    response = client.get("/api/v1/analytics/goal-progress")
+    response = client.get(
+        "/api/v1/analytics/goal-progress",
+        params={"user_id": user_id},
+    )
 
     # Assert
     response_data = response.json()
 
     assert response.status_code == 200
+    assert len(response_data) == 1
     assert response_data[0]["name"] == "Vacation"
+    assert response_data[0]["target_amount"] == "2000.00"
+    assert response_data[0]["current_amount"] == "500.00"
     assert response_data[0]["remaining_amount"] == "1500.00"
+    assert response_data[0]["progress_percent"] == "25.00"
+    assert response_data[0]["status"] == "active"
+    assert response_data[0]["target_date"] == "2026-12-31"

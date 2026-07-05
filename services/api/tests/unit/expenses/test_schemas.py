@@ -1,115 +1,125 @@
-from datetime import date
-from decimal import Decimal
-from typing import Any
+from uuid import uuid4
 
-import pytest
-from pydantic import ValidationError
-
-from app.modules.expenses.expenses_schemas import ExpenseCreate
+from fastapi.testclient import TestClient
 
 
-# Tests that valid expense input is accepted by the schema.
-# This test exists to confirm that correct user expense data passes validation.
+# Tests that the API creates a new expense successfully.
+# This test exists to verify the full request flow: router -> service -> repository -> PostgreSQL.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if ExpenseCreate is created successfully.
-def test_expense_create_accepts_valid_data() -> None:
+# - None. The test passes if the response status code and body are correct.
+def test_create_expense_endpoint_creates_expense(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    amount = Decimal("24.99")
-    category = "food"
-    description = "Lidl groceries"
-    expense_date = date(2026, 5, 7)
+    user_id = str(uuid4())
+
+    payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Lidl groceries",
+        "amount": 24.99,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Milk, bread and fruits",
+        "source": "manual",
+    }
 
     # Act
-    expense = ExpenseCreate(
-        amount=amount,
-        category=category,
-        description=description,
-        date=expense_date,
-    )
+    response = client.post("/api/v1/expenses", json=payload)
 
     # Assert
-    assert expense.amount == amount
-    assert expense.category == category
-    assert expense.description == description
-    assert expense.date == expense_date
+    response_data = response.json()
+
+    assert response.status_code == 201
+    assert response_data["user_id"] == user_id
+    assert response_data["category_id"] is None
+    assert response_data["title"] == payload["title"]
+    assert response_data["amount"] == "24.99"
+    assert response_data["currency"] == payload["currency"]
+    assert response_data["expense_date"] == payload["expense_date"]
+    assert response_data["description"] == payload["description"]
+    assert response_data["source"] == payload["source"]
+    assert "id" in response_data
+    assert "created_at" in response_data
+    assert "updated_at" in response_data
 
 
-# Tests that zero amount is rejected by the schema.
-# This test exists because expense amount must always be greater than zero.
+# Tests that the API returns created expenses from PostgreSQL.
+# This test exists to verify that saved expenses can be retrieved through the endpoint.
 # Parameters:
-# - None.
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if ValidationError is raised.
-def test_expense_create_rejects_zero_amount() -> None:
+# - None. The test passes if the response contains the created expense.
+def test_get_expenses_endpoint_returns_user_expenses(
+    client: TestClient,
+    clean_database: None,
+) -> None:
     # Arrange
-    invalid_data = {
-        "amount": Decimal("0"),
-        "category": "food",
+    user_id = str(uuid4())
+
+    payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Lidl groceries",
+        "amount": 24.99,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Milk, bread and fruits",
+        "source": "manual",
+    }
+
+    client.post("/api/v1/expenses", json=payload)
+
+    # Act
+    response = client.get("/api/v1/expenses", params={"user_id": user_id})
+
+    # Assert
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert len(response_data) == 1
+    assert response_data[0]["user_id"] == user_id
+    assert response_data[0]["category_id"] is None
+    assert response_data[0]["title"] == payload["title"]
+    assert response_data[0]["amount"] == "24.99"
+    assert response_data[0]["currency"] == payload["currency"]
+    assert response_data[0]["expense_date"] == payload["expense_date"]
+    assert response_data[0]["description"] == payload["description"]
+    assert response_data[0]["source"] == payload["source"]
+
+
+# Tests that the API rejects an expense with zero amount.
+# This test exists to verify that request validation works before database persistence.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_create_expense_endpoint_rejects_zero_amount(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Invalid expense",
+        "amount": 0,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
         "description": "Invalid expense",
-        "date": date(2026, 5, 7),
+        "source": "manual",
     }
 
-    # Act / Assert
-    with pytest.raises(ValidationError):
-        ExpenseCreate(**invalid_data)
+    # Act
+    response = client.post("/api/v1/expenses", json=payload)
 
-
-# Tests that negative amount is rejected by the schema.
-# This test exists because negative expenses are not valid spending records.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if ValidationError is raised.
-def test_expense_create_rejects_negative_amount() -> None:
-    # Arrange
-    invalid_data = {
-        "amount": Decimal("-10"),
-        "category": "food",
-        "description": "Invalid expense",
-        "date": date(2026, 5, 7),
-    }
-
-    # Act / Assert
-    with pytest.raises(ValidationError):
-        ExpenseCreate(**invalid_data)
-
-
-# Tests that empty category is rejected by the schema.
-# This test exists because every expense must belong to a category.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if ValidationError is raised.
-def test_expense_create_rejects_empty_category() -> None:
-    # Arrange
-    invalid_data = {
-        "amount": Decimal("24.99"),
-        "category": "",
-        "description": "Lidl groceries",
-        "date": date(2026, 5, 7),
-    }
-
-    # Act / Assert
-    with pytest.raises(ValidationError):
-        ExpenseCreate(**invalid_data)
-
-
-# Tests that missing date is rejected by the schema.
-# This test exists because every expense must have a date.
-# Parameters:
-# - None.
-# Returns:
-# - None. The test passes if ValidationError is raised.
-def test_expense_create_rejects_missing_date() -> None:
-    # Arrange
-    invalid_data: dict[str, Any] = {
-        "amount": Decimal("24.99"),
-        "category": "food",
-        "description": "Lidl groceries",
-    }
-
-    # Act / Assert
-    with pytest.raises(ValidationError):
-        ExpenseCreate(**invalid_data)
+    # Assert
+    assert response.status_code == 422

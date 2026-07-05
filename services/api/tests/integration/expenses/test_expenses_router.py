@@ -1,11 +1,13 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 
 # Tests that the API creates a new expense successfully.
-# This test exists to verify the full request flow: router → service → repository → PostgreSQL.
+# This test exists to verify the full request flow: router -> service -> repository -> PostgreSQL.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the response status code and body are correct.
 def test_create_expense_endpoint_creates_expense(
@@ -13,11 +15,17 @@ def test_create_expense_endpoint_creates_expense(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
     payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Lidl groceries",
         "amount": 24.99,
-        "category": "food",
-        "description": "Lidl groceries",
-        "date": "2026-05-07",
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Milk, bread and fruits",
+        "source": "manual",
     }
 
     # Act
@@ -27,52 +35,69 @@ def test_create_expense_endpoint_creates_expense(
     response_data = response.json()
 
     assert response.status_code == 201
+    assert response_data["user_id"] == user_id
+    assert response_data["category_id"] is None
+    assert response_data["title"] == payload["title"]
     assert response_data["amount"] == "24.99"
-    assert response_data["category"] == "food"
-    assert response_data["description"] == "Lidl groceries"
-    assert response_data["date"] == "2026-05-07"
+    assert response_data["currency"] == payload["currency"]
+    assert response_data["expense_date"] == payload["expense_date"]
+    assert response_data["description"] == payload["description"]
+    assert response_data["source"] == payload["source"]
     assert "id" in response_data
     assert "created_at" in response_data
+    assert "updated_at" in response_data
 
 
-# Tests that the API returns all created expenses from PostgreSQL.
+# Tests that the API returns created expenses from PostgreSQL.
 # This test exists to verify that saved expenses can be retrieved through the endpoint.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the response contains the created expense.
-def test_get_expenses_endpoint_returns_expenses(
+def test_get_expenses_endpoint_returns_user_expenses(
     client: TestClient,
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
     payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Lidl groceries",
         "amount": 24.99,
-        "category": "food",
-        "description": "Lidl groceries",
-        "date": "2026-05-07",
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Milk, bread and fruits",
+        "source": "manual",
     }
 
     client.post("/api/v1/expenses", json=payload)
 
     # Act
-    response = client.get("/api/v1/expenses")
+    response = client.get("/api/v1/expenses", params={"user_id": user_id})
 
     # Assert
     response_data = response.json()
 
     assert response.status_code == 200
     assert len(response_data) == 1
+    assert response_data[0]["user_id"] == user_id
+    assert response_data[0]["category_id"] is None
+    assert response_data[0]["title"] == payload["title"]
     assert response_data[0]["amount"] == "24.99"
-    assert response_data[0]["category"] == "food"
+    assert response_data[0]["currency"] == payload["currency"]
+    assert response_data[0]["expense_date"] == payload["expense_date"]
+    assert response_data[0]["description"] == payload["description"]
+    assert response_data[0]["source"] == payload["source"]
 
 
 # Tests that the API rejects an expense with zero amount.
 # This test exists to verify that request validation works before database persistence.
 # Parameters:
 # - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before the test.
+# - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the API returns validation error status code.
 def test_create_expense_endpoint_rejects_zero_amount(
@@ -80,11 +105,17 @@ def test_create_expense_endpoint_rejects_zero_amount(
     clean_database: None,
 ) -> None:
     # Arrange
+    user_id = str(uuid4())
+
     payload = {
+        "user_id": user_id,
+        "category_id": None,
+        "title": "Invalid expense",
         "amount": 0,
-        "category": "food",
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
         "description": "Invalid expense",
-        "date": "2026-05-07",
+        "source": "manual",
     }
 
     # Act

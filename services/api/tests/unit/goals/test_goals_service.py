@@ -1,70 +1,114 @@
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
-from app.modules.goals import goal_repository, goal_service
+from app.db.database_session import SessionLocal
+from app.modules.goals import goal_service
 from app.modules.goals.goal_schemas import GoalCreate, GoalResponse
 
 
-# Resets the in-memory goal repository state before each test.
-# This helper exists to keep service tests independent from each other.
-# Parameters:
-# - None.
-# Returns:
-# - None.
-def reset_repository_state() -> None:
-    goal_repository.goals_storage.clear()
-    goal_repository.next_goal_id = 1
-
-
 # Tests that the service creates a new financial goal.
-# This test exists to verify that the service layer correctly delegates goal creation to the repository.
+# This test exists to verify that the service maps the created database model to GoalResponse.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the created goal contains expected data.
-def test_service_create_goal_creates_goal() -> None:
+# - None. The test passes if a GoalResponse object is returned with expected values.
+def test_service_create_goal_creates_goal_response(
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
+    db_session = SessionLocal()
+    user_id = uuid4()
 
     goal_data = GoalCreate(
+        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
+        currency="EUR",
+        target_date=date(2026, 12, 31),
+        status="active",
     )
 
-    # Act
-    created_goal = goal_service.create_goal(goal_data)
+    try:
+        # Act
+        created_goal = goal_service.create_goal(
+            db_session=db_session,
+            goal_data=goal_data,
+        )
 
-    # Assert
-    assert isinstance(created_goal, GoalResponse)
-    assert created_goal.id == 1
-    assert created_goal.name == "Vacation"
-    assert created_goal.target_amount == Decimal("2000")
+        # Assert
+        assert isinstance(created_goal, GoalResponse)
+        assert created_goal.user_id == user_id
+        assert created_goal.name == goal_data.name
+        assert created_goal.target_amount == Decimal("2000")
+        assert created_goal.current_amount == Decimal("500")
+        assert created_goal.currency == goal_data.currency
+        assert created_goal.target_date == goal_data.target_date
+        assert created_goal.status == goal_data.status
+    finally:
+        db_session.close()
 
 
-# Tests that the service returns all financial goals.
-# This test exists to verify that the service layer can retrieve goals through the repository.
+# Tests that the service returns goals for a specific user.
+# This test exists to verify that the service retrieves user-scoped goals and returns response schemas.
 # Parameters:
-# - None.
+# - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if returned goals include previously created goals.
-def test_service_get_goals_returns_goals() -> None:
+# - None. The test passes if only the requested user's goals are returned.
+def test_service_get_goals_returns_user_goal_responses(
+    clean_database: None,
+) -> None:
     # Arrange
-    reset_repository_state()
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
 
-    goal_data = GoalCreate(
+    user_goal_data = GoalCreate(
+        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
-        deadline=date(2026, 12, 31),
+        currency="EUR",
+        target_date=date(2026, 12, 31),
+        status="active",
     )
 
-    created_goal = goal_service.create_goal(goal_data)
+    other_user_goal_data = GoalCreate(
+        user_id=other_user_id,
+        name="Laptop",
+        target_amount=Decimal("1500"),
+        current_amount=Decimal("300"),
+        currency="EUR",
+        target_date=date(2026, 10, 31),
+        status="active",
+    )
 
-    # Act
-    goals = goal_service.get_goals()
+    try:
+        goal_service.create_goal(
+            db_session=db_session,
+            goal_data=user_goal_data,
+        )
+        goal_service.create_goal(
+            db_session=db_session,
+            goal_data=other_user_goal_data,
+        )
 
-    # Assert
-    assert len(goals) == 1
-    assert goals[0] == created_goal
+        # Act
+        goals = goal_service.get_goals(
+            db_session=db_session,
+            user_id=user_id,
+        )
+
+        # Assert
+        assert len(goals) == 1
+        assert isinstance(goals[0], GoalResponse)
+        assert goals[0].user_id == user_id
+        assert goals[0].name == user_goal_data.name
+        assert goals[0].target_amount == Decimal("2000")
+        assert goals[0].current_amount == Decimal("500")
+        assert goals[0].currency == user_goal_data.currency
+        assert goals[0].target_date == user_goal_data.target_date
+        assert goals[0].status == user_goal_data.status
+    finally:
+        db_session.close()

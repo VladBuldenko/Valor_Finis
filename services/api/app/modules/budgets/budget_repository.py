@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.budgets.budget_schemas import BudgetCreate
-from app.modules.budgets.errors import BudgetAlreadyExistsError
+from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
 
 
 # Creates and saves a new budget database record.

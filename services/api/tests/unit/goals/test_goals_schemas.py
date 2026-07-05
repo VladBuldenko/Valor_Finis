@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -16,24 +17,31 @@ from app.modules.goals.goal_schemas import GoalCreate
 # - None. The test passes if GoalCreate is created successfully.
 def test_goal_create_accepts_valid_data() -> None:
     # Arrange
+    user_id = uuid4()
     name = "Vacation"
     target_amount = Decimal("2000")
     current_amount = Decimal("500")
-    deadline = date(2026, 12, 31)
+    target_date = date(2026, 12, 31)
 
     # Act
     goal = GoalCreate(
+        user_id=user_id,
         name=name,
         target_amount=target_amount,
         current_amount=current_amount,
-        deadline=deadline,
+        currency="EUR",
+        target_date=target_date,
+        status="active",
     )
 
     # Assert
+    assert goal.user_id == user_id
     assert goal.name == name
     assert goal.target_amount == target_amount
     assert goal.current_amount == current_amount
-    assert goal.deadline == deadline
+    assert goal.currency == "EUR"
+    assert goal.target_date == target_date
+    assert goal.status == "active"
 
 
 # Tests that empty goal name is rejected by the schema.
