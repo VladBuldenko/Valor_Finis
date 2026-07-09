@@ -17,7 +17,6 @@ class ExpenseBase(BaseModel):
         Prevents duplication between create and response schemas.
     """
 
-    user_id: UUID
     category_id: Optional[UUID] = None
     title: str = Field(..., min_length=1, max_length=120)
     amount: Decimal = Field(..., gt=0)
@@ -32,10 +31,12 @@ class ExpenseCreate(ExpenseBase):
     Schema for creating a new expense.
 
     What:
-        Validates incoming request data.
+        Validates incoming request data from the client.
 
     Why:
         Keeps invalid data away from service and database layers.
+        The user_id is not accepted from the client because it must come
+        from authentication data.
     """
 
     pass
@@ -55,5 +56,6 @@ class ExpenseResponse(ExpenseBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
