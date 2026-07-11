@@ -20,8 +20,6 @@ class BudgetBase(BaseModel):
         Prevents field duplication between request and response schemas.
     """
 
-    user_id: UUID
-
     category_id: Optional[UUID] = None
 
     name: str = Field(
@@ -97,9 +95,11 @@ class BudgetCreate(BudgetBase):
 
     Why:
         Validates incoming data before it reaches business and database layers.
+        The user_id is not accepted from the client because it must come
+        from authentication data.
     """
 
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class BudgetResponse(BudgetBase):
@@ -113,5 +113,6 @@ class BudgetResponse(BudgetBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime

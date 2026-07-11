@@ -63,8 +63,8 @@ def test_category_summary_endpoint_returns_grouped_categories(
 
     category_response = client.post(
         "/api/v1/categories",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "name": "Food",
             "color": "#FF5733",
             "icon": "utensils",
@@ -139,8 +139,8 @@ def test_budget_status_endpoint_returns_budget_status(
 
     category_response = client.post(
         "/api/v1/categories",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "name": "Food",
             "color": "#FF5733",
             "icon": "utensils",
@@ -169,8 +169,8 @@ def test_budget_status_endpoint_returns_budget_status(
 
     budget_response = client.post(
         "/api/v1/budgets",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "category_id": category_id,
             "name": "Food budget",
             "limit_amount": 100,

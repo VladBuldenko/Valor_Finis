@@ -9,7 +9,7 @@ from app.modules.budgets.budgets_models import BudgetModel
 
 
 # Tests that the repository creates a new budget in the database.
-# This test exists to verify that budget data is converted into BudgetModel and persisted through SQLAlchemy.
+# This test exists to verify that budget data and authenticated user id are converted into BudgetModel and persisted through SQLAlchemy.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -20,7 +20,6 @@ def test_create_budget_creates_new_budget(clean_database: None) -> None:
     user_id = uuid4()
 
     budget_data = BudgetCreate(
-        user_id=user_id,
         category_id=None,
         name="Food budget",
         limit_amount=Decimal("400"),
@@ -35,6 +34,7 @@ def test_create_budget_creates_new_budget(clean_database: None) -> None:
         created_budget = budget_repository.create_budget(
             db_session=db_session,
             budget_data=budget_data,
+            user_id=user_id,
         )
 
         # Assert
@@ -67,7 +67,6 @@ def test_get_budgets_returns_budgets_for_user(clean_database: None) -> None:
     other_user_id = uuid4()
 
     user_budget_data = BudgetCreate(
-        user_id=user_id,
         category_id=None,
         name="Food budget",
         limit_amount=Decimal("400"),
@@ -78,7 +77,6 @@ def test_get_budgets_returns_budgets_for_user(clean_database: None) -> None:
     )
 
     other_user_budget_data = BudgetCreate(
-        user_id=other_user_id,
         category_id=None,
         name="Transport budget",
         limit_amount=Decimal("150"),
@@ -92,10 +90,12 @@ def test_get_budgets_returns_budgets_for_user(clean_database: None) -> None:
         budget_repository.create_budget(
             db_session=db_session,
             budget_data=user_budget_data,
+            user_id=user_id,
         )
         budget_repository.create_budget(
             db_session=db_session,
             budget_data=other_user_budget_data,
+            user_id=other_user_id,
         )
 
         # Act
@@ -103,6 +103,7 @@ def test_get_budgets_returns_budgets_for_user(clean_database: None) -> None:
             db_session=db_session,
             user_id=user_id,
         )
+
         # Assert
         assert len(budgets) == 1
         assert isinstance(budgets[0], BudgetModel)

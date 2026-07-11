@@ -4,9 +4,9 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.budgets.budgets_models import BudgetModel
-from app.modules.budgets.budget_schemas import BudgetCreate
 from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
+from app.modules.budgets.budget_schemas import BudgetCreate
+from app.modules.budgets.budgets_models import BudgetModel
 
 
 # Creates and saves a new budget database record.
@@ -15,6 +15,7 @@ from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - budget_data: validated budget creation data.
+# - user_id: authenticated user identifier that owns the budget.
 # Returns:
 # - BudgetModel instance saved in PostgreSQL.
 # Raises:
@@ -22,9 +23,10 @@ from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
 def create_budget(
     db_session: Session,
     budget_data: BudgetCreate,
+    user_id: UUID,
 ) -> BudgetModel:
     budget_model = BudgetModel(
-        user_id=budget_data.user_id,
+        user_id=user_id,
         category_id=budget_data.category_id,
         name=budget_data.name,
         limit_amount=budget_data.limit_amount,
