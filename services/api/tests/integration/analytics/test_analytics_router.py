@@ -17,10 +17,10 @@ def test_monthly_summary_endpoint_returns_summary(
     # Arrange
     user_id = str(uuid4())
 
-    client.post(
+    expense_response = client.post(
         "/api/v1/expenses",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "category_id": None,
             "title": "Groceries",
             "amount": 50,
@@ -30,6 +30,8 @@ def test_monthly_summary_endpoint_returns_summary(
             "source": "manual",
         },
     )
+
+    assert expense_response.status_code == 201
 
     # Act
     response = client.get(
@@ -68,12 +70,15 @@ def test_category_summary_endpoint_returns_grouped_categories(
             "icon": "utensils",
         },
     )
+
+    assert category_response.status_code == 201
+
     category_id = category_response.json()["id"]
 
-    client.post(
+    first_expense_response = client.post(
         "/api/v1/expenses",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "category_id": category_id,
             "title": "Groceries",
             "amount": 20,
@@ -84,10 +89,10 @@ def test_category_summary_endpoint_returns_grouped_categories(
         },
     )
 
-    client.post(
+    second_expense_response = client.post(
         "/api/v1/expenses",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "category_id": category_id,
             "title": "Dinner",
             "amount": 30,
@@ -97,6 +102,9 @@ def test_category_summary_endpoint_returns_grouped_categories(
             "source": "manual",
         },
     )
+
+    assert first_expense_response.status_code == 201
+    assert second_expense_response.status_code == 201
 
     # Act
     response = client.get(
@@ -138,12 +146,15 @@ def test_budget_status_endpoint_returns_budget_status(
             "icon": "utensils",
         },
     )
+
+    assert category_response.status_code == 201
+
     category_id = category_response.json()["id"]
 
-    client.post(
+    expense_response = client.post(
         "/api/v1/expenses",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "category_id": category_id,
             "title": "Groceries",
             "amount": 120,
@@ -154,7 +165,9 @@ def test_budget_status_endpoint_returns_budget_status(
         },
     )
 
-    client.post(
+    assert expense_response.status_code == 201
+
+    budget_response = client.post(
         "/api/v1/budgets",
         json={
             "user_id": user_id,
@@ -167,6 +180,8 @@ def test_budget_status_endpoint_returns_budget_status(
             "end_date": None,
         },
     )
+
+    assert budget_response.status_code == 201
 
     # Act
     response = client.get(
@@ -203,7 +218,7 @@ def test_goal_progress_endpoint_returns_goal_progress(
     # Arrange
     user_id = str(uuid4())
 
-    client.post(
+    goal_response = client.post(
         "/api/v1/goals",
         json={
             "user_id": user_id,
@@ -215,6 +230,8 @@ def test_goal_progress_endpoint_returns_goal_progress(
             "status": "active",
         },
     )
+
+    assert goal_response.status_code == 201
 
     # Act
     response = client.get(

@@ -39,7 +39,7 @@ class ExpenseCreate(ExpenseBase):
         from authentication data.
     """
 
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class ExpenseResponse(ExpenseBase):

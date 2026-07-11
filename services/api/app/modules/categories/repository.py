@@ -15,6 +15,7 @@ from app.modules.categories.schemas import CategoryCreate
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - category_data: validated category creation data.
+# - user_id: authenticated user identifier that owns the category.
 # Returns:
 # - CategoryModel instance saved in PostgreSQL.
 # Raises:
@@ -22,9 +23,10 @@ from app.modules.categories.schemas import CategoryCreate
 def create_category(
     db_session: Session,
     category_data: CategoryCreate,
+    user_id: UUID,
 ) -> CategoryModel:
     category_model = CategoryModel(
-        user_id=category_data.user_id,
+        user_id=user_id,
         name=category_data.name,
         color=category_data.color,
         icon=category_data.icon,

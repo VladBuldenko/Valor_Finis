@@ -16,11 +16,6 @@ class CategoryBase(BaseModel):
         Prevents duplication between create and response schemas.
     """
 
-    user_id: UUID = Field(
-        ...,
-        description="User identifier that owns this category.",
-    )
-
     name: str = Field(
         ...,
         min_length=1,
@@ -58,9 +53,11 @@ class CategoryCreate(CategoryBase):
 
     Why:
         Keeps invalid client input away from business and database logic.
+        The user_id is not accepted from the client because it must come
+        from authentication data.
     """
 
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class CategoryResponse(CategoryBase):
@@ -77,5 +74,6 @@ class CategoryResponse(CategoryBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime

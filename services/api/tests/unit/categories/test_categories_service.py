@@ -17,7 +17,6 @@ def test_create_category_returns_category_response(clean_database: None) -> None
     user_id = uuid4()
 
     category_data = CategoryCreate(
-        user_id=user_id,
         name="Food",
         color="#FF5733",
         icon="utensils",
@@ -28,6 +27,7 @@ def test_create_category_returns_category_response(clean_database: None) -> None
         category = service.create_category(
             db_session=db_session,
             category_data=category_data,
+            user_id=user_id,
         )
 
         # Assert
@@ -37,6 +37,9 @@ def test_create_category_returns_category_response(clean_database: None) -> None
         assert category.color == category_data.color
         assert category.icon == category_data.icon
         assert category.is_default is False
+        assert category.id is not None
+        assert category.created_at is not None
+        assert category.updated_at is not None
     finally:
         db_session.close()
 
@@ -56,14 +59,12 @@ def test_get_categories_returns_user_category_responses(
     other_user_id = uuid4()
 
     user_category_data = CategoryCreate(
-        user_id=user_id,
         name="Transport",
         color="#2563EB",
         icon="car",
     )
 
     other_user_category_data = CategoryCreate(
-        user_id=other_user_id,
         name="Food",
         color="#FF5733",
         icon="utensils",
@@ -73,10 +74,12 @@ def test_get_categories_returns_user_category_responses(
         service.create_category(
             db_session=db_session,
             category_data=user_category_data,
+            user_id=user_id,
         )
         service.create_category(
             db_session=db_session,
             category_data=other_user_category_data,
+            user_id=other_user_id,
         )
 
         # Act

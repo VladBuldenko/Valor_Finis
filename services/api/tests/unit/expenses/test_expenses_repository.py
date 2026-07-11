@@ -9,7 +9,7 @@ from app.modules.expenses.expenses_schemas import ExpenseCreate
 
 
 # Tests that the repository creates a new expense in the database.
-# This test exists to verify that expense data is converted into ExpenseModel and persisted through SQLAlchemy.
+# This test exists to verify that expense data and authenticated user id are converted into ExpenseModel and persisted through SQLAlchemy.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -20,7 +20,6 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
     user_id = uuid4()
 
     expense_data = ExpenseCreate(
-        user_id=user_id,
         category_id=None,
         title="Lidl groceries",
         amount=Decimal("24.99"),
@@ -35,6 +34,7 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
         created_expense = expenses_repository.create_expense(
             db_session=db_session,
             expense_data=expense_data,
+            user_id=user_id,
         )
 
         # Assert
@@ -53,6 +53,7 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
     finally:
         db_session.close()
 
+
 # Tests that the repository returns expense records for a specific user.
 # This test exists to verify that users only receive their own expenses from the repository layer.
 # Parameters:
@@ -66,7 +67,6 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
     other_user_id = uuid4()
 
     user_expense_data = ExpenseCreate(
-        user_id=user_id,
         category_id=None,
         title="Lidl groceries",
         amount=Decimal("24.99"),
@@ -77,7 +77,6 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
     )
 
     other_user_expense_data = ExpenseCreate(
-        user_id=other_user_id,
         category_id=None,
         title="Train ticket",
         amount=Decimal("12.50"),
@@ -91,10 +90,12 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
         expenses_repository.create_expense(
             db_session=db_session,
             expense_data=user_expense_data,
+            user_id=user_id,
         )
         expenses_repository.create_expense(
             db_session=db_session,
             expense_data=other_user_expense_data,
+            user_id=other_user_id,
         )
 
         # Act

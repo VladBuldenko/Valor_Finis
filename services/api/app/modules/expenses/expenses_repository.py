@@ -12,14 +12,16 @@ from app.modules.expenses.expenses_schemas import ExpenseCreate
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - expense_data: validated expense input data from the service layer.
+# - user_id: authenticated user identifier that owns the expense.
 # Returns:
 # - ExpenseModel instance saved in the database.
 def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
+    user_id: UUID,
 ) -> ExpenseModel:
     expense_model = ExpenseModel(
-        user_id=expense_data.user_id,
+        user_id=user_id,
         category_id=expense_data.category_id,
         title=expense_data.title,
         amount=expense_data.amount,
