@@ -2,6 +2,14 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.helpers import (
+    auth_headers,
+    create_budget,
+    create_category,
+    create_expense,
+    create_goal,
+)
+
 
 # Tests that the monthly summary endpoint returns total spending data.
 # This test exists to verify that analytics monthly summary is exposed through the API.
@@ -17,26 +25,18 @@ def test_monthly_summary_endpoint_returns_summary(
     # Arrange
     user_id = str(uuid4())
 
-    expense_response = client.post(
-        "/api/v1/expenses",
-        headers={"X-User-Id": user_id},
-        json={
-            "category_id": None,
-            "title": "Groceries",
-            "amount": 50,
-            "currency": "EUR",
-            "expense_date": "2026-05-07",
-            "description": "Groceries",
-            "source": "manual",
-        },
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Groceries",
+        amount=50,
     )
-
-    assert expense_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/analytics/monthly-summary",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -61,55 +61,32 @@ def test_category_summary_endpoint_returns_grouped_categories(
     # Arrange
     user_id = str(uuid4())
 
-    category_response = client.post(
-        "/api/v1/categories",
-        headers={"X-User-Id": user_id},
-        json={
-            "name": "Food",
-            "color": "#FF5733",
-            "icon": "utensils",
-        },
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
     )
+    category_id = category["id"]
 
-    assert category_response.status_code == 201
-
-    category_id = category_response.json()["id"]
-
-    first_expense_response = client.post(
-        "/api/v1/expenses",
-        headers={"X-User-Id": user_id},
-        json={
-            "category_id": category_id,
-            "title": "Groceries",
-            "amount": 20,
-            "currency": "EUR",
-            "expense_date": "2026-05-07",
-            "description": "Groceries",
-            "source": "manual",
-        },
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=category_id,
+        title="Groceries",
+        amount=20,
     )
-
-    second_expense_response = client.post(
-        "/api/v1/expenses",
-        headers={"X-User-Id": user_id},
-        json={
-            "category_id": category_id,
-            "title": "Dinner",
-            "amount": 30,
-            "currency": "EUR",
-            "expense_date": "2026-05-08",
-            "description": "Dinner",
-            "source": "manual",
-        },
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=category_id,
+        title="Dinner",
+        amount=30,
     )
-
-    assert first_expense_response.status_code == 201
-    assert second_expense_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/analytics/category-summary",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -137,56 +114,33 @@ def test_budget_status_endpoint_returns_budget_status(
     # Arrange
     user_id = str(uuid4())
 
-    category_response = client.post(
-        "/api/v1/categories",
-        headers={"X-User-Id": user_id},
-        json={
-            "name": "Food",
-            "color": "#FF5733",
-            "icon": "utensils",
-        },
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+    category_id = category["id"]
+
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=category_id,
+        title="Groceries",
+        amount=120,
     )
 
-    assert category_response.status_code == 201
-
-    category_id = category_response.json()["id"]
-
-    expense_response = client.post(
-        "/api/v1/expenses",
-        headers={"X-User-Id": user_id},
-        json={
-            "category_id": category_id,
-            "title": "Groceries",
-            "amount": 120,
-            "currency": "EUR",
-            "expense_date": "2026-05-07",
-            "description": "Groceries",
-            "source": "manual",
-        },
+    create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=category_id,
+        name="Food budget",
+        limit_amount=100,
     )
-
-    assert expense_response.status_code == 201
-
-    budget_response = client.post(
-        "/api/v1/budgets",
-        headers={"X-User-Id": user_id},
-        json={
-            "category_id": category_id,
-            "name": "Food budget",
-            "limit_amount": 100,
-            "currency": "EUR",
-            "period": "monthly",
-            "start_date": "2026-05-01",
-            "end_date": None,
-        },
-    )
-
-    assert budget_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/analytics/budget-status",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -218,25 +172,18 @@ def test_goal_progress_endpoint_returns_goal_progress(
     # Arrange
     user_id = str(uuid4())
 
-    goal_response = client.post(
-        "/api/v1/goals",
-        headers={"X-User-Id": user_id},
-        json={
-            "name": "Vacation",
-            "target_amount": 2000,
-            "current_amount": 500,
-            "currency": "EUR",
-            "target_date": "2026-12-31",
-            "status": "active",
-        },
+    create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
     )
-
-    assert goal_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/analytics/goal-progress",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert

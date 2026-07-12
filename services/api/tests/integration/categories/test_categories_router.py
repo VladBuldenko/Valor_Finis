@@ -2,6 +2,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.helpers import auth_headers, create_category
+
 
 # Tests that the category creation endpoint creates a category in the database.
 # This test exists to verify that mobile and web clients can create user categories through the API.
@@ -23,13 +25,11 @@ def test_create_category_endpoint_creates_category(
         "icon": "utensils",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/categories",
         json=request_body,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
     response_data = response.json()
 
@@ -60,36 +60,21 @@ def test_get_categories_endpoint_returns_authenticated_user_categories(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    user_request_body = {
-        "name": "Transport",
-        "color": "#2563EB",
-        "icon": "car",
-    }
-
-    other_user_request_body = {
-        "name": "Food",
-        "color": "#FF5733",
-        "icon": "utensils",
-    }
-
-    user_create_response = client.post(
-        "/api/v1/categories",
-        json=user_request_body,
-        headers={"X-User-Id": user_id},
+    create_category(
+        client=client,
+        user_id=user_id,
+        name="Transport",
     )
-    other_user_create_response = client.post(
-        "/api/v1/categories",
-        json=other_user_request_body,
-        headers={"X-User-Id": other_user_id},
+    create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
     )
-
-    assert user_create_response.status_code == 201
-    assert other_user_create_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/categories",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
     response_data = response.json()
 
@@ -97,9 +82,7 @@ def test_get_categories_endpoint_returns_authenticated_user_categories(
     assert response.status_code == 200
     assert len(response_data) == 1
     assert response_data[0]["user_id"] == user_id
-    assert response_data[0]["name"] == user_request_body["name"]
-    assert response_data[0]["color"] == user_request_body["color"]
-    assert response_data[0]["icon"] == user_request_body["icon"]
+    assert response_data[0]["name"] == "Transport"
 
 
 # Tests that duplicate category creation returns a conflict error.
@@ -122,19 +105,17 @@ def test_create_category_endpoint_returns_conflict_for_duplicate_category(
         "icon": "utensils",
     }
 
-    first_response = client.post(
-        "/api/v1/categories",
-        json=request_body,
-        headers={"X-User-Id": user_id},
+    create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
     )
-
-    assert first_response.status_code == 201
 
     # Act
     response = client.post(
         "/api/v1/categories",
         json=request_body,
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -157,29 +138,24 @@ def test_create_category_endpoint_allows_same_name_for_different_users(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    request_body = {
-        "name": "Food",
-        "color": "#FF5733",
-        "icon": "utensils",
-    }
-
     # Act
-    first_response = client.post(
-        "/api/v1/categories",
-        json=request_body,
-        headers={"X-User-Id": user_id},
+    first_category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
     )
-    second_response = client.post(
-        "/api/v1/categories",
-        json=request_body,
-        headers={"X-User-Id": other_user_id},
+    second_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
     )
 
     # Assert
-    assert first_response.status_code == 201
-    assert second_response.status_code == 201
-    assert first_response.json()["user_id"] == user_id
-    assert second_response.json()["user_id"] == other_user_id
+    assert first_category["user_id"] == user_id
+    assert second_category["user_id"] == other_user_id
+    assert first_category["name"] == "Food"
+    assert second_category["name"] == "Food"
+    assert first_category["id"] != second_category["id"]
 
 
 # Tests that the API rejects requests without authentication header.

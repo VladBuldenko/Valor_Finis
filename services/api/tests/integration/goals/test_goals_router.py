@@ -2,6 +2,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.helpers import auth_headers, create_goal
+
 
 # Tests that the API creates a new financial goal successfully.
 # This test exists to verify the full request flow: router -> auth dependency -> service -> repository -> PostgreSQL.
@@ -26,13 +28,11 @@ def test_create_goal_endpoint_creates_goal(
         "status": "active",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/goals",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -66,42 +66,25 @@ def test_get_goals_endpoint_returns_authenticated_user_goals(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    user_payload = {
-        "name": "Vacation",
-        "target_amount": 2000,
-        "current_amount": 500,
-        "currency": "EUR",
-        "target_date": "2026-12-31",
-        "status": "active",
-    }
-
-    other_user_payload = {
-        "name": "Car",
-        "target_amount": 10000,
-        "current_amount": 1000,
-        "currency": "EUR",
-        "target_date": "2027-06-30",
-        "status": "active",
-    }
-
-    user_create_response = client.post(
-        "/api/v1/goals",
-        json=user_payload,
-        headers={"X-User-Id": user_id},
+    create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
     )
-    other_user_create_response = client.post(
-        "/api/v1/goals",
-        json=other_user_payload,
-        headers={"X-User-Id": other_user_id},
+    create_goal(
+        client=client,
+        user_id=other_user_id,
+        name="Car",
+        target_amount=10000,
+        current_amount=1000,
     )
-
-    assert user_create_response.status_code == 201
-    assert other_user_create_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/goals",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -110,12 +93,12 @@ def test_get_goals_endpoint_returns_authenticated_user_goals(
     assert response.status_code == 200
     assert len(response_data) == 1
     assert response_data[0]["user_id"] == user_id
-    assert response_data[0]["name"] == user_payload["name"]
+    assert response_data[0]["name"] == "Vacation"
     assert response_data[0]["target_amount"] == "2000.00"
     assert response_data[0]["current_amount"] == "500.00"
-    assert response_data[0]["currency"] == user_payload["currency"]
-    assert response_data[0]["target_date"] == user_payload["target_date"]
-    assert response_data[0]["status"] == user_payload["status"]
+    assert response_data[0]["currency"] == "EUR"
+    assert response_data[0]["target_date"] == "2026-12-31"
+    assert response_data[0]["status"] == "active"
 
 
 # Tests that the API rejects a goal with zero target amount.
@@ -141,13 +124,11 @@ def test_create_goal_endpoint_rejects_zero_target_amount(
         "status": "active",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/goals",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -177,13 +158,11 @@ def test_create_goal_endpoint_rejects_current_amount_greater_than_target_amount(
         "status": "active",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/goals",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert

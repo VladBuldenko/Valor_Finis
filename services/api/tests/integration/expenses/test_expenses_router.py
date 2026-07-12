@@ -2,6 +2,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.helpers import auth_headers, create_expense
+
 
 # Tests that the API creates a new expense successfully.
 # This test exists to verify the full request flow: router -> auth dependency -> service -> repository -> PostgreSQL.
@@ -27,13 +29,11 @@ def test_create_expense_endpoint_creates_expense(
         "source": "manual",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/expenses",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -68,44 +68,25 @@ def test_get_expenses_endpoint_returns_authenticated_user_expenses(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    user_payload = {
-        "category_id": None,
-        "title": "Lidl groceries",
-        "amount": 24.99,
-        "currency": "EUR",
-        "expense_date": "2026-05-07",
-        "description": "Milk, bread and fruits",
-        "source": "manual",
-    }
-
-    other_user_payload = {
-        "category_id": None,
-        "title": "Train ticket",
-        "amount": 12.50,
-        "currency": "EUR",
-        "expense_date": "2026-05-08",
-        "description": "Munich transport",
-        "source": "manual",
-    }
-
-    user_create_response = client.post(
-        "/api/v1/expenses",
-        json=user_payload,
-        headers={"X-User-Id": user_id},
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Lidl groceries",
+        amount=24.99,
     )
-    other_user_create_response = client.post(
-        "/api/v1/expenses",
-        json=other_user_payload,
-        headers={"X-User-Id": other_user_id},
+    create_expense(
+        client=client,
+        user_id=other_user_id,
+        category_id=None,
+        title="Train ticket",
+        amount=12.50,
     )
-
-    assert user_create_response.status_code == 201
-    assert other_user_create_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/expenses",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -115,12 +96,12 @@ def test_get_expenses_endpoint_returns_authenticated_user_expenses(
     assert len(response_data) == 1
     assert response_data[0]["user_id"] == user_id
     assert response_data[0]["category_id"] is None
-    assert response_data[0]["title"] == user_payload["title"]
+    assert response_data[0]["title"] == "Lidl groceries"
     assert response_data[0]["amount"] == "24.99"
-    assert response_data[0]["currency"] == user_payload["currency"]
-    assert response_data[0]["expense_date"] == user_payload["expense_date"]
-    assert response_data[0]["description"] == user_payload["description"]
-    assert response_data[0]["source"] == user_payload["source"]
+    assert response_data[0]["currency"] == "EUR"
+    assert response_data[0]["expense_date"] == "2026-05-07"
+    assert response_data[0]["description"] == "Lidl groceries"
+    assert response_data[0]["source"] == "manual"
 
 
 # Tests that the API rejects an expense with zero amount.
@@ -147,13 +128,11 @@ def test_create_expense_endpoint_rejects_zero_amount(
         "source": "manual",
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/expenses",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert

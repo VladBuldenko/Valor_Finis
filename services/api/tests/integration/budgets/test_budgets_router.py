@@ -2,6 +2,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.helpers import auth_headers, create_budget
+
 
 # Tests that the API creates a new budget successfully.
 # This test exists to verify the full request flow: router -> auth dependency -> service -> repository -> PostgreSQL.
@@ -27,13 +29,11 @@ def test_create_budget_endpoint_creates_budget(
         "end_date": None,
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/budgets",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -68,44 +68,25 @@ def test_get_budgets_endpoint_returns_authenticated_user_budgets(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    user_payload = {
-        "category_id": None,
-        "name": "Food budget",
-        "limit_amount": 400,
-        "currency": "EUR",
-        "period": "monthly",
-        "start_date": "2026-05-01",
-        "end_date": None,
-    }
-
-    other_user_payload = {
-        "category_id": None,
-        "name": "Transport budget",
-        "limit_amount": 100,
-        "currency": "EUR",
-        "period": "monthly",
-        "start_date": "2026-05-01",
-        "end_date": None,
-    }
-
-    user_create_response = client.post(
-        "/api/v1/budgets",
-        json=user_payload,
-        headers={"X-User-Id": user_id},
+    create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
     )
-    other_user_create_response = client.post(
-        "/api/v1/budgets",
-        json=other_user_payload,
-        headers={"X-User-Id": other_user_id},
+    create_budget(
+        client=client,
+        user_id=other_user_id,
+        category_id=None,
+        name="Transport budget",
+        limit_amount=100,
     )
-
-    assert user_create_response.status_code == 201
-    assert other_user_create_response.status_code == 201
 
     # Act
     response = client.get(
         "/api/v1/budgets",
-        headers={"X-User-Id": user_id},
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -115,11 +96,11 @@ def test_get_budgets_endpoint_returns_authenticated_user_budgets(
     assert len(response_data) == 1
     assert response_data[0]["user_id"] == user_id
     assert response_data[0]["category_id"] is None
-    assert response_data[0]["name"] == user_payload["name"]
+    assert response_data[0]["name"] == "Food budget"
     assert response_data[0]["limit_amount"] == "400.00"
-    assert response_data[0]["currency"] == user_payload["currency"]
-    assert response_data[0]["period"] == user_payload["period"]
-    assert response_data[0]["start_date"] == user_payload["start_date"]
+    assert response_data[0]["currency"] == "EUR"
+    assert response_data[0]["period"] == "monthly"
+    assert response_data[0]["start_date"] == "2026-05-01"
     assert response_data[0]["end_date"] is None
 
 
@@ -147,13 +128,11 @@ def test_create_budget_endpoint_rejects_zero_limit_amount(
         "end_date": None,
     }
 
-    headers = {"X-User-Id": user_id}
-
     # Act
     response = client.post(
         "/api/v1/budgets",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -184,21 +163,19 @@ def test_create_budget_endpoint_returns_conflict_for_duplicate_budget(
         "end_date": None,
     }
 
-    headers = {"X-User-Id": user_id}
-
-    first_response = client.post(
-        "/api/v1/budgets",
-        json=payload,
-        headers=headers,
+    create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
     )
-
-    assert first_response.status_code == 201
 
     # Act
     response = client.post(
         "/api/v1/budgets",
         json=payload,
-        headers=headers,
+        headers=auth_headers(user_id),
     )
 
     # Assert
@@ -223,33 +200,28 @@ def test_create_budget_endpoint_allows_same_budget_for_different_users(
     user_id = str(uuid4())
     other_user_id = str(uuid4())
 
-    payload = {
-        "category_id": None,
-        "name": "Food budget",
-        "limit_amount": 400,
-        "currency": "EUR",
-        "period": "monthly",
-        "start_date": "2026-05-01",
-        "end_date": None,
-    }
-
     # Act
-    first_response = client.post(
-        "/api/v1/budgets",
-        json=payload,
-        headers={"X-User-Id": user_id},
+    first_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
     )
-    second_response = client.post(
-        "/api/v1/budgets",
-        json=payload,
-        headers={"X-User-Id": other_user_id},
+    second_budget = create_budget(
+        client=client,
+        user_id=other_user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
     )
 
     # Assert
-    assert first_response.status_code == 201
-    assert second_response.status_code == 201
-    assert first_response.json()["user_id"] == user_id
-    assert second_response.json()["user_id"] == other_user_id
+    assert first_budget["user_id"] == user_id
+    assert second_budget["user_id"] == other_user_id
+    assert first_budget["name"] == "Food budget"
+    assert second_budget["name"] == "Food budget"
+    assert first_budget["id"] != second_budget["id"]
 
 
 # Tests that the API rejects requests without authentication header.
