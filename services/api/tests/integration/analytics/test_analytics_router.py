@@ -36,7 +36,7 @@ def test_monthly_summary_endpoint_returns_summary(
     # Act
     response = client.get(
         "/api/v1/analytics/monthly-summary",
-        params={"user_id": user_id},
+        headers={"X-User-Id": user_id},
     )
 
     # Assert
@@ -109,7 +109,7 @@ def test_category_summary_endpoint_returns_grouped_categories(
     # Act
     response = client.get(
         "/api/v1/analytics/category-summary",
-        params={"user_id": user_id},
+        headers={"X-User-Id": user_id},
     )
 
     # Assert
@@ -186,7 +186,7 @@ def test_budget_status_endpoint_returns_budget_status(
     # Act
     response = client.get(
         "/api/v1/analytics/budget-status",
-        params={"user_id": user_id},
+        headers={"X-User-Id": user_id},
     )
 
     # Assert
@@ -236,7 +236,7 @@ def test_goal_progress_endpoint_returns_goal_progress(
     # Act
     response = client.get(
         "/api/v1/analytics/goal-progress",
-        params={"user_id": user_id},
+        headers={"X-User-Id": user_id},
     )
 
     # Assert
@@ -251,3 +251,22 @@ def test_goal_progress_endpoint_returns_goal_progress(
     assert response_data[0]["progress_percent"] == "25.00"
     assert response_data[0]["status"] == "active"
     assert response_data[0]["target_date"] == "2026-12-31"
+
+
+# Tests that analytics endpoints reject requests without authentication header.
+# This test exists to verify that the temporary auth dependency protects analytics data.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns unauthorized status code.
+def test_monthly_summary_endpoint_rejects_missing_user_header(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get("/api/v1/analytics/monthly-summary")
+
+    # Assert
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing X-User-Id header."
