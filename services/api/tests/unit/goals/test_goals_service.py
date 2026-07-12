@@ -21,7 +21,6 @@ def test_service_create_goal_creates_goal_response(
     user_id = uuid4()
 
     goal_data = GoalCreate(
-        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
@@ -35,6 +34,7 @@ def test_service_create_goal_creates_goal_response(
         created_goal = goal_service.create_goal(
             db_session=db_session,
             goal_data=goal_data,
+            user_id=user_id,
         )
 
         # Assert
@@ -46,6 +46,9 @@ def test_service_create_goal_creates_goal_response(
         assert created_goal.currency == goal_data.currency
         assert created_goal.target_date == goal_data.target_date
         assert created_goal.status == goal_data.status
+        assert created_goal.id is not None
+        assert created_goal.created_at is not None
+        assert created_goal.updated_at is not None
     finally:
         db_session.close()
 
@@ -65,7 +68,6 @@ def test_service_get_goals_returns_user_goal_responses(
     other_user_id = uuid4()
 
     user_goal_data = GoalCreate(
-        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
@@ -75,7 +77,6 @@ def test_service_get_goals_returns_user_goal_responses(
     )
 
     other_user_goal_data = GoalCreate(
-        user_id=other_user_id,
         name="Laptop",
         target_amount=Decimal("1500"),
         current_amount=Decimal("300"),
@@ -88,10 +89,12 @@ def test_service_get_goals_returns_user_goal_responses(
         goal_service.create_goal(
             db_session=db_session,
             goal_data=user_goal_data,
+            user_id=user_id,
         )
         goal_service.create_goal(
             db_session=db_session,
             goal_data=other_user_goal_data,
+            user_id=other_user_id,
         )
 
         # Act

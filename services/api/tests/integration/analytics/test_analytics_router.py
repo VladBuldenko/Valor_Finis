@@ -220,8 +220,8 @@ def test_goal_progress_endpoint_returns_goal_progress(
 
     goal_response = client.post(
         "/api/v1/goals",
+        headers={"X-User-Id": user_id},
         json={
-            "user_id": user_id,
             "name": "Vacation",
             "target_amount": 2000,
             "current_amount": 500,

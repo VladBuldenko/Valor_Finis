@@ -23,11 +23,6 @@ class GoalBase(BaseModel):
         Prevents duplication between create and response schemas.
     """
 
-    user_id: UUID = Field(
-        ...,
-        description="User identifier that owns this financial goal.",
-    )
-
     name: str = Field(
         ...,
         min_length=1,
@@ -131,9 +126,11 @@ class GoalCreate(GoalBase):
 
     Why:
         Keeps invalid client input away from business logic and database logic.
+        The user_id is not accepted from the client because it must come
+        from authentication data.
     """
 
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class GoalResponse(GoalBase):
@@ -150,5 +147,6 @@ class GoalResponse(GoalBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime

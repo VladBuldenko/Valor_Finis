@@ -13,14 +13,16 @@ from app.modules.goals.goal_schemas import GoalCreate
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_data: validated goal creation data.
+# - user_id: authenticated user identifier that owns the goal.
 # Returns:
 # - GoalModel instance saved in PostgreSQL.
 def create_goal(
     db_session: Session,
     goal_data: GoalCreate,
+    user_id: UUID,
 ) -> GoalModel:
     goal_model = GoalModel(
-        user_id=goal_data.user_id,
+        user_id=user_id,
         name=goal_data.name,
         target_amount=goal_data.target_amount,
         current_amount=goal_data.current_amount,

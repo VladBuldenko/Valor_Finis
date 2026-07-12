@@ -9,7 +9,8 @@ from app.modules.goals.goal_schemas import GoalCreate
 
 
 # Tests that the repository creates a new financial goal in the database.
-# This test exists to verify that goal data is converted into GoalModel and persisted through SQLAlchemy.
+# This test exists to verify that goal data and authenticated user id
+# are converted into GoalModel and persisted through SQLAlchemy.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -20,7 +21,6 @@ def test_create_goal_creates_new_goal(clean_database: None) -> None:
     user_id = uuid4()
 
     goal_data = GoalCreate(
-        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
@@ -34,6 +34,7 @@ def test_create_goal_creates_new_goal(clean_database: None) -> None:
         created_goal = goal_repository.create_goal(
             db_session=db_session,
             goal_data=goal_data,
+            user_id=user_id,
         )
 
         # Assert
@@ -65,7 +66,6 @@ def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
     other_user_id = uuid4()
 
     user_goal_data = GoalCreate(
-        user_id=user_id,
         name="Vacation",
         target_amount=Decimal("2000"),
         current_amount=Decimal("500"),
@@ -75,7 +75,6 @@ def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
     )
 
     other_user_goal_data = GoalCreate(
-        user_id=other_user_id,
         name="Laptop",
         target_amount=Decimal("1500"),
         current_amount=Decimal("300"),
@@ -88,10 +87,12 @@ def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
         goal_repository.create_goal(
             db_session=db_session,
             goal_data=user_goal_data,
+            user_id=user_id,
         )
         goal_repository.create_goal(
             db_session=db_session,
             goal_data=other_user_goal_data,
+            user_id=other_user_id,
         )
 
         # Act
