@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -29,16 +28,17 @@ def create_expense(
     return ExpenseResponse.model_validate(expense_model)
 
 
-# Returns expenses for a user or all expenses if user_id is not provided.
-# This function exists to keep response mapping outside the repository layer.
+# Returns expenses for the authenticated user.
+# This function exists to keep response mapping outside the repository layer
+# and to ensure service-level reads are always scoped to a user.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter expenses.
+# - user_id: authenticated user identifier used to filter expenses.
 # Returns:
 # - List of ExpenseResponse objects.
 def get_expenses(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[ExpenseResponse]:
     expense_models = expenses_repository.get_expenses(
         db_session=db_session,

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Optional, cast
+from typing import cast
 from uuid import UUID, uuid4
 
 from pytest import MonkeyPatch
@@ -131,7 +131,7 @@ def test_service_get_expenses_returns_expense_responses_for_user(
 
     def fake_get_expenses(
         db_session: Session,
-        user_id: Optional[UUID] = None,
+        user_id: UUID,
     ) -> list[SimpleNamespace]:
         assert db_session is expected_db_session
         assert user_id == expected_user_id
@@ -164,38 +164,3 @@ def test_service_get_expenses_returns_expense_responses_for_user(
     assert expenses[0].source == "manual"
     assert expenses[0].created_at == created_at
     assert expenses[0].updated_at == updated_at
-
-
-# Tests that the service can request all expenses when user_id is not provided.
-# This test exists because get_expenses currently allows user_id to be optional.
-# Parameters:
-# - monkeypatch: pytest fixture used to replace repository behavior.
-# Returns:
-# - None. The test passes if the service passes None as user_id to the repository.
-def test_service_get_expenses_without_user_id_passes_none_to_repository(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    # Arrange
-    db_session = cast(Session, object())
-    expected_db_session = db_session
-
-    def fake_get_expenses(
-        db_session: Session,
-        user_id: Optional[UUID] = None,
-    ) -> list[SimpleNamespace]:
-        assert db_session is expected_db_session
-        assert user_id is None
-
-        return []
-
-    monkeypatch.setattr(
-        expenses_service.expenses_repository,
-        "get_expenses",
-        fake_get_expenses,
-    )
-
-    # Act
-    expenses = expenses_service.get_expenses(db_session=db_session)
-
-    # Assert
-    assert expenses == []

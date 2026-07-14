@@ -20,17 +20,17 @@ from app.modules.goals import goal_repository as goals_repository
 UNCATEGORIZED_CATEGORY_NAME = "Uncategorized"
 
 
-# Builds a category id to category name lookup map.
+# Builds a category id to category name lookup map for the authenticated user.
 # This function exists to avoid repeating category name search logic
 # inside analytics calculations.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter categories.
+# - user_id: authenticated user identifier used to filter categories.
 # Returns:
 # - Dictionary where key is category UUID and value is category name.
 def build_category_name_map(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> dict[UUID, str]:
     categories = categories_repository.get_categories(
         db_session=db_session,
@@ -61,16 +61,16 @@ def get_category_name(
     return category_name_map.get(category_id, UNCATEGORIZED_CATEGORY_NAME)
 
 
-# Calculates total spending and expense count.
+# Calculates total spending and expense count for the authenticated user.
 # This function exists to provide a simple dashboard summary.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter expenses.
+# - user_id: authenticated user identifier used to filter expenses.
 # Returns:
 # - MonthlySummaryResponse with total spent and expenses count.
 def get_monthly_summary(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> MonthlySummaryResponse:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
@@ -88,16 +88,16 @@ def get_monthly_summary(
     )
 
 
-# Calculates spending grouped by category.
+# Calculates spending grouped by category for the authenticated user.
 # This function exists to show where the user's money goes.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter expenses and categories.
+# - user_id: authenticated user identifier used to filter expenses and categories.
 # Returns:
 # - List of CategorySummaryItem objects grouped by category_id.
 def get_category_summary(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[CategorySummaryItem]:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
@@ -129,16 +129,16 @@ def get_category_summary(
     ]
 
 
-# Calculates budget status for each configured budget.
+# Calculates budget status for each configured budget of the authenticated user.
 # This function exists to show spent, remaining, and exceeded amounts.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter budgets and expenses.
+# - user_id: authenticated user identifier used to filter budgets and expenses.
 # Returns:
 # - List of BudgetStatusItem objects with spending status by budget.
 def get_budget_status(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[BudgetStatusItem]:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
@@ -159,7 +159,10 @@ def get_budget_status(
         spent = Decimal("0")
 
         for expense in expenses:
-            if budget.category_id is not None and expense.category_id != budget.category_id:
+            if (
+                budget.category_id is not None
+                and expense.category_id != budget.category_id
+            ):
                 continue
 
             if expense.expense_date < budget.start_date:
@@ -193,17 +196,17 @@ def get_budget_status(
     return budget_status
 
 
-# Calculates progress for each financial goal.
+# Calculates progress for each financial goal of the authenticated user.
 # This function exists to show how much money is already saved
 # and how much is still needed for each goal.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter goals.
+# - user_id: authenticated user identifier used to filter goals.
 # Returns:
 # - List of GoalProgressItem objects with goal progress information.
 def get_goal_progress(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[GoalProgressItem]:
     goals = goals_repository.get_goals(
         db_session=db_session,

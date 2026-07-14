@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -30,17 +29,17 @@ def create_goal(
     return GoalResponse.model_validate(goal_model)
 
 
-# Returns financial goals for a user or all goals when user_id is not provided.
+# Returns financial goals for the authenticated user.
 # This function exists to map database models to public API responses
-# and provide a place for future business rules.
+# and to ensure service-level reads are always scoped to a user.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter goals.
+# - user_id: authenticated user identifier used to filter goals.
 # Returns:
 # - List of GoalResponse objects.
 def get_goals(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[GoalResponse]:
     goal_models = goal_repository.get_goals(
         db_session=db_session,

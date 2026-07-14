@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -30,17 +29,17 @@ def create_budget(
     return BudgetResponse.model_validate(budget_model)
 
 
-# Returns budgets for a user or all budgets when user_id is not provided.
+# Returns budgets for the authenticated user.
 # This function exists to map database models to public API responses
-# and provide a place for future business rules.
+# and to ensure service-level reads are always scoped to a user.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter budgets.
+# - user_id: authenticated user identifier used to filter budgets.
 # Returns:
 # - List of BudgetResponse objects.
 def get_budgets(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[BudgetResponse]:
     budget_models = budget_repository.get_budgets(
         db_session=db_session,

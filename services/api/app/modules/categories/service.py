@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -30,17 +29,17 @@ def create_category(
     return CategoryResponse.model_validate(category_model)
 
 
-# Returns categories for a user or all categories when user_id is not provided.
+# Returns categories for the authenticated user.
 # This function exists to map database models to public API responses
-# and provide a place for future category business rules.
+# and to ensure service-level reads are always scoped to a user.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter categories.
+# - user_id: authenticated user identifier used to filter categories.
 # Returns:
 # - List of CategoryResponse objects.
 def get_categories(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[CategoryResponse]:
     category_models = repository.get_categories(
         db_session=db_session,
