@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -5,8 +7,15 @@ from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.budgets import budget_service
-from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
-from app.modules.budgets.budget_schemas import BudgetCreate, BudgetResponse
+from app.modules.budgets.budget_errors import (
+    BudgetAlreadyExistsError,
+    BudgetNotFoundError,
+)
+from app.modules.budgets.budget_schemas import (
+    BudgetCreate,
+    BudgetResponse,
+    BudgetUpdate,
+)
 
 
 router = APIRouter(
@@ -45,7 +54,10 @@ def create_budget(
     except BudgetAlreadyExistsError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Budget with this name, period, and start date already exists for this user.",
+            detail=(
+                "Budget with this name, period, and start date "
+                "already exists for this user."
+            ),
         ) from error
 
 
@@ -70,3 +82,82 @@ def get_budgets(
         db_session=db_session,
         user_id=current_user.id,
     )
+
+
+# Updates an existing budget through the API.
+# This function exists to receive partial HTTP update input
+# and delegate budget update logic to the service layer.
+# Parameters:
+# - budget_id: budget identifier from the URL path.
+# - budget_data: validated partial request body containing updated budget data.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - BudgetResponse containing the updated budget.
+# Raises:
+# - HTTPException: 404 Not Found when the budget does not exist.
+# - HTTPException: 409 Conflict when the update creates a duplicate budget.
+@router.patch(
+    "/{budget_id}",
+    response_model=BudgetResponse,
+    status_code=status.HTTP_200_OK,
+)
+def update_budget(
+    budget_id: UUID,
+    budget_data: BudgetUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> BudgetResponse:
+    try:
+        return budget_service.update_budget(
+            db_session=db_session,
+            budget_id=budget_id,
+            budget_data=budget_data,
+            user_id=current_user.id,
+        )
+    except BudgetNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Budget not found.",
+        ) from error
+    except BudgetAlreadyExistsError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Budget with this name, period, and start date "
+                "already exists for this user."
+            ),
+        ) from error
+
+
+# Deletes an existing budget through the API.
+# This function exists to receive authenticated delete requests
+# and delegate budget deletion to the service layer.
+# Parameters:
+# - budget_id: budget identifier from the URL path.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - None.
+# Raises:
+# - HTTPException: 404 Not Found when the budget does not exist.
+@router.delete(
+    "/{budget_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_budget(
+    budget_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> None:
+    try:
+        budget_service.delete_budget(
+            db_session=db_session,
+            budget_id=budget_id,
+            user_id=current_user.id,
+        )
+    except BudgetNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Budget not found.",
+        ) from error

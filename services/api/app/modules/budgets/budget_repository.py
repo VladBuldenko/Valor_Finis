@@ -4,8 +4,11 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.budgets.budget_errors import BudgetAlreadyExistsError
-from app.modules.budgets.budget_schemas import BudgetCreate
+from app.modules.budgets.budget_errors import (
+    BudgetAlreadyExistsError,
+    BudgetNotFoundError,
+)
+from app.modules.budgets.budget_schemas import BudgetCreate, BudgetUpdate
 from app.modules.budgets.budgets_models import BudgetModel
 
 
@@ -77,3 +80,110 @@ def get_budgets(
         query = query.filter(BudgetModel.user_id == user_id)
 
     return query.order_by(BudgetModel.start_date.desc()).all()
+
+
+# Returns one budget by budget id and authenticated user id.
+# This function exists to enforce ownership at the database query level.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - budget_id: budget identifier.
+# - user_id: authenticated user identifier that owns the budget.
+# Returns:
+# - BudgetModel instance from the database.
+# Raises:
+# - BudgetNotFoundError: when budget does not exist or does not belong to the user.
+def get_budget_by_id(
+    db_session: Session,
+    budget_id: UUID,
+    user_id: UUID,
+) -> BudgetModel:
+    budget_model = (
+        db_session.query(BudgetModel)
+        .filter(
+            BudgetModel.id == budget_id,
+            BudgetModel.user_id == user_id,
+        )
+        .first()
+    )
+
+    if budget_model is None:
+        raise BudgetNotFoundError()
+
+    return budget_model
+
+
+# Updates an existing budget owned by the authenticated user.
+# This function exists to isolate PostgreSQL update operations
+# from business logic and HTTP handling.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - budget_id: budget identifier.
+# - budget_data: validated partial budget update data.
+# - user_id: authenticated user identifier that owns the budget.
+# Returns:
+# - Updated BudgetModel instance.
+# Raises:
+# - BudgetNotFoundError: when budget does not exist or does not belong to the user.
+# - BudgetAlreadyExistsError: when the same user already has this budget.
+def update_budget(
+    db_session: Session,
+    budget_id: UUID,
+    budget_data: BudgetUpdate,
+    user_id: UUID,
+) -> BudgetModel:
+    budget_model = get_budget_by_id(
+        db_session=db_session,
+        budget_id=budget_id,
+        user_id=user_id,
+    )
+
+    update_data = budget_data.model_dump(exclude_unset=True)
+
+    for field_name, field_value in update_data.items():
+        setattr(budget_model, field_name, field_value)
+
+    try:
+        db_session.commit()
+    except IntegrityError as error:
+        db_session.rollback()
+
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == "uq_budgets_user_id_name_period_start_date":
+            raise BudgetAlreadyExistsError from error
+
+        raise
+
+    db_session.refresh(budget_model)
+
+    return budget_model
+
+
+# Deletes an existing budget owned by the authenticated user.
+# This function exists to isolate PostgreSQL delete operations
+# from business logic and HTTP handling.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - budget_id: budget identifier.
+# - user_id: authenticated user identifier that owns the budget.
+# Returns:
+# - None.
+# Raises:
+# - BudgetNotFoundError: when budget does not exist or does not belong to the user.
+def delete_budget(
+    db_session: Session,
+    budget_id: UUID,
+    user_id: UUID,
+) -> None:
+    budget_model = get_budget_by_id(
+        db_session=db_session,
+        budget_id=budget_id,
+        user_id=user_id,
+    )
+
+    db_session.delete(budget_model)
+    db_session.commit()
