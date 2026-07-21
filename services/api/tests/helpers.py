@@ -44,7 +44,7 @@ def create_expense(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
 
     return response.json()
 
@@ -72,7 +72,7 @@ def create_category(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
 
     return response.json()
 
@@ -108,7 +108,7 @@ def create_budget(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
 
     return response.json()
 
@@ -143,6 +143,6 @@ def create_goal(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
 
     return response.json()

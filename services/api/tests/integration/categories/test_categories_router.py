@@ -175,3 +175,31 @@ def test_get_categories_endpoint_rejects_missing_user_header(
     # Assert
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing X-User-Id header."
+
+    # Tests that the category creation endpoint rejects requests without authentication header.
+# This test exists to verify that users cannot create categories without authentication data.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns unauthorized status code.
+def test_create_category_endpoint_rejects_missing_user_header(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    request_body = {
+        "name": "Food",
+        "color": "#FF5733",
+        "icon": "utensils",
+    }
+
+    # Act
+    response = client.post(
+        "/api/v1/categories",
+        json=request_body,
+    )
+
+    # Assert
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing X-User-Id header."
