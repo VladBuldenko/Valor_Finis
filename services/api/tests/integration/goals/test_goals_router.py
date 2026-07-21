@@ -186,3 +186,237 @@ def test_get_goals_endpoint_rejects_missing_user_header(
     # Assert
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing X-User-Id header."
+
+# Tests that the API updates an authenticated user's financial goal.
+# This test exists to verify the PATCH flow: router -> service -> repository -> PostgreSQL.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the response contains updated goal data.
+def test_update_goal_endpoint_updates_authenticated_user_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_goal = create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
+    )
+
+    payload = {
+        "current_amount": 750,
+        "status": "active",
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/goals/{created_goal['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert response_data["id"] == created_goal["id"]
+    assert response_data["user_id"] == user_id
+    assert response_data["name"] == "Vacation"
+    assert response_data["target_amount"] == "2000.00"
+    assert response_data["current_amount"] == "750.00"
+    assert response_data["currency"] == "EUR"
+    assert response_data["target_date"] == "2026-12-31"
+    assert response_data["status"] == "active"
+
+
+# Tests that the API rejects updating another user's financial goal.
+# This test exists to verify ownership protection for PATCH requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_update_goal_endpoint_rejects_other_user_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_goal = create_goal(
+        client=client,
+        user_id=other_user_id,
+        name="Car",
+        target_amount=10000,
+        current_amount=1000,
+    )
+
+    payload = {
+        "current_amount": 1500,
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/goals/{other_user_goal['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Goal not found."
+
+
+# Tests that the API rejects empty goal update payloads.
+# This test exists to verify that PATCH requests must contain at least one editable field.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_update_goal_endpoint_rejects_empty_payload(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_goal = create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/goals/{created_goal['id']}",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests that the API rejects goal updates where current amount becomes greater than target amount.
+# This test exists to verify final amount validation after applying PATCH data to existing database data.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns bad request status code.
+def test_update_goal_endpoint_rejects_current_amount_greater_than_target_amount(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_goal = create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
+    )
+
+    payload = {
+        "current_amount": 2500,
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/goals/{created_goal['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "current_amount must be less than or equal to target_amount."
+    )
+
+
+# Tests that the API deletes an authenticated user's financial goal.
+# This test exists to verify the DELETE flow and that deleted goals no longer appear in the list.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns no content and the goal is removed.
+def test_delete_goal_endpoint_deletes_authenticated_user_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_goal = create_goal(
+        client=client,
+        user_id=user_id,
+        name="Vacation",
+        target_amount=2000,
+        current_amount=500,
+    )
+
+    # Act
+    delete_response = client.delete(
+        f"/api/v1/goals/{created_goal['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    get_response = client.get(
+        "/api/v1/goals",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
+
+    assert get_response.status_code == 200
+    assert get_response.json() == []
+
+
+# Tests that the API rejects deleting another user's financial goal.
+# This test exists to verify ownership protection for DELETE requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_delete_goal_endpoint_rejects_other_user_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_goal = create_goal(
+        client=client,
+        user_id=other_user_id,
+        name="Car",
+        target_amount=10000,
+        current_amount=1000,
+    )
+
+    # Act
+    response = client.delete(
+        f"/api/v1/goals/{other_user_goal['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Goal not found."

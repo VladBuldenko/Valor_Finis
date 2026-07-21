@@ -156,3 +156,236 @@ def test_get_expenses_endpoint_rejects_missing_user_header(
     # Assert
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing X-User-Id header."
+
+# Tests that the API updates an authenticated user's expense.
+# This test exists to verify the PATCH flow: router -> service -> repository -> PostgreSQL.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the response contains updated expense data.
+def test_update_expense_endpoint_updates_authenticated_user_expense(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_expense = create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Lidl groceries",
+        amount=24.99,
+    )
+
+    payload = {
+        "title": "Updated groceries",
+        "amount": 35.50,
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/expenses/{created_expense['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+
+    response_data = response.json()
+
+    assert response_data["id"] == created_expense["id"]
+    assert response_data["user_id"] == user_id
+    assert response_data["category_id"] is None
+    assert response_data["title"] == "Updated groceries"
+    assert response_data["amount"] == "35.50"
+    assert response_data["currency"] == "EUR"
+    assert response_data["expense_date"] == "2026-05-07"
+    assert response_data["description"] == "Lidl groceries"
+    assert response_data["source"] == "manual"
+
+
+# Tests that the API rejects updating another user's expense.
+# This test exists to verify ownership protection for PATCH requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_update_expense_endpoint_rejects_other_user_expense(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_expense = create_expense(
+        client=client,
+        user_id=other_user_id,
+        category_id=None,
+        title="Train ticket",
+        amount=12.50,
+    )
+
+    payload = {
+        "amount": 15.00,
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/expenses/{other_user_expense['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Expense not found."
+
+
+# Tests that the API rejects empty expense update payloads.
+# This test exists to verify that PATCH requests must contain at least one editable field.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_update_expense_endpoint_rejects_empty_payload(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_expense = create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Lidl groceries",
+        amount=24.99,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/expenses/{created_expense['id']}",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests that the API rejects expense updates with invalid amount.
+# This test exists to verify that PATCH validation prevents zero or negative amounts.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_update_expense_endpoint_rejects_zero_amount(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_expense = create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Lidl groceries",
+        amount=24.99,
+    )
+
+    payload = {
+        "amount": 0,
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/expenses/{created_expense['id']}",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests that the API deletes an authenticated user's expense.
+# This test exists to verify the DELETE flow and that deleted expenses no longer appear in the list.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns no content and the expense is removed.
+def test_delete_expense_endpoint_deletes_authenticated_user_expense(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_expense = create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Lidl groceries",
+        amount=24.99,
+    )
+
+    # Act
+    delete_response = client.delete(
+        f"/api/v1/expenses/{created_expense['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    get_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
+
+    assert get_response.status_code == 200
+    assert get_response.json() == []
+
+
+# Tests that the API rejects deleting another user's expense.
+# This test exists to verify ownership protection for DELETE requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_delete_expense_endpoint_rejects_other_user_expense(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_expense = create_expense(
+        client=client,
+        user_id=other_user_id,
+        category_id=None,
+        title="Train ticket",
+        amount=12.50,
+    )
+
+    # Act
+    response = client.delete(
+        f"/api/v1/expenses/{other_user_expense['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Expense not found."

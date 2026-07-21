@@ -203,3 +203,230 @@ def test_create_category_endpoint_rejects_missing_user_header(
     # Assert
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing X-User-Id header."
+
+# Tests that the API updates an authenticated user's category.
+# This test exists to verify the PATCH flow: router -> service -> repository -> PostgreSQL.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the response contains updated category data.
+def test_update_category_endpoint_updates_authenticated_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    request_body = {
+        "name": "Groceries",
+        "color": "#22C55E",
+        "icon": "shopping-cart",
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{created_category['id']}",
+        json=request_body,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+
+    response_data = response.json()
+
+    assert response_data["id"] == created_category["id"]
+    assert response_data["user_id"] == user_id
+    assert response_data["name"] == request_body["name"]
+    assert response_data["color"] == request_body["color"]
+    assert response_data["icon"] == request_body["icon"]
+    assert response_data["is_default"] is False
+    assert "created_at" in response_data
+    assert "updated_at" in response_data
+
+
+# Tests that the API rejects updating another user's category.
+# This test exists to verify ownership protection for PATCH requests.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_update_category_endpoint_rejects_other_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
+    )
+
+    request_body = {
+        "name": "Groceries",
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{other_user_category['id']}",
+        json=request_body,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
+
+
+# Tests that the API rejects empty category update payloads.
+# This test exists to verify that PATCH requests must contain at least one editable field.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_update_category_endpoint_rejects_empty_payload(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{created_category['id']}",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests that the API rejects category update when the new name already exists for the same user.
+# This test exists to verify that duplicate category names are protected during PATCH requests.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns conflict status code.
+def test_update_category_endpoint_returns_conflict_for_duplicate_name(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+    category_to_update = create_category(
+        client=client,
+        user_id=user_id,
+        name="Transport",
+    )
+
+    request_body = {
+        "name": "Food",
+    }
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{category_to_update['id']}",
+        json=request_body,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Category with this name already exists for this user."
+
+
+# Tests that the API deletes an authenticated user's category.
+# This test exists to verify the DELETE flow and that deleted categories no longer appear in the list.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns no content and the category is removed.
+def test_delete_category_endpoint_deletes_authenticated_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    # Act
+    delete_response = client.delete(
+        f"/api/v1/categories/{created_category['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    get_response = client.get(
+        "/api/v1/categories",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
+
+    assert get_response.status_code == 200
+    assert get_response.json() == []
+
+
+# Tests that the API rejects deleting another user's category.
+# This test exists to verify ownership protection for DELETE requests.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found status code.
+def test_delete_category_endpoint_rejects_other_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
+    )
+
+    # Act
+    response = client.delete(
+        f"/api/v1/categories/{other_user_category['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
