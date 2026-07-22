@@ -61,30 +61,42 @@ def get_category_name(
     return category_name_map.get(category_id, UNCATEGORIZED_CATEGORY_NAME)
 
 
-# Calculates total spending and expense count for the authenticated user.
-# This function exists to provide a simple dashboard summary.
+# Calculates total spending and expense count for the authenticated user
+# within a selected year and month.
+# This function exists to provide a monthly dashboard summary.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter expenses.
+# - year: selected year used to filter expenses.
+# - month: selected month used to filter expenses.
 # Returns:
-# - MonthlySummaryResponse with total spent and expenses count.
+# - MonthlySummaryResponse with total spent and expenses count for the selected month.
 def get_monthly_summary(
     db_session: Session,
     user_id: UUID,
+    year: int,
+    month: int,
 ) -> MonthlySummaryResponse:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
         user_id=user_id,
     )
 
+    monthly_expenses = [
+        expense
+        for expense in expenses
+        if expense.expense_date.year == year
+        and expense.expense_date.month == month
+    ]
+
     total_spent = sum(
-        (expense.amount for expense in expenses),
+        (expense.amount for expense in monthly_expenses),
         Decimal("0"),
     )
 
     return MonthlySummaryResponse(
         total_spent=total_spent,
-        expenses_count=len(expenses),
+        expenses_count=len(monthly_expenses),
     )
 
 

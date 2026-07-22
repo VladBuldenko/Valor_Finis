@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -19,10 +19,12 @@ router = APIRouter(
 )
 
 
-# Returns spending summary through the API.
-# This function exists to expose total spending and expense count
+# Returns spending summary for a selected month through the API.
+# This function exists to expose monthly total spending and expense count
 # to mobile and web clients.
 # Parameters:
+# - year: selected year used to filter expenses.
+# - month: selected month used to filter expenses.
 # - current_user: authenticated user resolved from request authentication data.
 # - db_session: active SQLAlchemy database session injected by FastAPI.
 # Returns:
@@ -33,12 +35,28 @@ router = APIRouter(
     status_code=status.HTTP_200_OK,
 )
 def get_monthly_summary(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Year used to filter monthly expenses.",
+        examples=[2026],
+    ),
+    month: int = Query(
+        ...,
+        ge=1,
+        le=12,
+        description="Month used to filter monthly expenses.",
+        examples=[7],
+    ),
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> MonthlySummaryResponse:
     return analytics_service.get_monthly_summary(
         db_session=db_session,
         user_id=current_user.id,
+        year=year,
+        month=month,
     )
 
 

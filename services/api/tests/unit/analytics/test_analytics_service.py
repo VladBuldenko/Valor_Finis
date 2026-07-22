@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from typing import cast
 from sqlalchemy.orm import Session
@@ -33,11 +33,20 @@ def test_get_monthly_summary_calculates_total_spent_and_count(
     user_id = uuid4()
 
     expenses = [
-        make_model(amount=Decimal("24.99")),
-        make_model(amount=Decimal("10.01")),
+        make_model(
+            amount=Decimal("24.99"),
+            expense_date=date(2026, 5, 7),
+        ),
+        make_model(
+            amount=Decimal("10.01"),
+            expense_date=date(2026, 5, 8),
+        ),
     ]
 
-    def fake_get_expenses(db_session: object, user_id=None):
+    def fake_get_expenses(
+        db_session: Session,
+        user_id: UUID,
+    ):
         return expenses
 
     monkeypatch.setattr(
@@ -50,12 +59,13 @@ def test_get_monthly_summary_calculates_total_spent_and_count(
     summary = analytics_service.get_monthly_summary(
         db_session=db_session,
         user_id=user_id,
+        year=2026,
+        month=5,
     )
 
     # Assert
     assert summary.total_spent == Decimal("35.00")
     assert summary.expenses_count == 2
-
 
 # Tests that category summary groups expenses by category and resolves category names.
 # This test exists to verify category analytics business logic without API or database.
@@ -340,6 +350,8 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
     monthly_summary = analytics_service.get_monthly_summary(
         db_session=db_session,
         user_id=user_id,
+        year=2026,
+        month=5,
     )
     category_summary = analytics_service.get_category_summary(
         db_session=db_session,

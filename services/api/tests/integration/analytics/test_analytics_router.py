@@ -11,8 +11,9 @@ from tests.helpers import (
 )
 
 
-# Tests that the monthly summary endpoint returns total spending data.
-# This test exists to verify that analytics monthly summary is exposed through the API.
+# Tests that the monthly summary endpoint returns total spending data for a selected month.
+# This test exists to verify that analytics monthly summary is exposed through the API
+# and requires year/month query parameters.
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
@@ -35,7 +36,7 @@ def test_monthly_summary_endpoint_returns_summary(
 
     # Act
     response = client.get(
-        "/api/v1/analytics/monthly-summary",
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
         headers=auth_headers(user_id),
     )
 
@@ -45,6 +46,137 @@ def test_monthly_summary_endpoint_returns_summary(
     assert response.status_code == 200
     assert response_data["total_spent"] == "50.00"
     assert response_data["expenses_count"] == 1
+
+
+# Tests that the monthly summary endpoint filters expenses by selected month and authenticated user.
+# This test exists to verify that expenses from other months and other users are not included.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if only matching expenses are included in the summary.
+def test_monthly_summary_endpoint_filters_by_month_and_user(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    current_month_expense = {
+        "category_id": None,
+        "title": "May groceries",
+        "amount": 50,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "May groceries",
+        "source": "manual",
+    }
+    other_month_expense = {
+        "category_id": None,
+        "title": "June groceries",
+        "amount": 70,
+        "currency": "EUR",
+        "expense_date": "2026-06-07",
+        "description": "June groceries",
+        "source": "manual",
+    }
+    other_user_expense = {
+        "category_id": None,
+        "title": "Other user groceries",
+        "amount": 999,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Other user groceries",
+        "source": "manual",
+    }
+
+    client.post(
+        "/api/v1/expenses",
+        json=current_month_expense,
+        headers=auth_headers(user_id),
+    )
+    client.post(
+        "/api/v1/expenses",
+        json=other_month_expense,
+        headers=auth_headers(user_id),
+    )
+    client.post(
+        "/api/v1/expenses",
+        json=other_user_expense,
+        headers=auth_headers(other_user_id),
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert response_data["total_spent"] == "50.00"
+    assert response_data["expenses_count"] == 1
+
+# Tests that the monthly summary endpoint returns zero values for a month without expenses.
+# This test exists to verify that empty monthly analytics responses are safe for dashboards.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if empty month summary values are returned.
+def test_monthly_summary_endpoint_returns_zero_for_empty_month(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    create_expense(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        title="Groceries",
+        amount=50,
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=6",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert response_data["total_spent"] in ["0", "0.00"]
+    assert response_data["expenses_count"] == 0
+
+# Tests that the monthly summary endpoint rejects invalid month query parameter.
+# This test exists to verify FastAPI query validation for monthly analytics.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns validation error status code.
+def test_monthly_summary_endpoint_rejects_invalid_month(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=13",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
 
 
 # Tests that the category summary endpoint groups expenses by category.
