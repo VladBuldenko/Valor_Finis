@@ -348,4 +348,4 @@ def test_monthly_summary_endpoint_rejects_missing_user_header(
 
     # Assert
     assert response.status_code == 401
-    assert response.json()["detail"] == "Missing X-User-Id header."
+    assert response.json()["detail"] == "Missing authentication credentials."

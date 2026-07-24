@@ -174,7 +174,7 @@ def test_get_categories_endpoint_rejects_missing_user_header(
 
     # Assert
     assert response.status_code == 401
-    assert response.json()["detail"] == "Missing X-User-Id header."
+    assert response.json()["detail"] == "Missing authentication credentials."
 
     # Tests that the category creation endpoint rejects requests without authentication header.
 # This test exists to verify that users cannot create categories without authentication data.
@@ -202,7 +202,7 @@ def test_create_category_endpoint_rejects_missing_user_header(
 
     # Assert
     assert response.status_code == 401
-    assert response.json()["detail"] == "Missing X-User-Id header."
+    assert response.json()["detail"] == "Missing authentication credentials."
 
 # Tests that the API updates an authenticated user's category.
 # This test exists to verify the PATCH flow: router -> service -> repository -> PostgreSQL.

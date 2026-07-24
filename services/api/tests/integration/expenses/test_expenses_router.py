@@ -155,7 +155,7 @@ def test_get_expenses_endpoint_rejects_missing_user_header(
 
     # Assert
     assert response.status_code == 401
-    assert response.json()["detail"] == "Missing X-User-Id header."
+    assert response.json()["detail"] == "Missing authentication credentials."
 
 # Tests that the API updates an authenticated user's expense.
 # This test exists to verify the PATCH flow: router -> service -> repository -> PostgreSQL.

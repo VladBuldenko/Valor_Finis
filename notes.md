@@ -1,956 +1,1297 @@
-promt:
-Я строю production-like fintech backend проект Valor на FastAPI.
+promt:Я строю production-like fintech backend проект Valor на FastAPI.
 
 ВАЖНО:
 
-* Объясняй всё очень подробно, как senior mentor для junior developer.
-* Перед каждым файлом и кодом ВСЕГДА объясняй:
+Объясняй всё очень подробно, как senior mentor для junior developer.
 
-  1. Что это
-  2. Зачем это нужно
-  3. Как это работает
-  4. Какие best practices используются
-  5. Только потом код
-* Всегда объясняй архитектуру, flow данных и зачем нужен каждый слой.
-* Пиши комментарии в коде на английском.
-* Комментарии должны объяснять:
+Перед каждым файлом и кодом ВСЕГДА объясняй:
 
-  * what function does
-  * why it exists
-  * parameters
-  * returns
-* Следуй принципам:
+Что это
 
-  * SOLID
-  * DRY
-  * KISS
-  * YAGNI
-  * Clean Architecture
-  * Separation of Concerns
-  * Single Responsibility
-  * Readable Code First
+Зачем это нужно
+
+Как это работает
+
+Какие best practices используются
+
+Только потом код
+
+Всегда объясняй архитектуру, flow данных и зачем нужен каждый слой.
+
+Пиши комментарии в коде на английском.
+
+Комментарии должны объяснять:
+
+what function does
+
+why it exists
+
+parameters
+
+returns
+
+Следуй принципам:
+
+SOLID
+
+DRY
+
+KISS
+
+YAGNI
+
+Clean Architecture
+
+Separation of Concerns
+
+Single Responsibility
+
+Readable Code First
 
 ТЕКУЩАЯ АРХИТЕКТУРА:
 
 backend structure:
 
-router → service → repository → storage/database
+router → service → repository → SQLAlchemy model → PostgreSQL
+
+Response flow:
+
+PostgreSQL → SQLAlchemy model → service maps to Pydantic response → router → JSON
 
 Что делает каждый слой:
 
-* router.py → HTTP layer / FastAPI endpoints
-* service.py → business logic
-* repository.py → data access layer
-* schemas.py → Pydantic validation schemas
-* models.py → SQLAlchemy ORM models
+router.py / *_router.py → HTTP layer / FastAPI endpoints
+
+service.py / *_service.py → business logic + mapping Model → Response
+
+repository.py / *_repository.py → data access layer / SQLAlchemy queries / commit / rollback
+
+schemas.py / *_schemas.py → Pydantic validation schemas and API contracts
+
+models.py / *_models.py → SQLAlchemy ORM models / database table mapping
+
+errors.py / *_errors.py → module-level domain errors, later translated to HTTP errors in router
+
+Auth flow сейчас:
+
+Temporary development auth:
+
+X-User-Id header
+
+get_current_user dependency
+
+CurrentUser(id=...)
+
+Production target:
+
+Authorization: Bearer <supabase_jwt>
+
+backend verifies JWT
+
+user_id comes from token.sub
 
 ТЕКУЩАЯ СТРУКТУРА ПРОЕКТА:
 
+Monorepo root:
+
+VALOR_FINIS/
+
+Backend path:
+
+services/api/
+
+Backend modules path:
+
 services/api/app/modules/
 
-modules:
+Current modules:
 
-* expenses
-* categories
-* budgets
-* goals
-* analytics
+expenses
+
+categories
+
+budgets
+
+goals
+
+analytics
+
+auth
+
+Future modules:
+
+receipts
+
+ocr
+
+categorization rules
 
 Naming convention:
 
-Внутри каждого модуля файлы называются так:
+Preferred module-prefixed names for growing modules:
 
-* expenses_router.py
-* expenses_service.py
-* expenses_repository.py
-* expenses_schemas.py
-* expenses_models.py
+expenses_router.py
 
-То же для:
+expenses_service.py
 
-* budgets
-* goals
-* analytics
+expenses_repository.py
 
-Пример:
-app/modules/analytics/analytics_service.py
+expenses_schemas.py
 
-НЕ использовать generic names:
+expenses_models.py
 
-* service.py
-* schemas.py
-* router.py
+Same idea for:
 
-Использовать module-prefixed names.
+budgets
+
+goals
+
+analytics
+
+Current project has some mixed naming, especially categories:
+
+categories/router.py
+
+categories/service.py
+
+categories/repository.py
+
+categories/schemas.py
+
+categories/category_models.py
+
+This is acceptable for now because tests are green.For new modules and future refactors prefer module-prefixed names.
+
+Example:app/modules/analytics/analytics_service.py
+
+Avoid generic names in large modules when the module becomes complex.
 
 ТЕКУЩЕЕ СОСТОЯНИЕ ПРОЕКТА:
 
 ГОТОВО:
 
-* FastAPI backend
-* Swagger/OpenAPI
-* Health endpoint
-* Root endpoint
+FastAPI backend
+
+Swagger/OpenAPI
+
+Health endpoint
+
+Root endpoint
+
+PostgreSQL integration
+
+SQLAlchemy models
+
+Alembic migrations
+
+Repository pattern with database repositories
+
+Temporary auth dependency through X-User-Id
+
+CRUD endpoints for core modules
+
+Analytics monthly filter by year/month
+
+Unit tests
+
+Integration tests
 
 Modules completed:
 
-* Expenses
-* Categories
-* Budgets
-* Goals
-* Analytics
+Expenses
 
-ГОТОВО В КАЖДОМ МОДУЛЕ:
+Categories
 
-* schemas
-* repository
-* service
-* router
-* tests
+Budgets
 
-ТЕСТЫ:
+Goals
 
-* unit tests
-* integration tests
+Analytics
 
-Test naming:
+Auth dependency module
 
-* test_expenses_service.py
-* test_goals_router.py
-* test_analytics_service.py
+ГОТОВО В ОСНОВНЫХ CRUD МОДУЛЯХ:
 
-НЕ использовать:
+schemas
 
-* test_service.py
-* test_router.py
+repository
 
-Analytics module already implemented:
+service
 
-* monthly summary
-* category summary
-* budget status
-* goal progress
+router
+
+errors where needed
+
+unit tests
+
+integration tests
+
+CRUD completed for:
+
+categories
+
+expenses
+
+budgets
+
+goals
+
+Analytics module implemented:
+
+monthly summary with year/month filter
+
+category summary
+
+budget status
+
+goal progress
 
 Analytics logic:
 
-* total spending
-* grouped categories
-* exceeded budget
-* remaining goal amount
+total spending for selected month
+
+grouped categories
+
+exceeded budget
+
+remaining goal amount
+
+authenticated user filtering
 
 Current backend uses:
 
-* in-memory storage lists
+PostgreSQL
+
+SQLAlchemy ORM models
+
+Alembic migrations
+
+Pydantic schemas
+
+FastAPI dependency injection
+
+temporary X-User-Id auth header
+
+Current backend no longer uses:
+
+in-memory storage lists
+
+expenses_storage
+
+budgets_storage
+
+goals_storage
+
+next_*_id counters
 
 СЕЙЧАС МЫ НА ЭТАПЕ:
-DATABASE INTEGRATION
+
+SUPABASE JWT AUTH PREPARATION
 
 УЖЕ УСТАНОВЛЕНО:
 
-* sqlalchemy
-* psycopg2-binary
-* alembic
-* python-dotenv
+sqlalchemy
+
+psycopg2-binary
+
+alembic
+
+python-dotenv
 
 CURRENT DATABASE STRUCTURE:
 
 Created:
 
-* app/core/app_config.py
-* app/db/database_base.py
-* app/db/database_session.py
+app/core/app_config.py
+
+app/db/database_base.py
+
+app/db/database_session.py
+
+app/db/database_models.py
 
 Created folders:
 
-* app/core
-* app/db
+app/core
+
+app/db
 
 Created env files:
 
-* .env
-* .env.example
+.env
+
+.env.example
 
 Current naming:
 
-* app_config.py
-* database_base.py
-* database_session.py
+app_config.py
+
+database_base.py
+
+database_session.py
+
+database_models.py
 
 Current database architecture:
 
-* SQLAlchemy 2.x style
-* PostgreSQL
-* Alembic
-* .env config
+SQLAlchemy 2.x style
 
-ВАЖНО:
-Всегда использовать современные production-like решения.
-Не использовать outdated patterns.
+PostgreSQL
+
+Alembic
+
+UUID primary keys
+
+Decimal for money fields
+
+.env config
+
+Next roadmap step:
+
+replace temporary X-User-Id auth with Supabase JWT verification
+
+Then:
+
+Receipts module
+
+OCR module
+
+Categorization rules
+
+Docker improvements
+
+CI/CD
+
+Mobile MVP
+
+Web landing page / dashboard
+
+ВАЖНО:Всегда использовать современные production-like решения.Не использовать outdated patterns.
 
 ВСЕГДА:
 
-* объясняй flow
-* объясняй architecture decisions
-* объясняй why this approach is used
-* объясняй tradeoffs
-* объясняй production best practices
+объясняй flow
 
+объясняй architecture decisions
+
+объясняй why this approach is used
+
+объясняй tradeoffs
+
+объясняй production best practices
 
 Следующий шаг roadmap:
-создать database models для:
 
-* expenses
-* budgets
-* goals
+Supabase JWT Auth:
+
+replace temporary X-User-Id header
+
+use Authorization: Bearer <supabase_jwt>
+
+verify JWT on backend
+
+resolve CurrentUser from token.sub
+
+keep routers using Depends(get_current_user)
+
+update auth tests
 
 Потом:
 
-* Alembic migrations
-* PostgreSQL integration
-* replace in-memory repositories with DB repositories
+Receipts module
 
-Потом:
+OCR module
 
-* Auth module
-* Receipts module
-* OCR module
-* Categorization rules
-* Docker
-* CI/CD
+Categorization rules
+
+Docker improvements
+
+CI/CD
+
+Mobile MVP
+
+Web landing page / dashboard
 
 ⚠️ Notes:
 
-- OCR is **not perfect**
-- Errors are common
-- User confirmation is required
+OCR is not perfect
 
----
+Errors are common
 
-# ❗ Barcode / QR Code on Receipts
+User confirmation is required
+
+❗ Barcode / QR Code on Receipts
 
 📌 Important clarification:
 
-Most receipt barcodes or QR codes **DO NOT contain full purchase details**.
+Most receipt barcodes or QR codes DO NOT contain full purchase details.
 
-### They usually contain:
-- receipt ID  
-- date/time  
-- total amount  
-- tax data  
+They usually contain:
 
-### They usually do NOT contain:
-- ❌ list of items  
-- ❌ categories  
+receipt ID
 
-👉 **Conclusion:**  
-The correct approach is:
+date/time
 
-> OCR + user confirmation
+total amount
 
----
+tax data
 
-# 🎯 MVP Goal (Version 0.1)
+They usually do NOT contain:
+
+❌ list of items
+
+❌ categories
+
+👉 Conclusion:The correct approach is:
+
+OCR + user confirmation
+
+🎯 MVP Goal (Version 0.1)
 
 Answer 3 key questions:
 
-1. 💸 How much did I spend this month?  
-2. 🧾 What did I spend money on?  
-3. 🚨 Where did I exceed my limits?  
+💸 How much did I spend this month?
 
----
+🧾 What did I spend money on?
 
-# 🚀 MVP Features (Version 0.1)
+🚨 Where did I exceed my limits?
 
-## 📱 Mobile App
+🚀 MVP Features (Version 0.1)
 
-### 🔐 1. Authentication
-- Sign up / Login via Supabase
+📱 Mobile App
 
----
+🔐 1. Authentication
 
-### ➕ 2. Add Expense (Manual)
+Sign up / Login via Supabase
+
+➕ 2. Add Expense (Manual)
 
 Fields:
-- date  
-- amount  
-- category  
-- description  
+
+expense_date
+
+amount
+
+category
+
+description
 
 Categories:
-- 🍔 Food  
-- 👕 Clothing  
-- 🚗 Transport  
-- ☕ Cafés  
-- 🏠 Home  
-- 💊 Health  
-- 📦 Subscriptions  
-- 🔄 Other  
 
----
+🍔 Food
 
-### 📋 3. Expense List
+👕 Clothing
 
-- View all expenses  
-- Filter by month  
-- Filter by category  
+🚗 Transport
 
----
+☕ Cafés
 
-### 📊 4. Dashboard
+🏠 Home
 
-- Total monthly spending  
-- Spending by category  
-- Basic charts  
+💊 Health
 
----
+📦 Subscriptions
 
-### 🚦 5. Budget Limits
+🔄 Other
 
-User defines monthly limits:
+📋 3. Expense List
 
-| Category | Limit |
-|----------|------|
-| Food | 400€ |
-| Cafés | 150€ |
+View all expenses
+
+Filter by month
+
+Filter by category
+
+📊 4. Dashboard
+
+Total monthly spending
+
+Spending by category
+
+Basic charts
+
+🚦 5. Budgets
+
+User defines budgets / monthly limits:
+
+Category
+
+Limit
+
+Food
+
+400€
+
+Cafés
+
+150€
 
 App shows:
-- current spending  
-- remaining budget  
-- exceeded limits  
 
----
+current spending
 
-### 🎯 6. Financial Goals
+remaining budget
+
+exceeded limits
+
+🎯 6. Financial Goals
 
 Fields:
-- goal name  
-- target amount  
-- deadline  
-- current progress  
+
+goal name
+
+target amount
+
+target_date
+
+current progress
 
 Calculations:
-- remaining amount  
-- required monthly savings  
 
----
+remaining amount
 
-### 🧠 7. Simple Strategy (No ML)
+required monthly savings
+
+🧠 7. Simple Strategy (No ML)
 
 Example:
 
-> Required: 150€/month  
-> Current: 100€/month  
-> Gap: 50€/month  
+Required: 150€/monthCurrent: 100€/monthGap: 50€/month
 
 👉 Suggestions:
-- reduce café spending  
-- cut subscriptions  
 
----
+reduce café spending
 
-# 🌐 Web App (Version 0.1)
+cut subscriptions
+
+🌐 Web App (Version 0.1)
 
 Simple landing page:
 
-- product description  
-- features  
-- benefits  
-- CTA buttons:
-  - 🚀 "Try Demo"  
-  - 📬 "Join Waitlist"  
+product description
 
----
+features
 
-# ⚙️ Backend (FastAPI)
+benefits
+
+CTA buttons:
+
+🚀 "Try Demo"
+
+📬 "Join Waitlist"
+
+⚙️ Backend (FastAPI)
 
 Main API endpoints:
 
-- `/auth`
-- `/expenses`
-- `/categories`
-- `/limits`
-- `/goals`
+/api/v1/expenses
 
----
+/api/v1/categories
 
-# 🗄 Database Structure
+/api/v1/budgets
 
-## 🧾 Table: `expenses`
+/api/v1/goals
 
-- id  
-- user_id  
-- date  
-- amount  
-- category  
-- description  
-- created_at  
+/api/v1/analytics/monthly-summary?year=2026&month=7
 
----
+/api/v1/analytics/category-summary
 
-## 🚦 Table: `limits`
+/api/v1/analytics/budget-status
 
-- id  
-- user_id  
-- category  
-- monthly_limit  
+/api/v1/analytics/goal-progress
 
----
+Temporary authentication:
 
-## 🎯 Table: `goals`
+X-User-Id: <uuid>
 
-- id  
-- user_id  
-- name  
-- target_amount  
-- current_amount  
-- deadline  
+Production authentication target:
 
----
+Authorization: Bearer <supabase_jwt>
 
-# 📁 Project Test Structure
-valor/
-│
-├── quality/
-│   ├── README.md
-│   │
-│   ├── functional/
-│   │   ├── api/
-│   │   │   ├── postman/
-│   │   │   ├── pytest/
-│   │   │   └── contract/
-│   │   │
-│   │   ├── web/
-│   │   │   ├── playwright/
-│   │   │   └── e2e/
-│   │   │
-│   │   └── mobile/
-│   │       ├── detox/
-│   │       └── e2e/
-│   │
-│   ├── non-functional/
-│   │   ├── performance/
-│   │   │   ├── k6/
-│   │   │   └── reports/
-│   │   │
-│   │   ├── security/
-│   │   │   ├── zap/
-│   │   │   ├── dependency-scan/
-│   │   │   └── reports/
-│   │   │
-│   │   ├── accessibility/
-│   │   │   ├── axe/
-│   │   │   └── reports/
-│   │   │
-│   │   └── reliability/
-│   │       ├── smoke/
-│   │       └── health-checks/
-│   │
-│   ├── test-data/
-│   │   ├── users.json
-│   │   ├── expenses.json
-│   │   ├── goals.json
-│   │   └── receipts/
-│   │
-│   ├── test-plans/
-│   │   ├── mvp-test-plan.md
-│   │   ├── regression-test-plan.md
-│   │   └── release-checklist.md
-│   │
-│   └── reports/
-│       ├── functional/
-│       ├── performance/
-│       ├── security/
-│       └── accessibility/
+Important:
 
-API tests:          pytest + httpx
-Contract tests:     Pact / Schemathesis
-Web E2E:            Playwright
-Mobile E2E:         Detox
-Unit tests web:     Vitest
-Unit tests mobile:  Jest
-Backend tests:      pytest
-Performance:        k6
-Security:           OWASP ZAP
-Accessibility:      axe-core / Playwright axe
-Linting:            ESLint + Ruff
-Formatting:         Prettier + Black
-CI/CD:              GitHub Actions
----
+There is no production /auth backend API yet.
 
-# 🧱 Development Plan
+Supabase Auth will handle sign up / login.
 
-## 🚀 Phase 1 — MVP
+Backend will verify JWT and resolve CurrentUser.
 
-- [ ] Setup Supabase (DB + Auth)  
-- [ ] Build FastAPI backend  
-- [ ] Implement Expenses API  
-- [ ] Build mobile app:
-  - add expense  
-  - list expenses  
-- [ ] Create dashboard  
-- [ ] Add budget limits  
-- [ ] Add financial goals  
+🗄 Database Structure
 
----
+🧾 Table: expenses
 
-## 📸 Phase 2 — OCR
+id: UUID
 
-- [ ] Upload receipt image  
-- [ ] Integrate OCR API  
-- [ ] Extract text  
-- [ ] Detect amount  
-- [ ] User confirmation  
+user_id: UUID
 
----
+category_id: UUID | null
 
-## 🗂 Phase 3 — Categorization
+title
+
+amount
+
+currency
+
+expense_date
+
+description
+
+source
+
+created_at
+
+updated_at
+
+🏷 Table: categories
+
+id: UUID
+
+user_id: UUID
+
+name
+
+color
+
+icon
+
+is_default
+
+created_at
+
+updated_at
+
+Constraint:
+
+unique user category name: user_id + name
+
+🚦 Table: budgets
+
+id: UUID
+
+user_id: UUID
+
+category_id: UUID | null
+
+name
+
+limit_amount
+
+currency
+
+period: weekly / monthly / yearly
+
+start_date
+
+end_date
+
+created_at
+
+updated_at
+
+Constraint:
+
+unique budget definition: user_id + name + period + start_date
+
+🎯 Table: goals
+
+id: UUID
+
+user_id: UUID
+
+name
+
+target_amount
+
+current_amount
+
+currency
+
+target_date
+
+status: active / completed / archived
+
+created_at
+
+updated_at
+
+📁 Project Test Structure# 📁 Project Test Structure
+
+valor/│├── quality/│   ├── README.md│   ││   ├── functional/│   │   ├── api/│   │   │   ├── postman/│   │   │   ├── pytest/│   │   │   └── contract/│   │   ││   │   ├── web/│   │   │   ├── playwright/│   │   │   └── e2e/│   │   ││   │   └── mobile/│   │       ├── detox/│   │       └── e2e/│   ││   ├── non-functional/│   │   ├── performance/│   │   │   ├── k6/│   │   │   └── reports/│   │   ││   │   ├── security/│   │   │   ├── zap/│   │   │   ├── dependency-scan/│   │   │   └── reports/│   │   ││   │   ├── accessibility/│   │   │   ├── axe/│   │   │   └── reports/│   │   ││   │   └── reliability/│   │       ├── smoke/│   │       └── health-checks/│   ││   ├── test-data/│   │   ├── users.json│   │   ├── expenses.json│   │   ├── goals.json│   │   └── receipts/│   ││   ├── test-plans/│   │   ├── mvp-test-plan.md│   │   ├── regression-test-plan.md│   │   └── release-checklist.md│   ││   └── reports/│       ├── functional/│       ├── performance/│       ├── security/│       └── accessibility/
+
+🧱 Development Plan
+
+🚀 Phase 1 — Backend MVP
+
+Build FastAPI backend
+
+Add health/root endpoints
+
+Add PostgreSQL integration
+
+Add SQLAlchemy models
+
+Add Alembic migrations
+
+Replace in-memory repositories with database repositories
+
+Implement Expenses CRUD API
+
+Implement Categories CRUD API
+
+Implement Budgets CRUD API
+
+Implement Goals CRUD API
+
+Implement Analytics API
+
+Add monthly summary filter by year/month
+
+Add unit tests
+
+Add integration tests
+
+Replace temporary X-User-Id auth with Supabase JWT Auth
+
+📱 Phase 1.5 — Mobile MVP
+
+Sign up / login via Supabase
+
+Add expense manually
+
+List expenses
+
+Edit expense
+
+Delete expense
+
+Filter expenses by month
+
+Show dashboard summary
+
+Show category summary
+
+Show budget status
+
+Show goal progress
+
+🌐 Phase 1.6 — Web MVP
+
+Landing page
+
+Product description
+
+Features
+
+Benefits
+
+CTA buttons
+
+Optional dashboard later
+
+📸 Phase 2 — OCR
+
+Upload receipt image
+
+Save receipt metadata
+
+Integrate OCR API
+
+Extract text
+
+Detect amount
+
+Detect date
+
+Detect merchant
+
+User confirmation before creating expense
+
+🗂 Phase 3 — Categorization
 
 Rule-based system:
 
-- Lidl, Aldi → Food  
-- Zara → Clothing  
-- Shell → Transport  
-- Starbucks → Cafés  
+Lidl, Aldi → Food
 
----
+Zara → Clothing
 
-## 📊 Phase 4 — Analytics
+Shell → Transport
 
-- charts  
-- monthly comparison  
-- category growth  
-- top expenses  
+Starbucks → Cafés
 
----
+📊 Phase 4 — Analytics
 
-## 📅 Phase 5 — Planning
+charts
 
-- spending forecast  
-- scenario simulation:
-  - reduce expenses  
-  - increase income  
-  - adjust goal timeline  
+monthly comparison
 
----
+category growth
 
-# 🧠 Long-Term Roadmap
+top expenses
 
-## 🟢 Version 1.0
-- full web dashboard  
-- authentication system  
-- cloud storage  
+📅 Phase 5 — Planning
 
-## 🟡 Version 1.5
-- improved OCR  
-- item-level recognition  
+spending forecast
 
-## 🔵 Version 2.0 (ML)
-- expense prediction  
-- smart recommendations  
-- behavior analysis  
+scenario simulation:
 
-## 🟣 Version 3.0
-- AI financial assistant  
-- automatic strategy generation  
+reduce expenses
 
----
+increase income
 
-# ⚠️ Core Principle
+adjust goal timeline
+
+🧠 Long-Term Roadmap# 🧠 Long-Term Roadmap
+
+🟢 Version 1.0
+
+full web dashboard
+
+authentication system
+
+cloud storage
+
+🟡 Version 1.5
+
+improved OCR
+
+item-level recognition
+
+🔵 Version 2.0 (ML)
+
+expense prediction
+
+smart recommendations
+
+behavior analysis
+
+🟣 Version 3.0
+
+AI financial assistant
+
+automatic strategy generation
+
+⚠️ Core Principle
 
 Backend Roadmap — Valor API
+
 Текущее состояние
 
 Сейчас сделано:
 
 FastAPI backend запускается
+
 /health работает
+
 Swagger docs открывается
+
+PostgreSQL подключён
+
+Alembic migrations применены
+
+SQLAlchemy models созданы
+
+CRUD реализован для categories, expenses, budgets, goals
+
+Analytics реализована
+
+Monthly summary фильтруется по year и month
+
+Данные фильтруются по authenticated user_id
+
+Временная авторизация работает через X-User-Id
+
+Unit tests зелёные
+
+Integration tests зелёные
 
 Это значит:
 
-сервер живой
-структура app/main.py работает
-проект готов к первому бизнес-модулю
+backend core готов
 
-Но реальной бизнес-логики пока нет.
+структура router → service → repository → model → PostgreSQL работает
+
+проект готов к следующему production-like шагу: Supabase JWT Auth
 
 Главная backend-цель
 
-Сделать API, которое позволит мобильному и веб-приложению работать с данными пользователя:
+Сделать API, которое позволит мобильному и веб-приложению безопасно работать с данными пользователя:
 
 расходы
+
 категории
-лимиты
+
+бюджеты
+
 цели
+
 аналитика
+
 пользователи
+
 авторизация
+
 чеки
+
 Backend architecture
 
 Мы используем структуру:
 
-router.py       → принимает HTTP-запросы
-schemas.py      → проверяет входные/выходные данные
-service.py      → содержит бизнес-логику
-repository.py   → работает с хранением данных
-models.py       → описывает таблицы базы данных
+router.py / *_router.py       → принимает HTTP-запросыschemas.py / *_schemas.py     → проверяет входные/выходные данныеservice.py / *_service.py     → содержит бизнес-логикуrepository.py / *_repository.py → работает с PostgreSQL через SQLAlchemymodels.py / *_models.py       → описывает таблицы базы данныхerrors.py / *_errors.py       → описывает module-level ошибки
+
 Почему так
 
 Чтобы код не превратился в кашу.
 
-router не должен считать
-service не должен знать детали SQL
-repository не должен решать бизнес-правила
-schemas не должны хранить данные
+router не должен считать бизнес-логикуservice не должен знать детали HTTPrepository не должен возвращать HTTPExceptionschemas не должны ходить в базуmodels не должны содержать API-логику
+
 Этап 1 — Expenses module
 
-Это первый настоящий backend-модуль.
+Статус: ГОТОВО
 
-Зачем
+Что реализовано:
 
-Расходы — это основа всего приложения.
-
-Без расходов нет:
-
-статистики
-лимитов
-целей
-аналитики
-OCR
-ML
-1.1 schemas.py — уже начали
-Что делает
-
-Описывает структуру данных расходов.
-
-Зачем
-
-Backend должен понимать:
-
-какие данные принимать
-какие данные запрещать
-что возвращать обратно
-Статус
-ExpenseBase
 ExpenseCreate
+
+ExpenseUpdate
+
 ExpenseResponse
 
-готово или почти готово.
-
-1.2 repository.py — следующий шаг
-Что делает
-
-Хранит расходы.
-
-На первом этапе:
-
-in-memory list
-
-То есть данные будут жить только пока работает сервер.
-
-Зачем
-
-Чтобы сначала проверить бизнес-логику без базы данных.
-
-Функции
 create_expense()
+
 get_expenses()
+
 get_expense_by_id()
 
-Для MVP сначала:
+update_expense()
 
-create_expense()
-get_expenses()
+delete_expense()
+
+POST /expenses
+
+GET /expenses
+
+PATCH /expenses/{expense_id}
+
+DELETE /expenses/{expense_id}
+
+ownership check by expense_id + user_id
+
+unit tests
+
+integration tests
+
 Definition of Done
+
 расход можно сохранить
+
 список расходов можно получить
-id создаётся автоматически
-created_at создаётся автоматически
-1.3 service.py
-Что делает
 
-Содержит бизнес-логику расходов.
+расход можно обновить
 
-Зачем
+расход можно удалить
 
-Все правила продукта должны быть здесь.
+чужой расход нельзя обновить или удалить
 
-Примеры правил
-amount должен быть больше 0
-category не должна быть пустой
-date обязательна
-Функции
-create_expense()
-get_expenses()
-Definition of Done
-service вызывает repository
-service не содержит HTTP-кода
-service можно тестировать отдельно
-1.4 router.py
-Что делает
+тесты проходят
 
-Создаёт API endpoints.
-
-Зачем
-
-Чтобы frontend мог обращаться к backend.
-
-Endpoints
-POST /expenses
-GET /expenses
-Definition of Done
-POST /expenses появляется в /docs
-GET /expenses появляется в /docs
-можно создать расход через Swagger
-можно получить расходы через Swagger
-1.5 Подключить router в main.py
-Что делает
-
-Регистрирует expenses API внутри FastAPI-приложения.
-
-Зачем
-
-Без этого backend не увидит /expenses.
-
-Definition of Done
-/health работает
-/expenses работает
-/docs показывает expenses endpoints
-1.6 Manual testing через Swagger
-Что делаем
-
-Открываем:
-
-http://127.0.0.1:8000/docs
-
-Проверяем:
-
-POST /expenses
-GET /expenses
-Definition of Done
-создали расход
-получили список расходов
-ошибка работает при amount <= 0
-1.7 Backend tests для Expenses
-Что делаем
-
-Создаём тесты.
-
-Зачем
-
-Чтобы при изменениях не ломать старую логику.
-
-Минимальные тесты
-test_create_expense_success
-test_create_expense_invalid_amount
-test_get_expenses_success
-Definition of Done
-pytest проходит без ошибок
-основная логика покрыта тестами
 Этап 2 — Categories module
-Зачем
 
-Категории нужны, чтобы расходы не были хаотичными строками.
+Статус: ГОТОВО
 
-Например:
+Что реализовано:
 
-food
-clothing
-car
-cafe
-home
-health
-subscriptions
-other
-Функции
+CategoryCreate
+
+CategoryUpdate
+
+CategoryResponse
+
 create_category()
+
 get_categories()
+
+get_category_by_id()
+
 update_category()
+
 delete_category()
 
-Для MVP:
+POST /categories
 
-get_categories()
+GET /categories
 
-Можно начать с фиксированного списка категорий.
+PATCH /categories/{category_id}
 
-Почему не сразу база
+DELETE /categories/{category_id}
 
-Пока достаточно константного списка.
+unique constraint: user_id + name
 
-Позже категории будут пользовательскими.
+ownership check by category_id + user_id
 
-Этап 3 — Budgets / Limits module
-Зачем
+unit tests
 
-Пользователь должен задавать лимит на категорию.
+integration tests
 
-Пример:
+Этап 3 — Budgets module
 
-food → 400 EUR per month
-cafe → 150 EUR per month
-Функции
-create_budget_limit()
-get_budget_limits()
-update_budget_limit()
-delete_budget_limit()
-Бизнес-логика
-limit должен быть больше 0
-category должна существовать
-одна категория не должна иметь два лимита на один месяц
-Definition of Done
-можно создать лимит
-можно получить лимиты
-можно сравнить расходы с лимитом позже в analytics
+Статус: ГОТОВО
+
+Важно:
+
+Используем термин budgets, не limits.
+
+Что реализовано:
+
+BudgetCreate
+
+BudgetUpdate
+
+BudgetResponse
+
+create_budget()
+
+get_budgets()
+
+get_budget_by_id()
+
+update_budget()
+
+delete_budget()
+
+POST /budgets
+
+GET /budgets
+
+PATCH /budgets/{budget_id}
+
+DELETE /budgets/{budget_id}
+
+unique constraint: user_id + name + period + start_date
+
+ownership check by budget_id + user_id
+
+unit tests
+
+integration tests
+
 Этап 4 — Goals module
-Зачем
 
-Финансовые цели — одна из ключевых идей Valor.
+Статус: ГОТОВО
 
-Пример:
+Что реализовано:
 
-Vacation
-Target: 2000 EUR
-Current: 500 EUR
-Deadline: 2026-12-31
-Функции
+GoalCreate
+
+GoalUpdate
+
+GoalResponse
+
 create_goal()
+
 get_goals()
+
+get_goal_by_id()
+
 update_goal()
+
 delete_goal()
-calculate_required_monthly_saving()
-Бизнес-логика
-target_amount > 0
-current_amount >= 0
-deadline должна быть в будущем
-Definition of Done
-можно создать цель
-можно получить цели
-backend считает сколько нужно откладывать в месяц
+
+POST /goals
+
+GET /goals
+
+PATCH /goals/{goal_id}
+
+DELETE /goals/{goal_id}
+
+validation: current_amount <= target_amount
+
+ownership check by goal_id + user_id
+
+unit tests
+
+integration tests
+
 Этап 5 — Analytics module
-Зачем
 
-Analytics превращает сырые расходы в полезную информацию.
+Статус: ГОТОВО ДЛЯ MVP
 
-Функции
-get_monthly_summary()
+Функции:
+
+get_monthly_summary(year, month)
+
 get_category_summary()
+
 get_budget_status()
+
 get_goal_progress()
-Что считает
-общие расходы за месяц
+
+Что считает:
+
+общие расходы за выбранный месяц
+
 расходы по категориям
-превышение лимитов
+
+превышение бюджета
+
 прогресс по целям
-Пример
-Total spent: 1200 EUR
-Food: 400 EUR
-Cafe: 160 EUR
-Cafe limit exceeded by 10 EUR
+
+Endpoints:
+
+GET /analytics/monthly-summary?year=2026&month=7
+
+GET /analytics/category-summary
+
+GET /analytics/budget-status
+
+GET /analytics/goal-progress
+
 Definition of Done
+
 backend возвращает готовую статистику
+
 frontend не считает сложную бизнес-логику сам
+
+расходы другого пользователя не попадают в аналитику
+
+monthly summary считает только выбранный месяц
+
 Этап 6 — Database integration
-Зачем
 
-In-memory storage временный.
+Статус: ГОТОВО
 
-После перезапуска сервера данные исчезают.
+Что сделано:
 
-Нужна настоящая база:
+database connection
 
-PostgreSQL через Supabase
-Что делаем
-SQLAlchemy models
 database session
-migrations
-repositories using database
-Порядок
-1. настроить database connection
-2. создать models.py
-3. создать migrations
-4. заменить in-memory repository на database repository
-5. проверить старые endpoints
+
+database model registry
+
+SQLAlchemy models
+
+Alembic migrations
+
+PostgreSQL repositories
+
+in-memory repositories removed
+
 Важно
 
-Service logic не должна сильно измениться.
-
-Меняем только repository.
+Service logic почти не должна меняться при смене хранения данных.Меняется в основном repository layer.
 
 Этап 7 — Auth module
-Зачем
 
-Каждый пользователь должен видеть только свои данные.
+Статус: ВРЕМЕННО ГОТОВО / PRODUCTION AUTH ЕЩЁ НЕ ГОТОВ
 
-Что добавляем
-register
-login
-get current user
-JWT / Supabase Auth
-После auth все данные получают user_id
-expenses.user_id
-budgets.user_id
-goals.user_id
-Definition of Done
-пользователь может зарегистрироваться
-пользователь может войти
-пользователь видит только свои расходы
+Сейчас:
+
+X-User-Id header
+
+get_current_user() dependency
+
+CurrentUser(id=...)
+
+Следующий шаг:
+
+Supabase JWT verification
+
+Authorization: Bearer <jwt>
+
+user id берётся из JWT sub
+
+Definition of Done для production auth
+
+backend проверяет JWT
+
+пользователь не может подставить чужой user_id
+
+routers продолжают использовать Depends(get_current_user)
+
+tests обновлены под новый auth flow
+
 Этап 8 — Receipts module
+
+Статус: НЕ НАЧАТО
+
 Зачем
 
-Пользователь будет загружать чек.
-
-Система позже сможет создавать расход на основе чека.
+Пользователь будет загружать чек.Система позже сможет создавать расход на основе чека.
 
 Функции
+
 upload_receipt()
+
 get_receipts()
+
 extract_text_from_receipt()
+
 connect_receipt_to_expense()
+
 На первом этапе
 
-Без OCR-магии.
-
 upload image
+
 save receipt metadata
+
 manual confirmation
+
 Этап 9 — OCR module
+
+Статус: НЕ НАЧАТО
+
 Зачем
 
 OCR нужен, чтобы читать текст с фото чека.
 
 Что делает
+
 получает изображение
+
 извлекает текст
+
 пытается найти сумму
+
 пытается найти дату
+
 пытается найти магазин
+
 Важно
 
 OCR не должен автоматически всё сохранять.
 
 Правильно:
 
-OCR предлагает данные
-пользователь подтверждает
-backend сохраняет расход
+OCR предлагает данныепользователь подтверждаетbackend сохраняет расход
+
 Этап 10 — Rule-based categorization
+
+Статус: НЕ НАЧАТО
+
 Зачем
 
 До ML делаем простые правила.
 
 Пример:
 
-Lidl → food
-Aldi → food
-Shell → car
-Zara → clothing
-Starbucks → cafe
+Lidl → Food
+
+Aldi → Food
+
+Shell → Transport
+
+Zara → Clothing
+
+Starbucks → Cafés
+
 Функции
+
 suggest_category_by_merchant()
+
 create_merchant_rule()
+
 get_merchant_rules()
+
 Почему не ML
 
 Пока нет данных.
@@ -958,130 +1299,153 @@ get_merchant_rules()
 ML без данных — бессмысленно.
 
 Этап 11 — Advanced tests
-Что добавляем
+
+Статус: ЧАСТИЧНО ГОТОВО
+
+Сейчас готово:
+
 unit tests
+
 integration tests
+
+Позже добавить:
+
 API tests
+
 contract tests
+
 security checks
+
 performance checks
+
 Инструменты
+
 pytest
+
 httpx
+
 Playwright later
+
 k6 later
+
 OWASP ZAP later
+
 Этап 12 — Docker
+
+Статус: НЕ ЗАКРЫТО
+
 Зачем
 
 Чтобы backend запускался одинаково на любом компьютере.
 
 Что делаем
+
 Dockerfile
+
 docker-compose.yml
+
 local PostgreSQL
+
 environment variables
+
 Definition of Done
+
 docker-compose up запускает backend
+
 database подключается
+
 tests проходят
+
 Этап 13 — CI/CD
+
+Статус: НЕ НАЧАТО
+
 Зачем
 
 GitHub должен автоматически проверять код.
 
 Что делает CI
+
 install dependencies
+
 run lint
+
 run tests
+
 check formatting
+
 build project
+
 Definition of Done
+
 каждый pull request автоматически проверяется
+
 сломанный код не попадает в main
+
 Общий порядок разработки backend
-1. Health check
-2. Expenses schemas
-3. Expenses repository
-4. Expenses service
-5. Expenses router
-6. Connect expenses router
-7. Manual API testing
-8. Expenses tests
-9. Categories
-10. Budgets / Limits
-11. Goals
-12. Analytics
-13. Database
-14. Auth
-15. Receipts
-16. OCR
-17. Categorization rules
-18. Advanced tests
-19. Docker
-20. CI/CD
+
+Health check — done
+
+Expenses schemas — done
+
+Expenses repository — done
+
+Expenses service — done
+
+Expenses router — done
+
+Connect expenses router — done
+
+Manual API testing — done
+
+Expenses tests — done
+
+Categories — done
+
+Budgets — done
+
+Goals — done
+
+Analytics — done
+
+Database — done
+
+Temporary Auth — done
+
+Supabase JWT Auth — next
+
+Receipts
+
+OCR
+
+Categorization rules
+
+Advanced tests
+
+Docker
+
+CI/CD
+
 Что делать прямо сейчас
 
 Следующий конкретный шаг:
 
-создать repository.py для Expenses
+заменить временную авторизацию X-User-Id на Supabase JWT Auth.
 
 Файл:
 
-services/api/app/modules/expenses/repository.py
+services/api/app/modules/auth/auth_dependencies.py
 
 Задача:
 
-временно хранить расходы в памяти
-создавать expense
-возвращать список expenses
+читать Authorization: Bearer <jwt>
+
+проверять Supabase JWT
+
+доставать user_id из token subject
+
+возвращать CurrentUser(id=...)
+
 Commit strategy
 
 После каждого логического шага делаем commit.
-
-Примеры
-
-После schemas:
-
-feat: add expense schemas
-
-После repository:
-
-feat: add in-memory expense repository
-
-После service:
-
-feat: add expense service layer
-
-После router:
-
-feat: add expense API endpoints
-
-После tests:
-
-test: add expense module tests
-Правила кода
-
-Всегда используем:
-
-SOLID
-DRY
-KISS
-YAGNI
-Clean Architecture
-Separation of Concerns
-Single Responsibility
-Readable Code First
-Важно
-
-Перед каждой функцией пишем комментарий на английском:
-
-What this function does
-Why this function exists
-Parameters
-Returns
-Как ты можешь мне напоминать
-
-Когда вернёмся к backend, просто напиши:
-
-Продолжаем backend roadmap Valor. Мы остановились на Expenses repository.py.
