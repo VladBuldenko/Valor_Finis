@@ -146,3 +146,35 @@ def create_goal(
     assert response.status_code == 201, response.text
 
     return response.json()
+
+
+# Creates a receipt through the API for integration tests.
+# This helper exists to avoid repeating receipt creation request code.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier as string.
+# - payload: optional custom receipt creation payload.
+# Returns:
+# - Created receipt response body.
+def create_receipt(
+    client: TestClient,
+    user_id: str,
+    payload: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    request_payload = (
+        payload
+        if payload is not None
+        else {
+            "storage_path": f"receipts/{user_id}/receipt-1.jpg",
+        }
+    )
+
+    response = client.post(
+        "/api/v1/receipts",
+        json=request_payload,
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 201, response.text
+
+    return response.json()

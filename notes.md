@@ -1449,3 +1449,16 @@ services/api/app/modules/auth/auth_dependencies.py
 Commit strategy
 
 После каждого логического шага делаем commit.
+
+1. Finish receipts integration tests
+2. Finish receipts unit tests
+3. Add receipt file upload
+4. Add OCR service foundation
+5. Add OCR parsing
+6. Add confirm receipt -> expense flow
+7. Add category rules module
+8. Harden production auth
+9. Polish API consistency
+10. Add Docker backend flow
+11. Add CI
+12. Update final docs
