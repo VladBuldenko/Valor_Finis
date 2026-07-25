@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.modules.expenses.expenses_router import router as expenses_router
+from app.modules.receipts.receipt_router import router as receipts_router
 from app.modules.categories.router import router as categories_router
 from app.modules.budgets.budget_router import router as budgets_router
 from app.modules.goals.goal_router import router as goals_router
@@ -17,6 +18,7 @@ app = FastAPI(
 
 
 app.include_router(expenses_router, prefix="/api/v1")
+app.include_router(receipts_router, prefix="/api/v1")
 app.include_router(categories_router, prefix="/api/v1")
 app.include_router(budgets_router, prefix="/api/v1")
 app.include_router(goals_router, prefix="/api/v1")

@@ -26,10 +26,12 @@ def import_database_models() -> None:
     from app.modules.budgets.budgets_models import BudgetModel
     from app.modules.expenses.expenses_models import ExpenseModel
     from app.modules.goals.goal_models import GoalModel
+    from app.modules.receipts.receipt_models import ReceiptModel
 
     _ = (
         CategoryModel,
         BudgetModel,
         ExpenseModel,
         GoalModel,
+        ReceiptModel,
     )

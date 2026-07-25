@@ -5,10 +5,8 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.app_config import settings
 from app.db.database_base import Base
-from app.modules.budgets.budgets_models import BudgetModel
-from app.modules.expenses.expenses_models import ExpenseModel
-from app.modules.goals.goal_models import GoalModel
-from app.modules.categories.category_models import CategoryModel
+from app.db.database_models import import_database_models
+
 
 config = context.config
 
@@ -18,6 +16,9 @@ if config.config_file_name is not None:
 
 
 config.set_main_option("sqlalchemy.url", settings.database_url)
+
+
+import_database_models()
 
 
 target_metadata = Base.metadata
