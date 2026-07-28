@@ -25,3 +25,59 @@ class ReceiptExpenseNotFoundError(Exception):
     """
 
     pass
+
+class ReceiptFileEmptyError(Exception):
+    """
+    Raised when an uploaded receipt file contains no data.
+
+    What:
+        Represents an empty receipt upload.
+
+    Why:
+        Prevents the application from storing invalid zero-byte receipt files.
+    """
+
+    pass
+
+
+class ReceiptFileTypeNotAllowedError(Exception):
+    """
+    Raised when an uploaded receipt file type is not supported.
+
+    What:
+        Represents an unsupported receipt MIME type or file extension.
+
+    Why:
+        Prevents unsupported or potentially unsafe files from being stored.
+    """
+
+    pass
+
+
+class ReceiptFileTooLargeError(Exception):
+    """
+    Raised when an uploaded receipt file exceeds the configured size limit.
+
+    What:
+        Represents a receipt upload that is larger than the allowed maximum.
+
+    Why:
+        Protects the application from excessive storage and memory usage.
+    """
+
+    pass
+
+
+class ReceiptFileStorageError(Exception):
+    """
+    Raised when a receipt file storage operation fails.
+
+    What:
+        Represents an unexpected filesystem operation failure.
+
+    Why:
+        Allows storage failures to be handled without exposing
+        filesystem implementation details to the API layer.
+    """
+
+    pass
