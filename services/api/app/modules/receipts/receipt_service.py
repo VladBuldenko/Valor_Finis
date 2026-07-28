@@ -1,11 +1,18 @@
 import uuid
 
 from sqlalchemy.orm import Session
+from fastapi import UploadFile
 
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.expenses import expenses_repository
-from app.modules.receipts import receipt_repository
-from app.modules.receipts.receipt_errors import ReceiptExpenseNotFoundError
+from app.modules.receipts import (
+    receipt_repository,
+    receipt_storage_service,
+)
+from app.modules.receipts.receipt_errors import (
+    ReceiptExpenseNotFoundError,
+    ReceiptFileStorageError,
+)
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
     ReceiptCreate,
@@ -45,7 +52,44 @@ def create_receipt(
 
     return map_receipt_to_response(receipt)
 
+# Saves an uploaded receipt file and creates its database record.
+# This function exists to coordinate receipt file storage
+# and receipt metadata persistence.
+# Parameters:
+# - db_session: active SQLAlchemy session.
+# - uploaded_file: receipt file received through the API.
+# - user_id: authenticated user identifier.
+# Returns:
+# - ReceiptResponse containing the created receipt.
+def upload_receipt(
+    db_session: Session,
+    uploaded_file: UploadFile,
+    user_id: uuid.UUID,
+) -> ReceiptResponse:
+    storage_path = receipt_storage_service.save_receipt_file(
+        uploaded_file=uploaded_file,
+        user_id=user_id,
+    )
 
+    receipt_data = ReceiptCreate(
+        storage_path=storage_path,
+    )
+
+    try:
+        return create_receipt(
+            db_session=db_session,
+            receipt_data=receipt_data,
+            user_id=user_id,
+        )
+    except Exception:
+        try:
+            receipt_storage_service.delete_receipt_file(
+                storage_path=storage_path,
+            )
+        except ReceiptFileStorageError:
+            pass
+
+        raise
 # Returns all receipts owned by the authenticated user.
 # This function exists to expose user-scoped receipt data to the API layer.
 # Parameters:
