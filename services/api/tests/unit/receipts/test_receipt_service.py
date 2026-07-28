@@ -2,13 +2,18 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from typing import Optional
+from fastapi import UploadFile
 
 import pytest
 from sqlalchemy.orm import Session
 
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.receipts import receipt_service
-from app.modules.receipts.receipt_errors import ReceiptExpenseNotFoundError
+from app.modules.receipts.receipt_errors import (
+    ReceiptExpenseNotFoundError,
+    ReceiptFileStorageError,
+    ReceiptFileTooLargeError,
+)
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
     ReceiptCreate,
@@ -616,3 +621,228 @@ def test_delete_receipt(
         receipt_id=receipt_id,
         user_id=user_id,
     )
+
+
+# Verifies that an uploaded file is stored before its receipt record is created.
+# This test exists to confirm receipt upload orchestration and response forwarding.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace storage and creation dependencies.
+# Returns:
+# - None.
+def test_upload_receipt_saves_file_and_creates_receipt(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    storage_path = (
+        f"uploads/receipts/{user_id}/stored-receipt.jpg"
+    )
+
+    uploaded_file = MagicMock(spec=UploadFile)
+    expected_response = MagicMock(spec=ReceiptResponse)
+
+    save_receipt_file_mock = MagicMock(
+        return_value=storage_path,
+    )
+    create_receipt_mock = MagicMock(
+        return_value=expected_response,
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "save_receipt_file",
+        save_receipt_file_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "create_receipt",
+        create_receipt_mock,
+    )
+
+    result = receipt_service.upload_receipt(
+        db_session=db_session,
+        uploaded_file=uploaded_file,
+        user_id=user_id,
+    )
+
+    assert result is expected_response
+
+    save_receipt_file_mock.assert_called_once_with(
+        uploaded_file=uploaded_file,
+        user_id=user_id,
+    )
+
+    create_receipt_mock.assert_called_once()
+
+    create_call_arguments = create_receipt_mock.call_args.kwargs
+    receipt_data = create_call_arguments["receipt_data"]
+
+    assert create_call_arguments["db_session"] is db_session
+    assert create_call_arguments["user_id"] == user_id
+    assert isinstance(receipt_data, ReceiptCreate)
+    assert receipt_data.storage_path == storage_path
+    assert receipt_data.file_url is None
+
+
+# Verifies that a stored file is removed when receipt persistence fails.
+# This test exists to prevent files without matching database records.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace storage and creation dependencies.
+# Returns:
+# - None.
+def test_upload_receipt_removes_file_when_creation_fails(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    storage_path = (
+        f"uploads/receipts/{user_id}/stored-receipt.jpg"
+    )
+
+    uploaded_file = MagicMock(spec=UploadFile)
+    database_error = RuntimeError("Database operation failed.")
+
+    save_receipt_file_mock = MagicMock(
+        return_value=storage_path,
+    )
+    create_receipt_mock = MagicMock(
+        side_effect=database_error,
+    )
+    delete_receipt_file_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "save_receipt_file",
+        save_receipt_file_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "create_receipt",
+        create_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "delete_receipt_file",
+        delete_receipt_file_mock,
+    )
+
+    with pytest.raises(RuntimeError) as error_info:
+        receipt_service.upload_receipt(
+            db_session=db_session,
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    assert error_info.value is database_error
+
+    delete_receipt_file_mock.assert_called_once_with(
+        storage_path=storage_path,
+    )
+
+
+# Verifies that the original database error is preserved when cleanup also fails.
+# This test exists to ensure that cleanup failures do not hide the primary error.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace storage and creation dependencies.
+# Returns:
+# - None.
+def test_upload_receipt_preserves_creation_error_when_cleanup_fails(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    storage_path = (
+        f"uploads/receipts/{user_id}/stored-receipt.jpg"
+    )
+
+    uploaded_file = MagicMock(spec=UploadFile)
+    database_error = RuntimeError("Database operation failed.")
+
+    save_receipt_file_mock = MagicMock(
+        return_value=storage_path,
+    )
+    create_receipt_mock = MagicMock(
+        side_effect=database_error,
+    )
+    delete_receipt_file_mock = MagicMock(
+        side_effect=ReceiptFileStorageError(),
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "save_receipt_file",
+        save_receipt_file_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "create_receipt",
+        create_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "delete_receipt_file",
+        delete_receipt_file_mock,
+    )
+
+    with pytest.raises(RuntimeError) as error_info:
+        receipt_service.upload_receipt(
+            db_session=db_session,
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    assert error_info.value is database_error
+
+    delete_receipt_file_mock.assert_called_once_with(
+        storage_path=storage_path,
+    )
+
+
+# Verifies that database creation is skipped when file storage fails.
+# This test exists to prevent receipt records without stored files.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace storage dependencies.
+# Returns:
+# - None.
+def test_upload_receipt_stops_when_file_storage_fails(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    uploaded_file = MagicMock(spec=UploadFile)
+
+    save_receipt_file_mock = MagicMock(
+        side_effect=ReceiptFileTooLargeError(),
+    )
+    create_receipt_mock = MagicMock()
+    delete_receipt_file_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "save_receipt_file",
+        save_receipt_file_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "create_receipt",
+        create_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "delete_receipt_file",
+        delete_receipt_file_mock,
+    )
+
+    with pytest.raises(ReceiptFileTooLargeError):
+        receipt_service.upload_receipt(
+            db_session=db_session,
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    create_receipt_mock.assert_not_called()
+    delete_receipt_file_mock.assert_not_called()
