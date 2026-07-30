@@ -1,6 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -9,6 +16,10 @@ from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.receipts import receipt_service
 from app.modules.receipts.receipt_errors import (
     ReceiptExpenseNotFoundError,
+    ReceiptFileEmptyError,
+    ReceiptFileStorageError,
+    ReceiptFileTooLargeError,
+    ReceiptFileTypeNotAllowedError,
     ReceiptNotFoundError,
 )
 from app.modules.receipts.receipt_schemas import (
@@ -49,6 +60,56 @@ def create_receipt(
         user_id=current_user.id,
     )
 
+# Uploads a receipt file and creates its database record.
+# This function exists to receive multipart receipt uploads
+# and delegate validation, storage, and persistence to the service layer.
+# Parameters:
+# - file: uploaded receipt image or PDF.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - ReceiptResponse containing the created receipt.
+# Raises:
+# - HTTPException 422 when the uploaded file is empty.
+# - HTTPException 413 when the uploaded file exceeds the size limit.
+# - HTTPException 415 when the uploaded file type is unsupported.
+# - HTTPException 500 when the file cannot be stored.
+@router.post(
+    "/upload",
+    response_model=ReceiptResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_receipt(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> ReceiptResponse:
+    try:
+        return receipt_service.upload_receipt(
+            db_session=db_session,
+            uploaded_file=file,
+            user_id=current_user.id,
+        )
+    except ReceiptFileEmptyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Receipt file is empty.",
+        ) from error
+    except ReceiptFileTooLargeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Receipt file is too large.",
+        ) from error
+    except ReceiptFileTypeNotAllowedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Receipt file type is not supported.",
+        ) from error
+    except ReceiptFileStorageError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Receipt file could not be stored.",
+        ) from error
 
 # Returns all receipts owned by the authenticated user.
 # This function exists to expose user-scoped receipt data through the API.

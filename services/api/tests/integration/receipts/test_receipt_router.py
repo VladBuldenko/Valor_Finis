@@ -1,6 +1,12 @@
 from uuid import uuid4
+import uuid
 
 from fastapi.testclient import TestClient
+from pathlib import Path
+
+import pytest
+
+from app.modules.receipts import receipt_storage_service
 
 from tests.helpers import auth_headers, create_expense, create_receipt
 
@@ -373,3 +379,256 @@ def test_delete_receipt_endpoint_rejects_other_user_receipt(
     # Assert
     assert response.status_code == 404
     assert response.json()["detail"] == "Receipt not found."
+
+    # Verifies that an authenticated user can upload a valid PDF receipt.
+# This test exists to confirm PDF support in the receipt upload endpoint.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override storage configuration.
+# Returns:
+# - None.
+def test_upload_pdf_receipt(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+    file_content = b"%PDF-1.4 test receipt content"
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.pdf",
+                file_content,
+                "application/pdf",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 201, response.text
+
+    response_data = response.json()
+    stored_file_path = Path(response_data["storage_path"])
+
+    assert response_data["status"] == "uploaded"
+    assert stored_file_path.exists()
+    assert stored_file_path.suffix == ".pdf"
+    assert stored_file_path.read_bytes() == file_content
+
+# Verifies that an uploaded receipt is available through the receipt list endpoint.
+# This test exists to confirm that file upload also creates persistent metadata.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override storage configuration.
+# Returns:
+# - None.
+def test_uploaded_receipt_is_available_in_user_receipts(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.png",
+                b"valid-png-content",
+                "image/png",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    uploaded_receipt = upload_response.json()
+
+    list_response = client.get(
+        "/api/v1/receipts",
+        headers=auth_headers(user_id),
+    )
+
+    assert list_response.status_code == 200, list_response.text
+    assert list_response.json() == [uploaded_receipt]
+
+    # Verifies that receipt upload requires authentication.
+# This test exists to prevent anonymous users from storing receipt files.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_upload_receipt_rejects_missing_authentication(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"receipt-content",
+                "image/jpeg",
+            )
+        },
+    )
+
+    assert response.status_code == 401
+
+# Verifies that the MIME type must match the uploaded file extension.
+# This test exists to reject files disguised as supported receipt formats.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override storage configuration.
+# Returns:
+# - None.
+def test_upload_receipt_rejects_mismatched_file_type(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.png",
+                b"invalid-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 415
+    assert response.json() == {
+        "detail": "Receipt file type is not supported.",
+    }
+
+# Verifies that a zero-byte receipt file is rejected.
+# This test exists to prevent empty files from being stored or persisted.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override storage configuration.
+# Returns:
+# - None.
+def test_upload_receipt_rejects_empty_file(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Receipt file is empty.",
+    }
+
+    user_directory = tmp_path / user_id
+
+    assert user_directory.exists()
+    assert list(user_directory.iterdir()) == []
+
+# Verifies that receipt files exceeding the configured limit are rejected.
+# This test exists to enforce upload size restrictions without writing
+# large test files.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override storage configuration.
+# Returns:
+# - None.
+def test_upload_receipt_rejects_oversized_file(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_max_file_size_mb",
+        0,
+    )
+
+    response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"file-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "detail": "Receipt file is too large.",
+    }
+
+    user_directory = tmp_path / user_id
+
+    assert user_directory.exists()
+    assert list(user_directory.iterdir()) == []
