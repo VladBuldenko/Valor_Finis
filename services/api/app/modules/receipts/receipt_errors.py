@@ -81,3 +81,46 @@ class ReceiptFileStorageError(Exception):
     """
 
     pass
+
+class ReceiptProcessingNotAllowedError(Exception):
+    """
+    Raised when a receipt cannot be processed in its current state.
+
+    What:
+        Represents an invalid receipt status transition.
+
+    Why:
+        Prevents already processed, confirmed, or currently processing
+        receipts from starting OCR processing again.
+    """
+
+    pass
+
+
+class ReceiptOcrFileNotFoundError(Exception):
+    """
+    Raised when the stored receipt file cannot be found.
+
+    What:
+        Represents a missing receipt file required for OCR processing.
+
+    Why:
+        Prevents OCR processing from starting without an available source file.
+    """
+
+    pass
+
+
+class ReceiptOcrProcessingError(Exception):
+    """
+    Raised when OCR processing cannot extract usable text.
+
+    What:
+        Represents an OCR provider failure or an empty OCR result.
+
+    Why:
+        Allows the service and router layers to handle OCR failures
+        without exposing provider implementation details.
+    """
+
+    pass

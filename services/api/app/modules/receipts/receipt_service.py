@@ -6,12 +6,16 @@ from fastapi import UploadFile
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.expenses import expenses_repository
 from app.modules.receipts import (
+    receipt_ocr_service,
     receipt_repository,
     receipt_storage_service,
 )
 from app.modules.receipts.receipt_errors import (
     ReceiptExpenseNotFoundError,
     ReceiptFileStorageError,
+    ReceiptOcrFileNotFoundError,
+    ReceiptOcrProcessingError,
+    ReceiptProcessingNotAllowedError,
 )
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
@@ -20,7 +24,10 @@ from app.modules.receipts.receipt_schemas import (
     ReceiptUpdate,
 )
 
-
+PROCESSABLE_RECEIPT_STATUSES = (
+    "uploaded",
+    "failed",
+)
 # Converts a ReceiptModel instance into a ReceiptResponse schema.
 # This function exists to keep database models separated from API response schemas.
 # Parameters:
@@ -90,6 +97,78 @@ def upload_receipt(
             pass
 
         raise
+
+# Processes a stored receipt through the configured OCR provider.
+# This function exists to coordinate receipt status transitions,
+# OCR text extraction, and persistence of the processing result.
+# Parameters:
+# - db_session: active SQLAlchemy session.
+# - receipt_id: receipt identifier.
+# - user_id: authenticated user identifier.
+# Returns:
+# - ReceiptResponse containing the processed receipt.
+# Raises:
+# - ReceiptNotFoundError when the receipt does not belong to the user.
+# - ReceiptProcessingNotAllowedError when the current status cannot be processed.
+# - ReceiptOcrFileNotFoundError when no local receipt file is available.
+# - ReceiptOcrProcessingError when OCR processing fails.
+def process_receipt(
+    db_session: Session,
+    receipt_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> ReceiptResponse:
+    receipt = receipt_repository.get_receipt_by_id(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+    )
+
+    if receipt.status not in PROCESSABLE_RECEIPT_STATUSES:
+        raise ReceiptProcessingNotAllowedError()
+
+    if not receipt.storage_path:
+        raise ReceiptOcrFileNotFoundError()
+
+    receipt_repository.update_receipt(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        receipt_data=ReceiptUpdate(
+            status="processing",
+        ),
+        user_id=user_id,
+    )
+
+    try:
+        extracted_text = receipt_ocr_service.extract_receipt_text(
+            storage_path=receipt.storage_path,
+        )
+    except (
+        ReceiptOcrFileNotFoundError,
+        ReceiptOcrProcessingError,
+    ):
+        receipt_repository.update_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            receipt_data=ReceiptUpdate(
+                status="failed",
+            ),
+            user_id=user_id,
+        )
+
+        raise
+
+    processed_receipt = receipt_repository.update_receipt(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        receipt_data=ReceiptUpdate(
+            status="processed",
+            ocr_text=extracted_text,
+        ),
+        user_id=user_id,
+    )
+
+    return map_receipt_to_response(processed_receipt)
+
 # Returns all receipts owned by the authenticated user.
 # This function exists to expose user-scoped receipt data to the API layer.
 # Parameters:

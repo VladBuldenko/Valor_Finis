@@ -1,12 +1,16 @@
 from uuid import uuid4
 import uuid
-
+from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 from pathlib import Path
 
 import pytest
 
-from app.modules.receipts import receipt_storage_service
+from app.modules.receipts import (
+    receipt_ocr_service,
+    receipt_storage_service,
+)
+from app.modules.receipts.receipt_errors import ReceiptOcrProcessingError
 
 from tests.helpers import auth_headers, create_expense, create_receipt
 
@@ -632,3 +636,452 @@ def test_upload_receipt_rejects_oversized_file(
 
     assert user_directory.exists()
     assert list(user_directory.iterdir()) == []
+
+    # Verifies that an uploaded receipt can be processed through OCR.
+# This test exists to confirm the complete HTTP, service, OCR,
+# repository, and database processing flow.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to replace storage configuration
+#   and the external OCR provider.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_saves_ocr_result(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+    extracted_text = "\n  LIDL\nTOTAL 24.99 EUR  \n"
+    expected_text = "LIDL\nTOTAL 24.99 EUR"
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.return_value = extracted_text
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"receipt-image-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    uploaded_receipt = upload_response.json()
+
+    process_response = client.post(
+        f"/api/v1/receipts/{uploaded_receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert process_response.status_code == 200, process_response.text
+
+    processed_receipt = process_response.json()
+
+    assert processed_receipt["id"] == uploaded_receipt["id"]
+    assert processed_receipt["user_id"] == user_id
+    assert processed_receipt["status"] == "processed"
+    assert processed_receipt["ocr_text"] == expected_text
+
+    stored_response = client.get(
+        f"/api/v1/receipts/{uploaded_receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_response.status_code == 200, stored_response.text
+    assert stored_response.json()["status"] == "processed"
+    assert stored_response.json()["ocr_text"] == expected_text
+
+    ocr_provider_mock.extract_text.assert_called_once_with(
+        file_path=Path(uploaded_receipt["storage_path"]),
+    )
+
+
+# Verifies that receipt processing requires authentication.
+# This test exists to prevent anonymous users from starting OCR processing.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_rejects_missing_authentication(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Missing authentication credentials.",
+    }
+
+
+# Verifies that users cannot process another user's receipt.
+# This test exists to preserve user-level data isolation during OCR processing.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - monkeypatch: pytest fixture used to verify that OCR is not called.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_rejects_other_user_receipt(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+    other_user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=other_user_id,
+    )
+
+    ocr_provider_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Receipt not found.",
+    }
+
+    ocr_provider_mock.extract_text.assert_not_called()
+
+
+# Verifies that OCR cannot start for receipts in non-processable states.
+# This test exists to prevent invalid receipt processing transitions.
+# Parameters:
+# - receipt_status: current receipt processing status.
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to override test dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "receipt_status",
+    [
+        "processing",
+        "processed",
+        "confirmed",
+    ],
+)
+def test_process_receipt_endpoint_rejects_unprocessable_status(
+    receipt_status: str,
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    ocr_provider_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.png",
+                b"receipt-image-content",
+                "image/png",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    receipt = upload_response.json()
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": receipt_status,
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    process_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert process_response.status_code == 409
+    assert process_response.json() == {
+        "detail": "Receipt cannot be processed in its current status.",
+    }
+
+    ocr_provider_mock.extract_text.assert_not_called()
+
+
+# Verifies that processing fails when the physical receipt file is missing.
+# This test exists to confirm that missing stored files produce a failed
+# receipt status instead of leaving the receipt in processing.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used to create a missing file path.
+# - monkeypatch: pytest fixture used to verify that OCR is not called.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_marks_missing_file_as_failed(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+    missing_file_path = tmp_path / "missing-receipt.jpg"
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+        payload={
+            "storage_path": missing_file_path.as_posix(),
+        },
+    )
+
+    ocr_provider_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    process_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert process_response.status_code == 404
+    assert process_response.json() == {
+        "detail": "Receipt file not found.",
+    }
+
+    stored_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_response.status_code == 200, stored_response.text
+    assert stored_response.json()["status"] == "failed"
+    assert stored_response.json()["ocr_text"] is None
+
+    ocr_provider_mock.extract_text.assert_not_called()
+
+
+# Verifies that OCR provider errors produce a failed receipt status.
+# This test exists to confirm that provider failures are mapped
+# to an HTTP error and persisted as a failed processing result.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to replace the OCR provider.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_marks_ocr_error_as_failed(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.side_effect = ReceiptOcrProcessingError()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"receipt-image-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    receipt = upload_response.json()
+
+    process_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert process_response.status_code == 422
+    assert process_response.json() == {
+        "detail": "Receipt OCR processing failed.",
+    }
+
+    stored_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_response.status_code == 200, stored_response.text
+    assert stored_response.json()["status"] == "failed"
+    assert stored_response.json()["ocr_text"] is None
+
+    ocr_provider_mock.extract_text.assert_called_once()
+
+
+# Verifies that a failed receipt can be processed again successfully.
+# This test exists to confirm retry support after a temporary OCR failure.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to control OCR provider results.
+# Returns:
+# - None.
+def test_process_receipt_endpoint_retries_failed_receipt(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+    extracted_text = "\nREWE\nTOTAL 18.50 EUR\n"
+    expected_text = "REWE\nTOTAL 18.50 EUR"
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.side_effect = [
+        ReceiptOcrProcessingError(),
+        extracted_text,
+    ]
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"receipt-image-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    receipt = upload_response.json()
+
+    first_process_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert first_process_response.status_code == 422
+
+    failed_receipt_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert failed_receipt_response.status_code == 200
+    assert failed_receipt_response.json()["status"] == "failed"
+
+    retry_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert retry_response.status_code == 200, retry_response.text
+
+    retried_receipt = retry_response.json()
+
+    assert retried_receipt["status"] == "processed"
+    assert retried_receipt["ocr_text"] == expected_text
+
+    stored_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_response.status_code == 200
+    assert stored_response.json()["status"] == "processed"
+    assert stored_response.json()["ocr_text"] == expected_text
+
+    assert ocr_provider_mock.extract_text.call_count == 2

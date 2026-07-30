@@ -21,6 +21,9 @@ from app.modules.receipts.receipt_errors import (
     ReceiptFileTooLargeError,
     ReceiptFileTypeNotAllowedError,
     ReceiptNotFoundError,
+    ReceiptOcrFileNotFoundError,
+    ReceiptOcrProcessingError,
+    ReceiptProcessingNotAllowedError,
 )
 from app.modules.receipts.receipt_schemas import (
     ReceiptCreate,
@@ -109,6 +112,56 @@ def upload_receipt(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Receipt file could not be stored.",
+        ) from error
+
+# Processes an uploaded receipt through OCR.
+# This function exists to start receipt text extraction
+# and expose the processing result through the API.
+# Parameters:
+# - receipt_id: receipt identifier from the URL path.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - ReceiptResponse containing the processed receipt.
+# Raises:
+# - HTTPException 404 when the receipt or stored file cannot be found.
+# - HTTPException 409 when receipt processing is not allowed.
+# - HTTPException 422 when OCR processing fails.
+@router.post(
+    "/{receipt_id}/process",
+    response_model=ReceiptResponse,
+    status_code=status.HTTP_200_OK,
+)
+def process_receipt(
+    receipt_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> ReceiptResponse:
+    try:
+        return receipt_service.process_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=current_user.id,
+        )
+    except ReceiptNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Receipt not found.",
+        ) from error
+    except ReceiptOcrFileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Receipt file not found.",
+        ) from error
+    except ReceiptProcessingNotAllowedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Receipt cannot be processed in its current status.",
+        ) from error
+    except ReceiptOcrProcessingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Receipt OCR processing failed.",
         ) from error
 
 # Returns all receipts owned by the authenticated user.

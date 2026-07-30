@@ -13,6 +13,9 @@ from app.modules.receipts.receipt_errors import (
     ReceiptExpenseNotFoundError,
     ReceiptFileStorageError,
     ReceiptFileTooLargeError,
+    ReceiptOcrFileNotFoundError,
+    ReceiptOcrProcessingError,
+    ReceiptProcessingNotAllowedError,
 )
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
@@ -846,3 +849,375 @@ def test_upload_receipt_stops_when_file_storage_fails(
 
     create_receipt_mock.assert_not_called()
     delete_receipt_file_mock.assert_not_called()
+
+    # Verifies that an uploaded or previously failed receipt can be processed.
+# This test exists to confirm the complete successful OCR status flow.
+# Parameters:
+# - initial_status: receipt status before OCR processing starts.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        "uploaded",
+        "failed",
+    ],
+)
+def test_process_receipt_saves_processed_ocr_result(
+    initial_status: str,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+    storage_path = (
+        f"uploads/receipts/{user_id}/receipt.jpg"
+    )
+    extracted_text = "LIDL\nTOTAL 24.99 EUR"
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = initial_status
+    receipt.storage_path = storage_path
+
+    processed_receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    processed_receipt.status = "processed"
+    processed_receipt.storage_path = storage_path
+    processed_receipt.ocr_text = extracted_text
+
+    expected_response = ReceiptResponse.model_validate(
+        processed_receipt,
+    )
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    update_receipt_mock = MagicMock(
+        side_effect=[
+            receipt,
+            processed_receipt,
+        ],
+    )
+    extract_text_mock = MagicMock(
+        return_value=extracted_text,
+    )
+    map_receipt_mock = MagicMock(
+        return_value=expected_response,
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_ocr_service,
+        "extract_receipt_text",
+        extract_text_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        map_receipt_mock,
+    )
+
+    result = receipt_service.process_receipt(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+    )
+
+    assert result is expected_response
+
+    get_receipt_mock.assert_called_once_with(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+    )
+    extract_text_mock.assert_called_once_with(
+        storage_path=storage_path,
+    )
+
+    assert update_receipt_mock.call_count == 2
+
+    processing_call = update_receipt_mock.call_args_list[0]
+    processing_data = processing_call.kwargs["receipt_data"]
+
+    assert processing_call.kwargs["db_session"] is db_session
+    assert processing_call.kwargs["receipt_id"] == receipt_id
+    assert processing_call.kwargs["user_id"] == user_id
+    assert processing_data.model_dump(
+        exclude_unset=True,
+    ) == {
+        "status": "processing",
+    }
+
+    processed_call = update_receipt_mock.call_args_list[1]
+    processed_data = processed_call.kwargs["receipt_data"]
+
+    assert processed_data.model_dump(
+        exclude_unset=True,
+    ) == {
+        "status": "processed",
+        "ocr_text": extracted_text,
+    }
+
+    map_receipt_mock.assert_called_once_with(
+        processed_receipt,
+    )
+
+
+# Verifies that receipts in final or active processing states cannot start OCR.
+# This test exists to prevent invalid receipt status transitions.
+# Parameters:
+# - receipt_status: current receipt status.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "receipt_status",
+    [
+        "processing",
+        "processed",
+        "confirmed",
+    ],
+)
+def test_process_receipt_rejects_unprocessable_status(
+    receipt_status: str,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = receipt_status
+    receipt.storage_path = "uploads/receipts/receipt.jpg"
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    update_receipt_mock = MagicMock()
+    extract_text_mock = MagicMock()
+    map_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_ocr_service,
+        "extract_receipt_text",
+        extract_text_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        map_receipt_mock,
+    )
+
+    with pytest.raises(ReceiptProcessingNotAllowedError):
+        receipt_service.process_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+        )
+
+    update_receipt_mock.assert_not_called()
+    extract_text_mock.assert_not_called()
+    map_receipt_mock.assert_not_called()
+
+
+# Verifies that OCR processing requires a local storage path.
+# This test exists to prevent processing when the source receipt file
+# is not connected to the database record.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+def test_process_receipt_rejects_missing_storage_path(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "uploaded"
+    receipt.storage_path = None
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    update_receipt_mock = MagicMock()
+    extract_text_mock = MagicMock()
+    map_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_ocr_service,
+        "extract_receipt_text",
+        extract_text_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        map_receipt_mock,
+    )
+
+    with pytest.raises(ReceiptOcrFileNotFoundError):
+        receipt_service.process_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+        )
+
+    update_receipt_mock.assert_not_called()
+    extract_text_mock.assert_not_called()
+    map_receipt_mock.assert_not_called()
+
+
+# Verifies that OCR failures change the receipt status to failed.
+# This test exists to preserve an explicit failed processing state
+# when the file is missing or the OCR provider cannot extract text.
+# Parameters:
+# - ocr_error: OCR domain error raised during processing.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "ocr_error",
+    [
+        ReceiptOcrFileNotFoundError(),
+        ReceiptOcrProcessingError(),
+    ],
+)
+def test_process_receipt_marks_receipt_as_failed_when_ocr_fails(
+    ocr_error: Exception,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+    storage_path = (
+        f"uploads/receipts/{user_id}/receipt.jpg"
+    )
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "uploaded"
+    receipt.storage_path = storage_path
+
+    failed_receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    failed_receipt.status = "failed"
+    failed_receipt.storage_path = storage_path
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    update_receipt_mock = MagicMock(
+        side_effect=[
+            receipt,
+            failed_receipt,
+        ],
+    )
+    extract_text_mock = MagicMock(
+        side_effect=ocr_error,
+    )
+    map_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_ocr_service,
+        "extract_receipt_text",
+        extract_text_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        map_receipt_mock,
+    )
+
+    with pytest.raises(type(ocr_error)) as error_info:
+        receipt_service.process_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+        )
+
+    assert error_info.value is ocr_error
+    assert update_receipt_mock.call_count == 2
+
+    processing_data = (
+        update_receipt_mock
+        .call_args_list[0]
+        .kwargs["receipt_data"]
+    )
+    failed_data = (
+        update_receipt_mock
+        .call_args_list[1]
+        .kwargs["receipt_data"]
+    )
+
+    assert processing_data.model_dump(
+        exclude_unset=True,
+    ) == {
+        "status": "processing",
+    }
+    assert failed_data.model_dump(
+        exclude_unset=True,
+    ) == {
+        "status": "failed",
+    }
+
+    map_receipt_mock.assert_not_called()
