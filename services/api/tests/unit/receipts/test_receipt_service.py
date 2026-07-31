@@ -1,5 +1,6 @@
+from decimal import Decimal
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 from typing import Optional
 from fastapi import UploadFile
@@ -876,6 +877,15 @@ def test_process_receipt_saves_processed_ocr_result(
         f"uploads/receipts/{user_id}/receipt.jpg"
     )
     extracted_text = "LIDL\nTOTAL 24.99 EUR"
+    
+    parsed_data = (
+        receipt_service.receipt_parser_service.ParsedReceiptData(
+            merchant_detected="LIDL",
+            total_amount_detected=Decimal("24.99"),
+            currency_detected="EUR",
+            purchase_date_detected=date(2026, 7, 31),
+        )
+    )
 
     receipt = build_receipt_model(
         user_id=user_id,
@@ -908,6 +918,9 @@ def test_process_receipt_saves_processed_ocr_result(
     extract_text_mock = MagicMock(
         return_value=extracted_text,
     )
+    parse_text_mock = MagicMock(
+    return_value=parsed_data,
+    )
     map_receipt_mock = MagicMock(
         return_value=expected_response,
     )
@@ -926,6 +939,11 @@ def test_process_receipt_saves_processed_ocr_result(
         receipt_service.receipt_ocr_service,
         "extract_receipt_text",
         extract_text_mock,
+    )
+    monkeypatch.setattr(
+    receipt_service.receipt_parser_service,
+    "parse_receipt_text",
+    parse_text_mock,
     )
     monkeypatch.setattr(
         receipt_service,
@@ -950,6 +968,10 @@ def test_process_receipt_saves_processed_ocr_result(
         storage_path=storage_path,
     )
 
+    parse_text_mock.assert_called_once_with(
+    ocr_text=extracted_text,
+    )
+
     assert update_receipt_mock.call_count == 2
 
     processing_call = update_receipt_mock.call_args_list[0]
@@ -968,10 +990,14 @@ def test_process_receipt_saves_processed_ocr_result(
     processed_data = processed_call.kwargs["receipt_data"]
 
     assert processed_data.model_dump(
-        exclude_unset=True,
+    exclude_unset=True,
     ) == {
         "status": "processed",
         "ocr_text": extracted_text,
+        "merchant_detected": "LIDL",
+        "total_amount_detected": Decimal("24.99"),
+        "currency_detected": "EUR",
+        "purchase_date_detected": date(2026, 7, 31),
     }
 
     map_receipt_mock.assert_called_once_with(

@@ -7,7 +7,9 @@ from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.expenses import expenses_repository
 from app.modules.receipts import (
     receipt_ocr_service,
+    receipt_parser_service,
     receipt_repository,
+    receipt_storage_service,
     receipt_storage_service,
 )
 from app.modules.receipts.receipt_errors import (
@@ -157,12 +159,20 @@ def process_receipt(
 
         raise
 
+    parsed_data = receipt_parser_service.parse_receipt_text(
+        ocr_text=extracted_text,
+    )
+
     processed_receipt = receipt_repository.update_receipt(
         db_session=db_session,
         receipt_id=receipt_id,
         receipt_data=ReceiptUpdate(
             status="processed",
             ocr_text=extracted_text,
+            merchant_detected=parsed_data.merchant_detected,
+            total_amount_detected=parsed_data.total_amount_detected,
+            currency_detected=parsed_data.currency_detected,
+            purchase_date_detected=parsed_data.purchase_date_detected,
         ),
         user_id=user_id,
     )

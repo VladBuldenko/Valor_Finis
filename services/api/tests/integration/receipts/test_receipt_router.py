@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from textwrap import dedent
 from app.modules.receipts import (
     receipt_ocr_service,
     receipt_storage_service,
@@ -655,8 +656,24 @@ def test_process_receipt_endpoint_saves_ocr_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     user_id = str(uuid.uuid4())
-    extracted_text = "\n  LIDL\nTOTAL 24.99 EUR  \n"
-    expected_text = "LIDL\nTOTAL 24.99 EUR"
+    
+    extracted_text = dedent(
+        """
+        LIDL
+        31.07.2026
+        Milch 1,49
+        Brot 2,19
+        SUMME 3,68 EUR
+        """
+    )
+
+    expected_text = (
+        "LIDL\n"
+        "31.07.2026\n"
+        "Milch 1,49\n"
+        "Brot 2,19\n"
+        "SUMME 3,68 EUR"
+    )
 
     monkeypatch.setattr(
         receipt_storage_service.settings,
@@ -702,6 +719,10 @@ def test_process_receipt_endpoint_saves_ocr_result(
     assert processed_receipt["user_id"] == user_id
     assert processed_receipt["status"] == "processed"
     assert processed_receipt["ocr_text"] == expected_text
+    assert processed_receipt["merchant_detected"] == "LIDL"
+    assert processed_receipt["total_amount_detected"] == "3.68"
+    assert processed_receipt["currency_detected"] == "EUR"
+    assert processed_receipt["purchase_date_detected"] == "2026-07-31"
 
     stored_response = client.get(
         f"/api/v1/receipts/{uploaded_receipt['id']}",
@@ -709,8 +730,14 @@ def test_process_receipt_endpoint_saves_ocr_result(
     )
 
     assert stored_response.status_code == 200, stored_response.text
-    assert stored_response.json()["status"] == "processed"
-    assert stored_response.json()["ocr_text"] == expected_text
+    stored_receipt = stored_response.json()
+
+    assert stored_receipt["status"] == "processed"
+    assert stored_receipt["ocr_text"] == expected_text
+    assert stored_receipt["merchant_detected"] == "LIDL"
+    assert stored_receipt["total_amount_detected"] == "3.68"
+    assert stored_receipt["currency_detected"] == "EUR"
+    assert stored_receipt["purchase_date_detected"] == "2026-07-31"
 
     ocr_provider_mock.extract_text.assert_called_once_with(
         file_path=Path(uploaded_receipt["storage_path"]),
