@@ -11,22 +11,26 @@ from app.modules.expenses.expenses_schemas import (
 
 
 # Creates a new expense using validated expense data and authenticated user id.
-# This function exists to keep business logic separate from API and database layers.
+# This function exists to keep business logic separate
+# from API and database layers.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - expense_data: validated expense input data.
 # - user_id: authenticated user identifier that owns the expense.
+# - commit: whether the expense should be committed immediately.
 # Returns:
 # - ExpenseResponse object created from the saved database model.
 def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
     user_id: UUID,
+    commit: bool = True,
 ) -> ExpenseResponse:
     expense_model = expenses_repository.create_expense(
         db_session=db_session,
         expense_data=expense_data,
         user_id=user_id,
+        commit=commit,
     )
 
     return ExpenseResponse.model_validate(expense_model)

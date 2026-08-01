@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.modules.expenses.expenses_schemas import ExpenseResponse
 
 
 ReceiptStatus = Literal[
@@ -184,6 +185,104 @@ class ReceiptUpdate(BaseModel):
 
         return self
 
+class ReceiptConfirmRequest(BaseModel):
+    """
+    Schema for confirming a processed receipt.
+
+    What:
+        Accepts optional corrections for OCR-detected receipt data
+        before an expense is created.
+
+    Why:
+        OCR results can be incomplete or inaccurate, so the user
+        must be able to correct detected values during confirmation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional category assigned to the created expense.",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="Corrected expense title or merchant name.",
+        examples=["LIDL"],
+    )
+    amount: Optional[Decimal] = Field(
+        default=None,
+        gt=0,
+        description="Corrected receipt total amount.",
+        examples=["24.99"],
+    )
+    currency: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Corrected three-letter currency code.",
+        examples=["EUR"],
+    )
+    expense_date: Optional[Date] = Field(
+        default=None,
+        description="Corrected expense date.",
+        examples=["2026-07-31"],
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional description for the created expense.",
+        examples=["Created from receipt scan."],
+    )
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        """
+        Normalizes the corrected currency code.
+
+        What:
+            Removes surrounding whitespace and converts the code
+            to uppercase.
+
+        Why:
+            Keeps receipt confirmation data consistent with expense data.
+        """
+
+        if value is None:
+            return value
+
+        return value.strip().upper()
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        """
+        Normalizes the corrected expense title.
+
+        What:
+            Removes surrounding whitespace.
+
+        Why:
+            Prevents whitespace-only titles from overriding
+            a detected merchant name.
+        """
+
+        if value is None:
+            return value
+
+        normalized_value = value.strip()
+
+        if not normalized_value:
+            return None
+
+        return normalized_value
 
 class ReceiptResponse(BaseModel):
     """
@@ -211,3 +310,20 @@ class ReceiptResponse(BaseModel):
     purchase_date_detected: Optional[Date]
     created_at: datetime
     updated_at: datetime
+
+class ReceiptConfirmResponse(BaseModel):
+    """
+    Schema for returning a confirmed receipt and created expense.
+
+    What:
+        Contains both sides of the receipt confirmation result.
+
+    Why:
+        Allows the client to receive the updated receipt
+        and the newly created expense in one response.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    receipt: ReceiptResponse
+    expense: ExpenseResponse

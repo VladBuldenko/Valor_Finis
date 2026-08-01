@@ -60,10 +60,12 @@ def test_service_create_expense_returns_expense_response(
         db_session: Session,
         expense_data: ExpenseCreate,
         user_id: UUID,
+        commit: bool = True,
     ) -> SimpleNamespace:
         assert db_session is expected_db_session
         assert expense_data == expected_expense_data
         assert user_id == expected_user_id
+        assert commit is True
 
         return expense_model
 

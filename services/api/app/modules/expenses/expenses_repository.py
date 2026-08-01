@@ -9,17 +9,20 @@ from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
 
 
 # Creates a new expense database record.
-# This function exists to isolate PostgreSQL write logic from business logic.
+# This function exists to isolate PostgreSQL write logic
+# and support service-controlled transactions.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - expense_data: validated expense input data from the service layer.
 # - user_id: authenticated user identifier that owns the expense.
+# - commit: whether the repository should commit the transaction immediately.
 # Returns:
-# - ExpenseModel instance saved in the database.
+# - ExpenseModel instance saved or flushed in the current transaction.
 def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
     user_id: UUID,
+    commit: bool = True,
 ) -> ExpenseModel:
     expense_model = ExpenseModel(
         user_id=user_id,
@@ -33,7 +36,12 @@ def create_expense(
     )
 
     db_session.add(expense_model)
-    db_session.commit()
+
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()
+
     db_session.refresh(expense_model)
 
     return expense_model

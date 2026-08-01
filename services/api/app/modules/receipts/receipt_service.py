@@ -18,13 +18,21 @@ from app.modules.receipts.receipt_errors import (
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
     ReceiptProcessingNotAllowedError,
+    ReceiptAlreadyConfirmedError,
+    ReceiptConfirmationDataMissingError,
+    ReceiptConfirmationNotAllowedError,
 )
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
+    ReceiptConfirmRequest,
+    ReceiptConfirmResponse,
     ReceiptCreate,
     ReceiptResponse,
     ReceiptUpdate,
 )
+from app.modules.expenses import expenses_service
+from app.modules.expenses.expenses_schemas import ExpenseCreate
+
 
 PROCESSABLE_RECEIPT_STATUSES = (
     "uploaded",
@@ -178,6 +186,107 @@ def process_receipt(
     )
 
     return map_receipt_to_response(processed_receipt)
+
+# Confirms a processed receipt and creates a linked expense.
+# This function exists to atomically convert verified receipt data
+# into an expense and prevent partial database writes.
+# Parameters:
+# - db_session: active SQLAlchemy session.
+# - receipt_id: receipt identifier.
+# - confirmation_data: optional user corrections for OCR-detected values.
+# - user_id: authenticated user identifier.
+# Returns:
+# - ReceiptConfirmResponse containing the confirmed receipt
+#   and created expense.
+# Raises:
+# - ReceiptNotFoundError when the receipt does not belong to the user.
+# - ReceiptAlreadyConfirmedError when the receipt was already confirmed.
+# - ReceiptConfirmationNotAllowedError when the receipt is not processed.
+# - ReceiptConfirmationDataMissingError when required expense data is missing.
+def confirm_receipt(
+    db_session: Session,
+    receipt_id: uuid.UUID,
+    confirmation_data: ReceiptConfirmRequest,
+    user_id: uuid.UUID,
+) -> ReceiptConfirmResponse:
+    receipt = receipt_repository.get_receipt_by_id(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+    )
+
+    if receipt.status == "confirmed" or receipt.expense_id is not None:
+        raise ReceiptAlreadyConfirmedError()
+
+    if receipt.status != "processed":
+        raise ReceiptConfirmationNotAllowedError()
+
+    title = (
+        confirmation_data.title
+        or receipt.merchant_detected
+    )
+    amount = (
+        confirmation_data.amount
+        or receipt.total_amount_detected
+    )
+    currency = (
+        confirmation_data.currency
+        or receipt.currency_detected
+    )
+    expense_date = (
+        confirmation_data.expense_date
+        or receipt.purchase_date_detected
+    )
+
+    if (
+        title is None
+        or amount is None
+        or currency is None
+        or expense_date is None
+    ):
+        raise ReceiptConfirmationDataMissingError()
+
+    expense_data = ExpenseCreate(
+        category_id=confirmation_data.category_id,
+        title=title,
+        amount=amount,
+        currency=currency,
+        expense_date=expense_date,
+        description=confirmation_data.description,
+        source="receipt",
+    )
+
+    try:
+        created_expense = expenses_service.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+            commit=False,
+        )
+
+        confirmed_receipt_model = receipt_repository.update_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            receipt_data=ReceiptUpdate(
+                expense_id=created_expense.id,
+                status="confirmed",
+            ),
+            user_id=user_id,
+            commit=False,
+        )
+
+        db_session.commit()
+        db_session.refresh(confirmed_receipt_model)
+    except Exception:
+        db_session.rollback()
+        raise
+
+    return ReceiptConfirmResponse(
+        receipt=map_receipt_to_response(
+            confirmed_receipt_model,
+        ),
+        expense=created_expense,
+    )
 
 # Returns all receipts owned by the authenticated user.
 # This function exists to expose user-scoped receipt data to the API layer.

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.receipts import receipt_service
+from app.modules.expenses.expenses_schemas import ExpenseResponse
 from app.modules.receipts.receipt_errors import (
     ReceiptExpenseNotFoundError,
     ReceiptFileStorageError,
@@ -17,12 +18,16 @@ from app.modules.receipts.receipt_errors import (
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
     ReceiptProcessingNotAllowedError,
+    ReceiptAlreadyConfirmedError,
+    ReceiptConfirmationDataMissingError,
+    ReceiptConfirmationNotAllowedError,
 )
 from app.modules.receipts.receipt_models import ReceiptModel
 from app.modules.receipts.receipt_schemas import (
     ReceiptCreate,
     ReceiptResponse,
     ReceiptUpdate,
+    ReceiptConfirmRequest,
 )
 
 
@@ -1247,3 +1252,559 @@ def test_process_receipt_marks_receipt_as_failed_when_ocr_fails(
     }
 
     map_receipt_mock.assert_not_called()
+
+ # Verifies that a processed receipt creates an expense
+# and is atomically changed to confirmed.
+# This test exists to confirm transaction coordination
+# between expense creation and receipt update.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+def test_confirm_receipt_creates_expense_and_confirms_receipt(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+    expense_id = uuid.uuid4()
+
+    detected_date = date(2026, 7, 31)
+    created_at = datetime(2026, 8, 1, 10, 0, 0)
+    updated_at = datetime(2026, 8, 1, 10, 0, 0)
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "processed"
+    receipt.expense_id = None
+    receipt.merchant_detected = "LIDL"
+    receipt.total_amount_detected = Decimal("24.99")
+    receipt.currency_detected = "EUR"
+    receipt.purchase_date_detected = detected_date
+
+    confirmed_receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    confirmed_receipt.status = "confirmed"
+    confirmed_receipt.expense_id = expense_id
+    confirmed_receipt.merchant_detected = "LIDL"
+    confirmed_receipt.total_amount_detected = Decimal("24.99")
+    confirmed_receipt.currency_detected = "EUR"
+    confirmed_receipt.purchase_date_detected = detected_date
+
+    created_expense = ExpenseResponse(
+        id=expense_id,
+        user_id=user_id,
+        category_id=None,
+        title="LIDL",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=detected_date,
+        description=None,
+        source="receipt",
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+    expected_receipt_response = ReceiptResponse.model_validate(
+        confirmed_receipt,
+    )
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    create_expense_mock = MagicMock(
+        return_value=created_expense,
+    )
+    update_receipt_mock = MagicMock(
+        return_value=confirmed_receipt,
+    )
+    map_receipt_mock = MagicMock(
+        return_value=expected_receipt_response,
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        create_expense_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        map_receipt_mock,
+    )
+
+    confirmation_data = ReceiptConfirmRequest()
+
+    result = receipt_service.confirm_receipt(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        confirmation_data=confirmation_data,
+        user_id=user_id,
+    )
+
+    assert result.receipt == expected_receipt_response
+    assert result.expense == created_expense
+
+    get_receipt_mock.assert_called_once_with(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+    )
+
+    create_expense_mock.assert_called_once()
+
+    create_call = create_expense_mock.call_args
+    expense_data = create_call.kwargs["expense_data"]
+
+    assert create_call.kwargs["db_session"] is db_session
+    assert create_call.kwargs["user_id"] == user_id
+    assert create_call.kwargs["commit"] is False
+
+    assert expense_data.model_dump() == {
+        "category_id": None,
+        "title": "LIDL",
+        "amount": Decimal("24.99"),
+        "currency": "EUR",
+        "expense_date": detected_date,
+        "description": None,
+        "source": "receipt",
+    }
+
+    update_receipt_mock.assert_called_once()
+
+    update_call = update_receipt_mock.call_args
+    receipt_data = update_call.kwargs["receipt_data"]
+
+    assert update_call.kwargs["db_session"] is db_session
+    assert update_call.kwargs["receipt_id"] == receipt_id
+    assert update_call.kwargs["user_id"] == user_id
+    assert update_call.kwargs["commit"] is False
+
+    assert receipt_data.model_dump(
+        exclude_unset=True,
+    ) == {
+        "expense_id": expense_id,
+        "status": "confirmed",
+    }
+
+    db_session.commit.assert_called_once_with()
+    db_session.refresh.assert_called_once_with(
+        confirmed_receipt,
+    )
+    db_session.rollback.assert_not_called()
+
+    map_receipt_mock.assert_called_once_with(
+        confirmed_receipt,
+    )
+
+# Verifies that user corrections override OCR-detected receipt values.
+# This test exists because OCR results can be inaccurate
+# and must remain editable before expense creation.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+def test_confirm_receipt_uses_confirmation_corrections(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+    expense_id = uuid.uuid4()
+    category_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "processed"
+    receipt.expense_id = None
+    receipt.merchant_detected = "L1DL"
+    receipt.total_amount_detected = Decimal("28.99")
+    receipt.currency_detected = "USD"
+    receipt.purchase_date_detected = date(2026, 7, 30)
+
+    confirmed_receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    confirmed_receipt.status = "confirmed"
+    confirmed_receipt.expense_id = expense_id
+
+    corrected_date = date(2026, 7, 31)
+
+    created_expense = ExpenseResponse(
+        id=expense_id,
+        user_id=user_id,
+        category_id=category_id,
+        title="LIDL",
+        amount=Decimal("23.99"),
+        currency="EUR",
+        expense_date=corrected_date,
+        description="Weekly groceries",
+        source="receipt",
+        created_at=datetime(2026, 8, 1, 10, 0, 0),
+        updated_at=datetime(2026, 8, 1, 10, 0, 0),
+    )
+
+    confirmation_data = ReceiptConfirmRequest(
+        category_id=category_id,
+        title="LIDL",
+        amount=Decimal("23.99"),
+        currency="eur",
+        expense_date=corrected_date,
+        description="Weekly groceries",
+    )
+
+    create_expense_mock = MagicMock(
+        return_value=created_expense,
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        MagicMock(return_value=receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        create_expense_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        MagicMock(return_value=confirmed_receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "map_receipt_to_response",
+        MagicMock(
+            return_value=ReceiptResponse.model_validate(
+                confirmed_receipt,
+            )
+        ),
+    )
+
+    result = receipt_service.confirm_receipt(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        confirmation_data=confirmation_data,
+        user_id=user_id,
+    )
+
+    expense_data = (
+        create_expense_mock
+        .call_args
+        .kwargs["expense_data"]
+    )
+
+    assert expense_data.category_id == category_id
+    assert expense_data.title == "LIDL"
+    assert expense_data.amount == Decimal("23.99")
+    assert expense_data.currency == "EUR"
+    assert expense_data.expense_date == corrected_date
+    assert expense_data.description == "Weekly groceries"
+    assert expense_data.source == "receipt"
+
+    assert result.expense == created_expense
+    db_session.commit.assert_called_once_with()
+    db_session.rollback.assert_not_called()
+
+# Verifies that a receipt cannot create more than one expense.
+# This test exists to prevent duplicate expenses from repeated
+# receipt confirmation requests.
+# Parameters:
+# - receipt_status: receipt status used by the test.
+# - has_expense: whether the receipt is already linked to an expense.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    ("receipt_status", "has_expense"),
+    [
+        ("confirmed", False),
+        ("processed", True),
+    ],
+)
+def test_confirm_receipt_rejects_already_confirmed_receipt(
+    receipt_status: str,
+    has_expense: bool,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = receipt_status
+    receipt.expense_id = (
+        uuid.uuid4()
+        if has_expense
+        else None
+    )
+
+    create_expense_mock = MagicMock()
+    update_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        MagicMock(return_value=receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        create_expense_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+
+    with pytest.raises(ReceiptAlreadyConfirmedError):
+        receipt_service.confirm_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            confirmation_data=ReceiptConfirmRequest(),
+            user_id=user_id,
+        )
+
+    create_expense_mock.assert_not_called()
+    update_receipt_mock.assert_not_called()
+    db_session.commit.assert_not_called()
+    db_session.rollback.assert_not_called()
+
+    # Verifies that only processed receipts can be confirmed.
+# This test exists to prevent expense creation from incomplete
+# or failed receipt processing results.
+# Parameters:
+# - receipt_status: receipt status before confirmation.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "receipt_status",
+    [
+        "uploaded",
+        "processing",
+        "failed",
+    ],
+)
+def test_confirm_receipt_rejects_unconfirmable_status(
+    receipt_status: str,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = receipt_status
+    receipt.expense_id = None
+
+    create_expense_mock = MagicMock()
+    update_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        MagicMock(return_value=receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        create_expense_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+
+    with pytest.raises(ReceiptConfirmationNotAllowedError):
+        receipt_service.confirm_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            confirmation_data=ReceiptConfirmRequest(),
+            user_id=user_id,
+        )
+
+    create_expense_mock.assert_not_called()
+    update_receipt_mock.assert_not_called()
+    db_session.commit.assert_not_called()
+    db_session.rollback.assert_not_called()
+
+# Verifies that confirmation requires all mandatory expense values.
+# This test exists to prevent invalid expenses from being created
+# when OCR results and user corrections are incomplete.
+# Parameters:
+# - missing_field: required detected receipt field removed by the test.
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "merchant_detected",
+        "total_amount_detected",
+        "currency_detected",
+        "purchase_date_detected",
+    ],
+)
+def test_confirm_receipt_rejects_missing_required_data(
+    missing_field: str,
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "processed"
+    receipt.expense_id = None
+    receipt.merchant_detected = "LIDL"
+    receipt.total_amount_detected = Decimal("24.99")
+    receipt.currency_detected = "EUR"
+    receipt.purchase_date_detected = date(2026, 7, 31)
+
+    setattr(
+        receipt,
+        missing_field,
+        None,
+    )
+
+    create_expense_mock = MagicMock()
+    update_receipt_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        MagicMock(return_value=receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        create_expense_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        update_receipt_mock,
+    )
+
+    with pytest.raises(ReceiptConfirmationDataMissingError):
+        receipt_service.confirm_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            confirmation_data=ReceiptConfirmRequest(),
+            user_id=user_id,
+        )
+
+    create_expense_mock.assert_not_called()
+    update_receipt_mock.assert_not_called()
+    db_session.commit.assert_not_called()
+    db_session.rollback.assert_not_called()
+
+# Verifies that receipt update failures roll back expense creation.
+# This test exists to prevent orphan expenses when confirmation
+# cannot complete atomically.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace service dependencies.
+# Returns:
+# - None.
+def test_confirm_receipt_rolls_back_when_receipt_update_fails(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+    expense_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+    receipt.status = "processed"
+    receipt.expense_id = None
+    receipt.merchant_detected = "LIDL"
+    receipt.total_amount_detected = Decimal("24.99")
+    receipt.currency_detected = "EUR"
+    receipt.purchase_date_detected = date(2026, 7, 31)
+
+    created_expense = ExpenseResponse(
+        id=expense_id,
+        user_id=user_id,
+        category_id=None,
+        title="LIDL",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=date(2026, 7, 31),
+        description=None,
+        source="receipt",
+        created_at=datetime(2026, 8, 1, 10, 0, 0),
+        updated_at=datetime(2026, 8, 1, 10, 0, 0),
+    )
+
+    update_error = RuntimeError(
+        "Receipt update failed.",
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        MagicMock(return_value=receipt),
+    )
+    monkeypatch.setattr(
+        receipt_service.expenses_service,
+        "create_expense",
+        MagicMock(return_value=created_expense),
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "update_receipt",
+        MagicMock(side_effect=update_error),
+    )
+
+    with pytest.raises(RuntimeError) as error_info:
+        receipt_service.confirm_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            confirmation_data=ReceiptConfirmRequest(),
+            user_id=user_id,
+        )
+
+    assert error_info.value is update_error
+
+    db_session.rollback.assert_called_once_with()
+    db_session.commit.assert_not_called()
+    db_session.refresh.assert_not_called()

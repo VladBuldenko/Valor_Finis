@@ -83,23 +83,26 @@ def get_receipt_by_id(
 
     return receipt
 
-
 # Updates an existing receipt owned by the authenticated user.
-# This function exists to persist OCR results, status changes, or expense linkage.
+# This function exists to persist receipt changes
+# with optional transaction control from the service layer.
 # Parameters:
 # - db_session: active SQLAlchemy session.
 # - receipt_id: receipt identifier.
 # - receipt_data: validated partial receipt update data.
 # - user_id: authenticated user identifier.
+# - commit: whether the repository should commit the transaction immediately.
 # Returns:
 # - Updated ReceiptModel instance.
 # Raises:
-# - ReceiptNotFoundError when the receipt does not exist or belongs to another user.
+# - ReceiptNotFoundError when the receipt does not exist
+#   or belongs to another user.
 def update_receipt(
     db_session: Session,
     receipt_id: uuid.UUID,
     receipt_data: ReceiptUpdate,
     user_id: uuid.UUID,
+    commit: bool = True,
 ) -> ReceiptModel:
     receipt = get_receipt_by_id(
         db_session=db_session,
@@ -112,11 +115,14 @@ def update_receipt(
     for field_name, field_value in update_data.items():
         setattr(receipt, field_name, field_value)
 
-    db_session.commit()
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()
+
     db_session.refresh(receipt)
 
     return receipt
-
 
 # Deletes a receipt owned by the authenticated user.
 # This function exists to remove receipt metadata while preserving user data isolation.

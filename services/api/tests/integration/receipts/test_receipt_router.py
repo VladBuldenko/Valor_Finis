@@ -1112,3 +1112,475 @@ def test_process_receipt_endpoint_retries_failed_receipt(
     assert stored_response.json()["ocr_text"] == expected_text
 
     assert ocr_provider_mock.extract_text.call_count == 2
+
+    # Verifies that a processed receipt can be confirmed into an expense.
+# This test exists to confirm the complete upload, OCR, parsing,
+# confirmation, expense creation, and database persistence flow.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - tmp_path: temporary directory used for receipt file storage.
+# - monkeypatch: pytest fixture used to replace storage configuration
+#   and the external OCR provider.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_creates_linked_expense(
+    client: TestClient,
+    clean_database: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_upload_dir",
+        str(tmp_path),
+    )
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.return_value = (
+        "LIDL\n"
+        "31.07.2026\n"
+        "Milch 1,49\n"
+        "Brot 2,19\n"
+        "SUMME 3,68 EUR"
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    upload_response = client.post(
+        "/api/v1/receipts/upload",
+        files={
+            "file": (
+                "receipt.jpg",
+                b"receipt-image-content",
+                "image/jpeg",
+            )
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert upload_response.status_code == 201, upload_response.text
+
+    receipt_id = upload_response.json()["id"]
+
+    process_response = client.post(
+        f"/api/v1/receipts/{receipt_id}/process",
+        headers=auth_headers(user_id),
+    )
+
+    assert process_response.status_code == 200, process_response.text
+    assert process_response.json()["status"] == "processed"
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt_id}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 200, confirm_response.text
+
+    response_data = confirm_response.json()
+    confirmed_receipt = response_data["receipt"]
+    created_expense = response_data["expense"]
+
+    assert confirmed_receipt["id"] == receipt_id
+    assert confirmed_receipt["status"] == "confirmed"
+    assert confirmed_receipt["expense_id"] == created_expense["id"]
+
+    assert created_expense["user_id"] == user_id
+    assert created_expense["category_id"] is None
+    assert created_expense["title"] == "LIDL"
+    assert created_expense["amount"] == "3.68"
+    assert created_expense["currency"] == "EUR"
+    assert created_expense["expense_date"] == "2026-07-31"
+    assert created_expense["description"] is None
+    assert created_expense["source"] == "receipt"
+
+    stored_receipt_response = client.get(
+        f"/api/v1/receipts/{receipt_id}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_receipt_response.status_code == 200
+
+    stored_receipt = stored_receipt_response.json()
+
+    assert stored_receipt["status"] == "confirmed"
+    assert stored_receipt["expense_id"] == created_expense["id"]
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200, expenses_response.text
+    assert len(expenses_response.json()) == 1
+    assert expenses_response.json()[0]["id"] == created_expense["id"]
+
+# Verifies that confirmation corrections override detected receipt values.
+# This test exists because OCR results can be inaccurate
+# and must remain editable before expense creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_uses_user_corrections(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "L1DL",
+            "total_amount_detected": "28.99",
+            "currency_detected": "USD",
+            "purchase_date_detected": "2026-07-30",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={
+            "title": "LIDL",
+            "amount": "23.99",
+            "currency": "eur",
+            "expense_date": "2026-07-31",
+            "description": "Weekly groceries",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 200, confirm_response.text
+
+    response_data = confirm_response.json()
+    confirmed_receipt = response_data["receipt"]
+    created_expense = response_data["expense"]
+
+    assert confirmed_receipt["status"] == "confirmed"
+    assert confirmed_receipt["expense_id"] == created_expense["id"]
+
+    assert created_expense["title"] == "LIDL"
+    assert created_expense["amount"] == "23.99"
+    assert created_expense["currency"] == "EUR"
+    assert created_expense["expense_date"] == "2026-07-31"
+    assert created_expense["description"] == "Weekly groceries"
+    assert created_expense["source"] == "receipt"
+
+# Verifies that complete manual confirmation data can replace missing OCR data.
+# This test exists to allow confirmation when OCR parsing is incomplete
+# but the user supplies every required expense value.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_accepts_complete_manual_data(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={
+            "title": "Local supermarket",
+            "amount": "15.50",
+            "currency": "eur",
+            "expense_date": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 200, confirm_response.text
+
+    response_data = confirm_response.json()
+
+    assert response_data["receipt"]["status"] == "confirmed"
+    assert response_data["expense"]["title"] == "Local supermarket"
+    assert response_data["expense"]["amount"] == "15.50"
+    assert response_data["expense"]["currency"] == "EUR"
+    assert response_data["expense"]["expense_date"] == "2026-07-31"
+
+# Verifies that confirmation rejects incomplete expense data.
+# This test exists to prevent invalid expenses when required values
+# are absent from both OCR output and the confirmation request.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_missing_required_data(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 422
+    assert confirm_response.json() == {
+        "detail": "Required receipt confirmation data is missing.",
+    }
+
+    stored_receipt_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_receipt_response.status_code == 200
+    assert stored_receipt_response.json()["status"] == "processed"
+    assert stored_receipt_response.json()["expense_id"] is None
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200
+    assert expenses_response.json() == []
+
+# Verifies that only processed receipts can be confirmed.
+# This test exists to prevent confirmation before successful OCR processing.
+# Parameters:
+# - receipt_status: current receipt status.
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "receipt_status",
+    [
+        "uploaded",
+        "processing",
+        "failed",
+    ],
+)
+def test_confirm_receipt_endpoint_rejects_unconfirmable_status(
+    receipt_status: str,
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    if receipt_status != "uploaded":
+        update_response = client.patch(
+            f"/api/v1/receipts/{receipt['id']}",
+            json={
+                "status": receipt_status,
+            },
+            headers=auth_headers(user_id),
+        )
+
+        assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={
+            "title": "LIDL",
+            "amount": "24.99",
+            "currency": "EUR",
+            "expense_date": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 409
+    assert confirm_response.json() == {
+        "detail": "Receipt cannot be confirmed in its current status.",
+    }
+
+# Verifies that a confirmed receipt cannot create a second expense.
+# This test exists to prevent duplicate expenses from repeated requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_repeated_confirmation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "LIDL",
+            "total_amount_detected": "24.99",
+            "currency_detected": "EUR",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    first_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    assert first_response.status_code == 200, first_response.text
+
+    second_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    assert second_response.status_code == 409
+    assert second_response.json() == {
+        "detail": "Receipt has already been confirmed.",
+    }
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200
+    assert len(expenses_response.json()) == 1
+
+# Verifies that users cannot confirm another user's receipt.
+# This test exists to preserve receipt ownership during expense creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_other_user_receipt(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+    other_user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=other_user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "LIDL",
+            "total_amount_detected": "24.99",
+            "currency_detected": "EUR",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(other_user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    assert confirm_response.status_code == 404
+    assert confirm_response.json() == {
+        "detail": "Receipt not found.",
+    }
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200
+    assert expenses_response.json() == []
+
+# Verifies that receipt confirmation requires authentication.
+# This test exists to prevent anonymous expense creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_missing_authentication(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+    )
+
+    assert confirm_response.status_code == 401
+    assert confirm_response.json() == {
+        "detail": "Missing authentication credentials.",
+    }

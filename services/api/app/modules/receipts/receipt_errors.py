@@ -124,3 +124,46 @@ class ReceiptOcrProcessingError(Exception):
     """
 
     pass
+
+class ReceiptConfirmationNotAllowedError(Exception):
+    """
+    Raised when a receipt cannot be confirmed in its current status.
+
+    What:
+        Represents an invalid receipt confirmation transition.
+
+    Why:
+        Only successfully processed receipts can be converted
+        into expenses.
+    """
+
+    pass
+
+
+class ReceiptConfirmationDataMissingError(Exception):
+    """
+    Raised when required expense data is unavailable.
+
+    What:
+        Represents missing receipt confirmation values.
+
+    Why:
+        An expense cannot be created without a title, amount,
+        currency, and expense date.
+    """
+
+    pass
+
+
+class ReceiptAlreadyConfirmedError(Exception):
+    """
+    Raised when a receipt has already been confirmed.
+
+    What:
+        Represents a repeated confirmation request.
+
+    Why:
+        Prevents creating multiple expenses from the same receipt.
+    """
+
+    pass
