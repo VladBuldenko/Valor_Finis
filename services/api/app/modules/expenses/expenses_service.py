@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from app.modules.categories import service as categories_service
 from sqlalchemy.orm import Session
 
 from app.modules.expenses import expenses_repository
@@ -26,6 +27,13 @@ def create_expense(
     user_id: UUID,
     commit: bool = True,
 ) -> ExpenseResponse:
+    if expense_data.category_id is not None:
+        categories_service.get_category_by_id(
+            db_session=db_session,
+            category_id=expense_data.category_id,
+            user_id=user_id,
+        )
+
     expense_model = expenses_repository.create_expense(
         db_session=db_session,
         expense_data=expense_data,
@@ -34,7 +42,6 @@ def create_expense(
     )
 
     return ExpenseResponse.model_validate(expense_model)
-
 
 # Returns expenses for the authenticated user.
 # This function exists to keep response mapping outside the repository layer
@@ -75,6 +82,16 @@ def update_expense(
     expense_data: ExpenseUpdate,
     user_id: UUID,
 ) -> ExpenseResponse:
+    if (
+        "category_id" in expense_data.model_fields_set
+        and expense_data.category_id is not None
+    ):
+        categories_service.get_category_by_id(
+            db_session=db_session,
+            category_id=expense_data.category_id,
+            user_id=user_id,
+        )
+
     expense_model = expenses_repository.update_expense(
         db_session=db_session,
         expense_id=expense_id,
@@ -83,7 +100,6 @@ def update_expense(
     )
 
     return ExpenseResponse.model_validate(expense_model)
-
 
 # Deletes an existing expense owned by the authenticated user.
 # This function exists to keep delete business flow in the service layer

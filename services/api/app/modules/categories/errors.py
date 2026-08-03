@@ -24,3 +24,32 @@ class CategoryNotFoundError(Exception):
     """
 
     pass
+
+class CategoryDefaultModificationNotAllowedError(Exception):
+    """
+    Raised when a default category is modified.
+
+    What:
+        Represents an attempt to update a protected default category.
+
+    Why:
+        Default categories are managed by the backend
+        and must remain stable for the user.
+    """
+
+    pass
+
+
+class CategoryDefaultDeletionNotAllowedError(Exception):
+    """
+    Raised when a default category is deleted.
+
+    What:
+        Represents an attempt to delete a protected default category.
+
+    Why:
+        Default categories must remain available
+        and cannot be removed by the user.
+    """
+
+    pass

@@ -9,6 +9,8 @@ from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.categories import service
 from app.modules.categories.errors import (
     CategoryAlreadyExistsError,
+    CategoryDefaultDeletionNotAllowedError,
+    CategoryDefaultModificationNotAllowedError,
     CategoryNotFoundError,
 )
 from app.modules.categories.schemas import (
@@ -143,12 +145,16 @@ def update_category(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Category not found.",
         ) from error
+    except CategoryDefaultModificationNotAllowedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Default category cannot be modified.",
+        ) from error
     except CategoryAlreadyExistsError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Category with this name already exists for this user.",
         ) from error
-
 
 # Deletes one category through the API.
 # This function exists to delete a category that belongs to the authenticated user.
@@ -177,4 +183,9 @@ def delete_category(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Category not found.",
+        ) from error
+    except CategoryDefaultDeletionNotAllowedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Default category cannot be deleted.",
         ) from error

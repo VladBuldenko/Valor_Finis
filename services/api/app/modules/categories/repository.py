@@ -1,6 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -77,6 +78,37 @@ def get_categories(
         query = query.filter(CategoryModel.user_id == user_id)
 
     return query.order_by(CategoryModel.name.asc()).all()
+
+# Checks whether a user already has a category with the same normalized name.
+# This function exists to enforce case-insensitive category name uniqueness
+# before create and update operations.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier that owns the categories.
+# - category_name: normalized category name being checked.
+# - excluded_category_id: optional category identifier excluded during updates.
+# Returns:
+# - True when another matching category exists, otherwise False.
+def category_name_exists(
+    db_session: Session,
+    user_id: UUID,
+    category_name: str,
+    excluded_category_id: Optional[UUID] = None,
+) -> bool:
+    query = (
+        db_session.query(CategoryModel.id)
+        .filter(
+            CategoryModel.user_id == user_id,
+            func.lower(CategoryModel.name) == category_name.lower(),
+        )
+    )
+
+    if excluded_category_id is not None:
+        query = query.filter(
+            CategoryModel.id != excluded_category_id,
+        )
+
+    return query.first() is not None
 
 
 # Returns one category by category id and authenticated user id.

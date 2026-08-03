@@ -13,7 +13,12 @@ from app.modules.receipts import (
 )
 from app.modules.receipts.receipt_errors import ReceiptOcrProcessingError
 
-from tests.helpers import auth_headers, create_expense, create_receipt
+from tests.helpers import (
+    auth_headers,
+    create_category,
+    create_expense,
+    create_receipt,
+)
 
 
 # Tests that an authenticated user can create a receipt.
@@ -1584,3 +1589,155 @@ def test_confirm_receipt_endpoint_rejects_missing_authentication(
     assert confirm_response.json() == {
         "detail": "Missing authentication credentials.",
     }
+
+    # Verifies that receipt confirmation can assign
+# a category owned by the authenticated user.
+# This test exists to confirm valid category ownership
+# during receipt-to-expense conversion.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_allows_own_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid.uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "LIDL",
+            "total_amount_detected": "24.99",
+            "currency_detected": "EUR",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    # Act
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={
+            "category_id": category["id"],
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert confirm_response.status_code == 200, confirm_response.text
+
+    response_data = confirm_response.json()
+    confirmed_receipt = response_data["receipt"]
+    created_expense = response_data["expense"]
+
+    assert confirmed_receipt["status"] == "confirmed"
+    assert confirmed_receipt["expense_id"] == created_expense["id"]
+
+    assert created_expense["user_id"] == user_id
+    assert created_expense["category_id"] == category["id"]
+    assert created_expense["title"] == "LIDL"
+    assert created_expense["amount"] == "24.99"
+    assert created_expense["source"] == "receipt"
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200
+    assert len(expenses_response.json()) == 1
+    assert expenses_response.json()[0]["category_id"] == category["id"]
+
+    # Verifies that receipt confirmation cannot use
+# a category owned by another user.
+# This test exists to prevent cross-user category assignment
+# and confirm that the operation remains atomic after failure.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_other_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid.uuid4())
+    other_user_id = str(uuid.uuid4())
+
+    other_user_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
+    )
+
+    receipt = create_receipt(
+        client=client,
+        user_id=user_id,
+    )
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "LIDL",
+            "total_amount_detected": "24.99",
+            "currency_detected": "EUR",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+
+    assert update_response.status_code == 200, update_response.text
+
+    # Act
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={
+            "category_id": other_user_category["id"],
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert confirm_response.status_code == 404
+    assert confirm_response.json() == {
+        "detail": "Category not found.",
+    }
+
+    stored_receipt_response = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert stored_receipt_response.status_code == 200
+
+    stored_receipt = stored_receipt_response.json()
+
+    assert stored_receipt["status"] == "processed"
+    assert stored_receipt["expense_id"] is None
+
+    expenses_response = client.get(
+        "/api/v1/expenses",
+        headers=auth_headers(user_id),
+    )
+
+    assert expenses_response.status_code == 200
+    assert expenses_response.json() == []

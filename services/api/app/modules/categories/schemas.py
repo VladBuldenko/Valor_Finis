@@ -2,7 +2,13 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class CategoryBase(BaseModel):
@@ -35,6 +41,49 @@ class CategoryBase(BaseModel):
         description="Optional UI icon name for the category.",
         examples=["shopping-cart"],
     )
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        """
+        Normalizes the category name.
+
+        What:
+            Removes surrounding whitespace and collapses repeated spaces.
+
+        Why:
+            Prevents visually identical category names
+            from being stored with different whitespace.
+        """
+
+        normalized_value = " ".join(value.strip().split())
+
+        if not normalized_value:
+            raise ValueError("Category name cannot be empty.")
+
+        return normalized_value
+
+    @field_validator("color", "icon")
+    @classmethod
+    def normalize_optional_display_field(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        """
+        Normalizes optional category display fields.
+
+        What:
+            Removes surrounding whitespace and converts empty strings to null.
+
+        Why:
+            Keeps optional UI metadata consistent in the database.
+        """
+
+        if value is None:
+            return value
+
+        normalized_value = value.strip()
+
+        return normalized_value or None
 
 
 class CategoryCreate(CategoryBase):
@@ -86,6 +135,54 @@ class CategoryUpdate(BaseModel):
         description="Updated UI icon name for the category.",
         examples=["shopping-cart"],
     )
+    @field_validator("name")
+    @classmethod
+    def normalize_name(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        """
+        Normalizes the updated category name.
+
+        What:
+            Removes surrounding whitespace and collapses repeated spaces.
+
+        Why:
+            Prevents whitespace-only and visually duplicated names.
+        """
+
+        if value is None:
+            return value
+
+        normalized_value = " ".join(value.strip().split())
+
+        if not normalized_value:
+            raise ValueError("Category name cannot be empty.")
+
+        return normalized_value
+
+    @field_validator("color", "icon")
+    @classmethod
+    def normalize_optional_display_field(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        """
+        Normalizes optional category display fields.
+
+        What:
+            Removes surrounding whitespace and converts empty strings to null.
+
+        Why:
+            Keeps optional UI metadata consistent during updates.
+        """
+
+        if value is None:
+            return value
+
+        normalized_value = value.strip()
+
+        return normalized_value or None
 
     @model_validator(mode="after")
     def validate_update_payload(self) -> "CategoryUpdate":

@@ -3,6 +3,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.modules.categories import repository
+from app.modules.categories.errors import (
+    CategoryAlreadyExistsError,
+    CategoryDefaultDeletionNotAllowedError,
+    CategoryDefaultModificationNotAllowedError,
+)
 from app.modules.categories.schemas import (
     CategoryCreate,
     CategoryResponse,
@@ -11,19 +16,29 @@ from app.modules.categories.schemas import (
 
 
 # Creates a new category using validated input data and authenticated user id.
-# This function exists to keep application and business logic
-# separate from database and HTTP layers.
+# This function exists to enforce category name uniqueness
+# before delegating persistence to the repository layer.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - category_data: validated category creation data.
 # - user_id: authenticated user identifier that owns the category.
 # Returns:
 # - CategoryResponse created from the saved database model.
+# Raises:
+# - CategoryAlreadyExistsError when the user already has
+#   a category with the same case-insensitive name.
 def create_category(
     db_session: Session,
     category_data: CategoryCreate,
     user_id: UUID,
 ) -> CategoryResponse:
+    if repository.category_name_exists(
+        db_session=db_session,
+        user_id=user_id,
+        category_name=category_data.name,
+    ):
+        raise CategoryAlreadyExistsError()
+
     category_model = repository.create_category(
         db_session=db_session,
         category_data=category_data,
@@ -57,7 +72,8 @@ def get_categories(
 
 
 # Returns one category owned by the authenticated user.
-# This function exists to keep ownership-aware read logic outside the router layer.
+# This function exists to keep ownership-aware read logic
+# outside the router layer.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - category_id: category identifier.
@@ -79,7 +95,8 @@ def get_category_by_id(
 
 
 # Updates one category owned by the authenticated user.
-# This function exists to keep category update business flow outside the router layer.
+# This function exists to protect default categories
+# and enforce case-insensitive category name uniqueness.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - category_id: category identifier.
@@ -87,35 +104,70 @@ def get_category_by_id(
 # - user_id: authenticated user identifier that owns the category.
 # Returns:
 # - Updated CategoryResponse object.
+# Raises:
+# - CategoryDefaultModificationNotAllowedError when the category is default.
+# - CategoryAlreadyExistsError when another category has the same name.
 def update_category(
     db_session: Session,
     category_id: UUID,
     category_data: CategoryUpdate,
     user_id: UUID,
 ) -> CategoryResponse:
-    category_model = repository.update_category(
+    existing_category = repository.get_category_by_id(
+        db_session=db_session,
+        category_id=category_id,
+        user_id=user_id,
+    )
+
+    if existing_category.is_default:
+        raise CategoryDefaultModificationNotAllowedError()
+
+    if (
+        category_data.name is not None
+        and repository.category_name_exists(
+            db_session=db_session,
+            user_id=user_id,
+            category_name=category_data.name,
+            excluded_category_id=category_id,
+        )
+    ):
+        raise CategoryAlreadyExistsError()
+
+    updated_category = repository.update_category(
         db_session=db_session,
         category_id=category_id,
         category_data=category_data,
         user_id=user_id,
     )
 
-    return CategoryResponse.model_validate(category_model)
+    return CategoryResponse.model_validate(updated_category)
 
 
 # Deletes one category owned by the authenticated user.
-# This function exists to keep category deletion business flow outside the router layer.
+# This function exists to protect default categories
+# while allowing custom category deletion.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - category_id: category identifier.
 # - user_id: authenticated user identifier that owns the category.
 # Returns:
 # - None.
+# Raises:
+# - CategoryDefaultDeletionNotAllowedError when the category is default.
 def delete_category(
     db_session: Session,
     category_id: UUID,
     user_id: UUID,
 ) -> None:
+    existing_category = repository.get_category_by_id(
+        db_session=db_session,
+        category_id=category_id,
+        user_id=user_id,
+    )
+
+    if existing_category.is_default:
+        raise CategoryDefaultDeletionNotAllowedError()
+
     repository.delete_category(
         db_session=db_session,
         category_id=category_id,

@@ -8,6 +8,7 @@ from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.expenses import expenses_service
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
+from app.modules.categories.errors import CategoryNotFoundError
 from app.modules.expenses.expenses_schemas import (
     ExpenseCreate,
     ExpenseResponse,
@@ -48,13 +49,23 @@ def create_expense(
 
     Returns:
         ExpenseResponse with the saved expense data.
+
+    Raises:
+        HTTPException: 404 when the selected category does not exist
+        or does not belong to the authenticated user.
     """
 
-    return expenses_service.create_expense(
-        db_session=db_session,
-        expense_data=expense_data,
-        user_id=current_user.id,
-    )
+    try:
+        return expenses_service.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=current_user.id,
+        )
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found.",
+        ) from error
 
 
 @router.get(
@@ -121,7 +132,8 @@ def update_expense(
         ExpenseResponse with the updated expense data.
 
     Raises:
-        HTTPException: 404 when the expense does not exist or does not belong to the user.
+        HTTPException: 404 when the expense does not exist,
+        does not belong to the user, or the selected category is unavailable.
     """
 
     try:
@@ -135,6 +147,11 @@ def update_expense(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Expense not found.",
+        ) from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found.",
         ) from error
 
 

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
+from app.modules.categories.errors import CategoryNotFoundError
 from app.modules.receipts import receipt_service
 from app.modules.receipts.receipt_errors import (
     ReceiptExpenseNotFoundError,
@@ -205,6 +206,11 @@ def confirm_receipt(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Receipt not found.",
+        ) from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found.",
         ) from error
     except ReceiptAlreadyConfirmedError as error:
         raise HTTPException(
