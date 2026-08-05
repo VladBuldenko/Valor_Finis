@@ -49,8 +49,10 @@ def create_category(
             "constraint_name",
             None,
         )
-
-        if constraint_name == "uq_categories_user_id_name":
+        if constraint_name in {
+            "uq_categories_user_id_name",
+            "uq_categories_user_id_name_lower",
+        }:
             raise CategoryAlreadyExistsError from error
 
         raise
@@ -182,7 +184,10 @@ def update_category(
             None,
         )
 
-        if constraint_name == "uq_categories_user_id_name":
+        if constraint_name in {
+            "uq_categories_user_id_name",
+            "uq_categories_user_id_name_lower",
+        }:
             raise CategoryAlreadyExistsError from error
 
         raise

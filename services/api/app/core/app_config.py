@@ -7,6 +7,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+SUPPORTED_AUTH_MODES = {
+    "development",
+    "supabase",
+}
+
+
+# Returns and validates the configured authentication mode.
+# This function exists to fail fast when AUTH_MODE contains
+# an unsupported or misspelled value.
+# Parameters:
+# - None.
+# Returns:
+# - Validated authentication mode.
+# Raises:
+# - ValueError when AUTH_MODE is unsupported.
+def get_auth_mode() -> str:
+    auth_mode = os.getenv(
+        "AUTH_MODE",
+        "development",
+    ).strip().lower()
+
+    if auth_mode not in SUPPORTED_AUTH_MODES:
+        supported_modes = ", ".join(
+            sorted(SUPPORTED_AUTH_MODES),
+        )
+
+        raise ValueError(
+            "Unsupported AUTH_MODE "
+            f"'{auth_mode}'. "
+            f"Supported values: {supported_modes}."
+        )
+
+    return auth_mode
+
+
 class AppSettings:
     """
     Application settings.
@@ -28,12 +63,11 @@ class AppSettings:
         "postgresql://postgres:postgres@localhost:5432/valor",
     )
 
-    auth_mode: str = os.getenv(
-        "AUTH_MODE",
-        "development",
-    ).lower()
+    auth_mode: str = get_auth_mode()
 
-    supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
+    supabase_url: Optional[str] = os.getenv(
+        "SUPABASE_URL",
+    )
 
     supabase_publishable_key: Optional[str] = os.getenv(
         "SUPABASE_PUBLISHABLE_KEY",
@@ -43,7 +77,7 @@ class AppSettings:
     receipt_storage_driver: str = os.getenv(
         "RECEIPT_STORAGE_DRIVER",
         "local",
-    ).lower()
+    ).strip().lower()
 
     receipt_upload_dir: str = os.getenv(
         "RECEIPT_UPLOAD_DIR",

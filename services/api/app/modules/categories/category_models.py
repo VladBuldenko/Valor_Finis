@@ -1,10 +1,10 @@
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from typing import Optional
 
 from app.db.database_base import Base
 
@@ -22,10 +22,6 @@ from app.db.database_base import Base
 # - updated_at: record update timestamp.
 class CategoryModel(Base):
     __tablename__ = "categories"
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_categories_user_id_name"),
-    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -73,3 +69,12 @@ class CategoryModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    __table_args__ = (
+        Index(
+            "uq_categories_user_id_name_lower",
+            user_id,
+            func.lower(name),
+            unique=True,
+        ),
+    )   

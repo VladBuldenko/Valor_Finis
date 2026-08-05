@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, Any, Optional, cast
+from typing import Annotated, Any, Optional, Union, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import UUID
@@ -88,7 +88,10 @@ def get_supabase_user_payload(token: str) -> dict[str, Any]:
         with urlopen(request, timeout=5) as response:
             response_body = response.read()
     except HTTPError as error:
-        if error.code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+        if error.code in {
+            status.HTTP_401_UNAUTHORIZED,
+            status.HTTP_403_FORBIDDEN,
+        }:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired authentication token.",
@@ -105,7 +108,9 @@ def get_supabase_user_payload(token: str) -> dict[str, Any]:
         ) from error
 
     try:
-        payload = json.loads(response_body.decode("utf-8"))
+        payload = json.loads(
+            response_body.decode("utf-8"),
+        )
     except json.JSONDecodeError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -130,8 +135,13 @@ def get_supabase_user_payload(token: str) -> dict[str, Any]:
 # - CurrentUser object resolved from the JWT token.
 # Raises:
 # - HTTPException 401 when the token does not resolve to a valid user.
-def get_current_user_from_supabase_token(token: str) -> CurrentUser:
-    user_payload = get_supabase_user_payload(token)
+def get_current_user_from_supabase_token(
+    token: str,
+) -> CurrentUser:
+    user_payload = get_supabase_user_payload(
+        token=token,
+    )
+
     user_id = user_payload.get("id")
 
     if user_id is None:
@@ -141,7 +151,32 @@ def get_current_user_from_supabase_token(token: str) -> CurrentUser:
         )
 
     try:
-        return CurrentUser(id=UUID(str(user_id)))
+        return CurrentUser(
+            id=UUID(str(user_id)),
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication user identifier.",
+        ) from error
+
+
+# Resolves the current user from the temporary development header.
+# This function exists to keep development authentication parsing
+# separate from production Supabase authentication.
+# Parameters:
+# - x_user_id: raw or already parsed user identifier.
+# Returns:
+# - CurrentUser object resolved from the development header.
+# Raises:
+# - HTTPException 401 when the user identifier is invalid.
+def get_current_user_from_development_header(
+    x_user_id: Union[str, UUID],
+) -> CurrentUser:
+    try:
+        return CurrentUser(
+            id=UUID(str(x_user_id)),
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -165,21 +200,28 @@ def get_current_user(
         Header(alias="Authorization"),
     ] = None,
     x_user_id: Annotated[
-        Optional[UUID],
+        Optional[str],
         Header(alias="X-User-Id"),
     ] = None,
 ) -> CurrentUser:
     if authorization is not None:
-        token = extract_bearer_token(authorization)
-        return get_current_user_from_supabase_token(token)
+        token = extract_bearer_token(
+            authorization=authorization,
+        )
 
-    if settings.auth_mode == "development" and x_user_id is not None:
-        return CurrentUser(id=x_user_id)
+        return get_current_user_from_supabase_token(
+            token=token,
+        )
 
     if settings.auth_mode == "development":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication credentials.",
+        if x_user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authentication credentials.",
+            )
+
+        return get_current_user_from_development_header(
+            x_user_id=x_user_id,
         )
 
     raise HTTPException(
