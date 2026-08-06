@@ -26,6 +26,7 @@ class ReceiptExpenseNotFoundError(Exception):
 
     pass
 
+
 class ReceiptFileEmptyError(Exception):
     """
     Raised when an uploaded receipt file contains no data.
@@ -82,6 +83,7 @@ class ReceiptFileStorageError(Exception):
 
     pass
 
+
 class ReceiptProcessingNotAllowedError(Exception):
     """
     Raised when a receipt cannot be processed in its current state.
@@ -124,6 +126,7 @@ class ReceiptOcrProcessingError(Exception):
     """
 
     pass
+
 
 class ReceiptConfirmationNotAllowedError(Exception):
     """

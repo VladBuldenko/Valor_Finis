@@ -1,16 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.budgets import budget_service
-from app.modules.budgets.budget_errors import (
-    BudgetAlreadyExistsError,
-    BudgetNotFoundError,
-)
 from app.modules.budgets.budget_schemas import (
     BudgetCreate,
     BudgetResponse,
@@ -34,7 +30,7 @@ router = APIRouter(
 # Returns:
 # - BudgetResponse containing the saved budget.
 # Raises:
-# - HTTPException: 409 Conflict when the same budget already exists.
+# - Domain exceptions propagated to the global exception handlers.
 @router.post(
     "",
     response_model=BudgetResponse,
@@ -45,20 +41,11 @@ def create_budget(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> BudgetResponse:
-    try:
-        return budget_service.create_budget(
-            db_session=db_session,
-            budget_data=budget_data,
-            user_id=current_user.id,
-        )
-    except BudgetAlreadyExistsError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Budget with this name, period, and start date "
-                "already exists for this user."
-            ),
-        ) from error
+    return budget_service.create_budget(
+        db_session=db_session,
+        budget_data=budget_data,
+        user_id=current_user.id,
+    )
 
 
 # Returns budgets through the API.
@@ -95,8 +82,7 @@ def get_budgets(
 # Returns:
 # - BudgetResponse containing the updated budget.
 # Raises:
-# - HTTPException: 404 Not Found when the budget does not exist.
-# - HTTPException: 409 Conflict when the update creates a duplicate budget.
+# - Domain exceptions propagated to the global exception handlers.
 @router.patch(
     "/{budget_id}",
     response_model=BudgetResponse,
@@ -108,26 +94,12 @@ def update_budget(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> BudgetResponse:
-    try:
-        return budget_service.update_budget(
-            db_session=db_session,
-            budget_id=budget_id,
-            budget_data=budget_data,
-            user_id=current_user.id,
-        )
-    except BudgetNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Budget not found.",
-        ) from error
-    except BudgetAlreadyExistsError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Budget with this name, period, and start date "
-                "already exists for this user."
-            ),
-        ) from error
+    return budget_service.update_budget(
+        db_session=db_session,
+        budget_id=budget_id,
+        budget_data=budget_data,
+        user_id=current_user.id,
+    )
 
 
 # Deletes an existing budget through the API.
@@ -140,7 +112,7 @@ def update_budget(
 # Returns:
 # - None.
 # Raises:
-# - HTTPException: 404 Not Found when the budget does not exist.
+# - Domain exceptions propagated to the global exception handlers.
 @router.delete(
     "/{budget_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -150,14 +122,8 @@ def delete_budget(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> None:
-    try:
-        budget_service.delete_budget(
-            db_session=db_session,
-            budget_id=budget_id,
-            user_id=current_user.id,
-        )
-    except BudgetNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Budget not found.",
-        ) from error
+    budget_service.delete_budget(
+        db_session=db_session,
+        budget_id=budget_id,
+        user_id=current_user.id,
+    )

@@ -1,14 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.expenses import expenses_service
-from app.modules.expenses.expenses_errors import ExpenseNotFoundError
-from app.modules.categories.errors import CategoryNotFoundError
 from app.modules.expenses.expenses_schemas import (
     ExpenseCreate,
     ExpenseResponse,
@@ -51,21 +49,14 @@ def create_expense(
         ExpenseResponse with the saved expense data.
 
     Raises:
-        HTTPException: 404 when the selected category does not exist
-        or does not belong to the authenticated user.
+        Domain exceptions propagated to the global exception handlers.
     """
 
-    try:
-        return expenses_service.create_expense(
-            db_session=db_session,
-            expense_data=expense_data,
-            user_id=current_user.id,
-        )
-    except CategoryNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found.",
-        ) from error
+    return expenses_service.create_expense(
+        db_session=db_session,
+        expense_data=expense_data,
+        user_id=current_user.id,
+    )
 
 
 @router.get(
@@ -132,27 +123,15 @@ def update_expense(
         ExpenseResponse with the updated expense data.
 
     Raises:
-        HTTPException: 404 when the expense does not exist,
-        does not belong to the user, or the selected category is unavailable.
+        Domain exceptions propagated to the global exception handlers.
     """
 
-    try:
-        return expenses_service.update_expense(
-            db_session=db_session,
-            expense_id=expense_id,
-            expense_data=expense_data,
-            user_id=current_user.id,
-        )
-    except ExpenseNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Expense not found.",
-        ) from error
-    except CategoryNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found.",
-        ) from error
+    return expenses_service.update_expense(
+        db_session=db_session,
+        expense_id=expense_id,
+        expense_data=expense_data,
+        user_id=current_user.id,
+    )
 
 
 @router.delete(
@@ -183,17 +162,11 @@ def delete_expense(
         None.
 
     Raises:
-        HTTPException: 404 when the expense does not exist or does not belong to the user.
+        Domain exceptions propagated to the global exception handlers.
     """
 
-    try:
-        expenses_service.delete_expense(
-            db_session=db_session,
-            expense_id=expense_id,
-            user_id=current_user.id,
-        )
-    except ExpenseNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Expense not found.",
-        ) from error
+    expenses_service.delete_expense(
+        db_session=db_session,
+        expense_id=expense_id,
+        user_id=current_user.id,
+    )

@@ -1,16 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.goals import goal_service
-from app.modules.goals.goal_errors import (
-    GoalInvalidAmountError,
-    GoalNotFoundError,
-)
 from app.modules.goals.goal_schemas import (
     GoalCreate,
     GoalResponse,
@@ -33,6 +29,8 @@ router = APIRouter(
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - GoalResponse containing the saved financial goal.
+# Raises:
+# - Domain exceptions propagated to the global exception handlers.
 @router.post(
     "",
     response_model=GoalResponse,
@@ -84,8 +82,7 @@ def get_goals(
 # Returns:
 # - GoalResponse containing the updated financial goal.
 # Raises:
-# - HTTPException: 404 Not Found when the goal does not exist.
-# - HTTPException: 400 Bad Request when updated goal amounts are invalid.
+# - Domain exceptions propagated to the global exception handlers.
 @router.patch(
     "/{goal_id}",
     response_model=GoalResponse,
@@ -97,23 +94,12 @@ def update_goal(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> GoalResponse:
-    try:
-        return goal_service.update_goal(
-            db_session=db_session,
-            goal_id=goal_id,
-            goal_data=goal_data,
-            user_id=current_user.id,
-        )
-    except GoalNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Goal not found.",
-        ) from error
-    except GoalInvalidAmountError as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="current_amount must be less than or equal to target_amount.",
-        ) from error
+    return goal_service.update_goal(
+        db_session=db_session,
+        goal_id=goal_id,
+        goal_data=goal_data,
+        user_id=current_user.id,
+    )
 
 
 # Deletes an existing financial goal through the API.
@@ -126,7 +112,7 @@ def update_goal(
 # Returns:
 # - None.
 # Raises:
-# - HTTPException: 404 Not Found when the goal does not exist.
+# - Domain exceptions propagated to the global exception handlers.
 @router.delete(
     "/{goal_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -136,14 +122,8 @@ def delete_goal(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> None:
-    try:
-        goal_service.delete_goal(
-            db_session=db_session,
-            goal_id=goal_id,
-            user_id=current_user.id,
-        )
-    except GoalNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Goal not found.",
-        ) from error
+    goal_service.delete_goal(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=current_user.id,
+    )

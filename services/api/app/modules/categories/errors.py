@@ -25,6 +25,7 @@ class CategoryNotFoundError(Exception):
 
     pass
 
+
 class CategoryDefaultModificationNotAllowedError(Exception):
     """
     Raised when a default category is modified.

@@ -1,14 +1,17 @@
 from fastapi import FastAPI
 
-from app.modules.expenses.expenses_router import router as expenses_router
-from app.modules.receipts.receipt_router import router as receipts_router
-from app.modules.categories.router import router as categories_router
-from app.modules.budgets.budget_router import router as budgets_router
-from app.modules.goals.goal_router import router as goals_router
-from app.modules.analytics.analytics_router import router as analytics_router
+from app.core.exception_handlers import register_exception_handlers
 from app.db.database_models import import_database_models
+from app.modules.analytics.analytics_router import router as analytics_router
+from app.modules.budgets.budget_router import router as budgets_router
+from app.modules.categories.router import router as categories_router
+from app.modules.expenses.expenses_router import router as expenses_router
+from app.modules.goals.goal_router import router as goals_router
+from app.modules.receipts.receipt_router import router as receipts_router
+
 
 import_database_models()
+
 
 app = FastAPI(
     title="Valor API",
@@ -17,20 +20,46 @@ app = FastAPI(
 )
 
 
-app.include_router(expenses_router, prefix="/api/v1")
-app.include_router(receipts_router, prefix="/api/v1")
-app.include_router(categories_router, prefix="/api/v1")
-app.include_router(budgets_router, prefix="/api/v1")
-app.include_router(goals_router, prefix="/api/v1")
-app.include_router(analytics_router, prefix="/api/v1")
+register_exception_handlers(app)
+
+
+app.include_router(
+    expenses_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    receipts_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    categories_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    budgets_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    goals_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    analytics_router,
+    prefix="/api/v1",
+)
+
 
 # Returns basic API information.
-# This function exists to provide a simple root endpoint instead of returning 404.
+# This function exists to provide a simple root endpoint
+# instead of returning HTTP 404.
 # Parameters:
 # - None.
 # Returns:
 # - Basic API metadata and useful documentation links.
-@app.get("/", tags=["System"])
+@app.get(
+    "/",
+    tags=["System"],
+)
 def root() -> dict[str, str]:
     return {
         "service": "Valor API",
@@ -47,7 +76,10 @@ def root() -> dict[str, str]:
 # - None.
 # Returns:
 # - Basic service status information.
-@app.get("/health", tags=["System"])
+@app.get(
+    "/health",
+    tags=["System"],
+)
 def health_check() -> dict[str, str]:
     return {
         "status": "ok",

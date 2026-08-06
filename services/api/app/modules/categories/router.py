@@ -1,18 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.categories import service
-from app.modules.categories.errors import (
-    CategoryAlreadyExistsError,
-    CategoryDefaultDeletionNotAllowedError,
-    CategoryDefaultModificationNotAllowedError,
-    CategoryNotFoundError,
-)
 from app.modules.categories.schemas import (
     CategoryCreate,
     CategoryResponse,
@@ -35,6 +29,8 @@ router = APIRouter(
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - CategoryResponse containing the saved category.
+# Raises:
+# - Domain exceptions propagated to the global exception handlers.
 @router.post(
     "",
     response_model=CategoryResponse,
@@ -45,17 +41,11 @@ def create_category(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> CategoryResponse:
-    try:
-        return service.create_category(
-            db_session=db_session,
-            category_data=category_data,
-            user_id=current_user.id,
-        )
-    except CategoryAlreadyExistsError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Category with this name already exists for this user.",
-        ) from error
+    return service.create_category(
+        db_session=db_session,
+        category_data=category_data,
+        user_id=current_user.id,
+    )
 
 
 # Returns categories through the API.
@@ -82,13 +72,16 @@ def get_categories(
 
 
 # Returns one category through the API.
-# This function exists to retrieve a single category that belongs to the authenticated user.
+# This function exists to retrieve a single category
+# that belongs to the authenticated user.
 # Parameters:
 # - category_id: category identifier from the URL path.
 # - current_user: authenticated user resolved from request authentication data.
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - CategoryResponse object that belongs to the authenticated user.
+# Raises:
+# - Domain exceptions propagated to the global exception handlers.
 @router.get(
     "/{category_id}",
     response_model=CategoryResponse,
@@ -99,17 +92,11 @@ def get_category_by_id(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> CategoryResponse:
-    try:
-        return service.get_category_by_id(
-            db_session=db_session,
-            category_id=category_id,
-            user_id=current_user.id,
-        )
-    except CategoryNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found.",
-        ) from error
+    return service.get_category_by_id(
+        db_session=db_session,
+        category_id=category_id,
+        user_id=current_user.id,
+    )
 
 
 # Updates one category through the API.
@@ -122,6 +109,8 @@ def get_category_by_id(
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - Updated CategoryResponse object.
+# Raises:
+# - Domain exceptions propagated to the global exception handlers.
 @router.patch(
     "/{category_id}",
     response_model=CategoryResponse,
@@ -133,37 +122,25 @@ def update_category(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> CategoryResponse:
-    try:
-        return service.update_category(
-            db_session=db_session,
-            category_id=category_id,
-            category_data=category_data,
-            user_id=current_user.id,
-        )
-    except CategoryNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found.",
-        ) from error
-    except CategoryDefaultModificationNotAllowedError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Default category cannot be modified.",
-        ) from error
-    except CategoryAlreadyExistsError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Category with this name already exists for this user.",
-        ) from error
+    return service.update_category(
+        db_session=db_session,
+        category_id=category_id,
+        category_data=category_data,
+        user_id=current_user.id,
+    )
+
 
 # Deletes one category through the API.
-# This function exists to delete a category that belongs to the authenticated user.
+# This function exists to delete a category
+# that belongs to the authenticated user.
 # Parameters:
 # - category_id: category identifier from the URL path.
 # - current_user: authenticated user resolved from request authentication data.
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
 # - None. The API returns HTTP 204 when the category is deleted.
+# Raises:
+# - Domain exceptions propagated to the global exception handlers.
 @router.delete(
     "/{category_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -173,19 +150,8 @@ def delete_category(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> None:
-    try:
-        service.delete_category(
-            db_session=db_session,
-            category_id=category_id,
-            user_id=current_user.id,
-        )
-    except CategoryNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found.",
-        ) from error
-    except CategoryDefaultDeletionNotAllowedError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Default category cannot be deleted.",
-        ) from error
+    service.delete_category(
+        db_session=db_session,
+        category_id=category_id,
+        user_id=current_user.id,
+    )
