@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: valor-db
+
+    environment:
+      POSTGRES_DB: valor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - valor_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d valor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+
+    container_name: valor-api
+
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/valor
+      AUTH_MODE: development
+      SUPABASE_URL: ""
+      SUPABASE_PUBLISHABLE_KEY: ""
+      RECEIPT_STORAGE_DRIVER: local
+      RECEIPT_UPLOAD_DIR: uploads/receipts
+      RECEIPT_MAX_FILE_SIZE_MB: "10"
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    volumes:
+      - ./services/api:/app
+      - valor_receipt_uploads:/app/uploads/receipts
+
+    command:
+      - sh
+      - -c
+      - >
+        alembic upgrade head &&
+        uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+
+volumes:
+  valor_postgres_data:
+  valor_receipt_uploads:
