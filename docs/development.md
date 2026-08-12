@@ -1,338 +1,410 @@
-# 🛠 Development Guide — Valor
+# 🛠 Development Guide — Valor Finis
 
-This document defines how to develop, structure, and scale the Valor project.
+This document defines the main development rules and architectural conventions for Valor Finis.
 
 ---
 
 # 📌 Principles
 
-- Build simple → then scale
-- Feature-based architecture
-- Clean code > clever code
-- Ship fast, iterate faster
-- Test what matters
+- Build simple, then scale
+- Prefer clear architecture over clever abstractions
+- Keep business logic outside HTTP handlers
+- Keep modules focused on one business area
+- Validate data at system boundaries
+- Protect user ownership on the backend
+- Use migrations for every database schema change
+- Test business rules and API contracts
+- Avoid premature optimization
 
 ---
 
-# 🧱 Project Architecture
+# 🧱 Architecture
 
-Valor uses a **monorepo architecture**.
+Valor Finis uses a modular monorepo structure.
 
+```text
+Valor_Finis/
+├── apps/               # Web and mobile clients
+├── services/
+│   └── api/            # FastAPI backend
+├── docs/               # Project documentation
+├── .github/workflows/  # CI
+└── docker-compose.yml
 
-apps/ → mobile + web
-services/ → backend API
-packages/ → shared code
-infra/ → infrastructure
-docs/ → documentation
-quality/ → testing
+The backend follows a layered architecture:
 
+HTTP Request
+    ↓
+Router
+    ↓
+Service
+    ↓
+Repository
+    ↓
+SQLAlchemy
+    ↓
+PostgreSQL
 
----
+Each backend module represents one business area.
 
-# 🧑‍💻 Development Workflow
+Current modules:
 
-## 1. Pick a feature
+auth
+categories
+expenses
+budgets
+goals
+receipts
+analytics
+🧩 Backend Module Structure
 
-Example:
-
-
-expenses → add expense
-
-
----
-
-## 2. Define scope
-
-Example:
-
-
-POST /expenses
-GET /expenses
-
-
----
-
-## 3. Implement backend first
-
-- create module
-- add schema
-- add service
-- add repository
-- add route
-
----
-
-## 4. Test backend
-
-- unit test
-- integration test
-
----
-
-## 5. Connect frontend
-
-- call API
-- display data
-
----
-
-## 6. Add UI
-
-- simple UI first
-- no overdesign
-
----
-
-## 7. Add tests
-
-- API tests
-- UI tests
-
----
-
-# 🧩 Backend Development (FastAPI)
-
-## Structure
-
+Typical module:
 
 modules/
-expenses/
-router.py
-service.py
-repository.py
-models.py
-schemas.py
+└── expenses/
+    ├── expenses_router.py
+    ├── expenses_service.py
+    ├── expenses_repository.py
+    ├── expenses_models.py
+    ├── expenses_schemas.py
+    └── errors.py
+Responsibilities
+Router
 
+Handles HTTP concerns:
 
----
+request
+authentication dependency
+validation
+response model
+status code
 
-## Rules
+Routers must not contain database or business logic.
 
-- router → HTTP layer
-- service → business logic
-- repository → database
-- schemas → validation (Pydantic)
-- models → DB models
+Service
 
----
+Contains:
 
-## Example Flow
+business rules
+ownership validation
+transactions
+domain operations
+model → response conversion
+Repository
 
+Contains database access:
 
-Request → Router → Service → Repository → DB
+SELECT
+INSERT
+UPDATE
+DELETE
 
+Repositories should not contain HTTP logic.
 
----
+Schemas
 
-# 📱 Mobile Development (React Native)
+Pydantic schemas define API input and output contracts.
 
-## Structure
+Models
 
+SQLAlchemy models define persistence and database relationships.
 
-features/
-expenses/
-components/
-screens/
-hooks/
-api/
+Errors
 
+Business failures are represented as domain exceptions.
 
----
+They are mapped to HTTP responses by centralized exception handlers.
 
-## Rules
+🔄 Feature Development Workflow
 
-- feature-based structure
-- no global spaghetti
-- keep components small
-- separate UI and logic
+For a backend feature:
 
----
+Define API contract
+        ↓
+Define schema
+        ↓
+Add/update model if needed
+        ↓
+Create Alembic migration
+        ↓
+Repository
+        ↓
+Service
+        ↓
+Router
+        ↓
+Unit tests
+        ↓
+Integration tests
+        ↓
+Run complete test suite
 
-# 🌐 Web Development (Next.js)
+Do not start implementation before the expected API behavior and business rules are clear.
 
-## Purpose
+🔌 API Design
 
-- landing page (MVP)
-- later: dashboard
-
----
-
-## Rules
-
-- use server components when possible
-- optimize performance
-- simple UI first
-
----
-
-# 🗄 Database Rules
-
-- use PostgreSQL
-- normalize data
-- avoid premature optimization
-- migrations must be versioned
-
----
-
-# 🔌 API Design Rules
-
-- RESTful
-- predictable endpoints
-- clear naming
+Use predictable REST endpoints.
 
 Example:
 
+GET    /api/v1/expenses
+POST   /api/v1/expenses
+GET    /api/v1/expenses/{id}
+PATCH  /api/v1/expenses/{id}
+DELETE /api/v1/expenses/{id}
 
-GET /expenses
-POST /expenses
-PUT /expenses/{id}
-DELETE /expenses/{id}
+Use:
 
+POST   → create
+GET    → read
+PATCH  → partial update
+DELETE → delete
 
----
+API rules:
 
-# 🧪 Testing Strategy
+use consistent resource naming;
+use Pydantic validation;
+return consistent error responses;
+never trust user-provided ownership identifiers;
+scope user resources using the authenticated user;
+keep HTTP concerns in routers.
+🗄 Database
 
-## Functional
+Valor Finis uses PostgreSQL with SQLAlchemy and Alembic.
 
-- unit tests (pytest)
-- integration tests
-- E2E tests (Playwright / Detox)
+Rules:
 
----
+every schema change requires an Alembic migration;
+migrations must work from an empty database;
+use database constraints for important invariants;
+use foreign keys for relationships;
+add indexes only when they serve a real query pattern;
+application validation does not replace database constraints.
 
-## Non-functional
+Migration workflow:
 
-- performance (k6)
-- security (OWASP ZAP)
-- accessibility (axe)
+alembic upgrade head
 
----
+Check migration state:
 
-## Rule
+alembic current
+🔐 Authentication and Authorization
 
-Test business logic first.
+Supported modes:
 
----
+development
+supabase
 
-# 📦 Code Standards
+Development mode can use:
 
-## Naming
+X-User-Id: <UUID>
 
-- variables → camelCase
-- files → kebab-case or snake_case
-- classes → PascalCase
+Supabase mode uses:
 
----
+Authorization: Bearer <token>
 
-## Functions
+Rules:
 
-- short
-- single responsibility
-- no hidden logic
+development authentication must never be treated as production authentication;
+users may access only their own resources;
+ownership is validated on the backend;
+authentication failures return consistent HTTP errors;
+secrets must never be committed to Git.
+🧾 Receipt Processing
 
----
+Receipt processing follows a controlled state flow:
 
-## Comments
+Upload
+  ↓
+Validate file
+  ↓
+Store file
+  ↓
+OCR processing
+  ↓
+Parse detected data
+  ↓
+Confirm data
+  ↓
+Create Expense
+  ↓
+Mark Receipt confirmed
 
-- explain WHY, not WHAT
+Receipt confirmation and expense creation must remain atomic.
 
----
+A failure must not leave partially confirmed financial data.
 
-# 🔐 Security
+🧪 Testing
 
-- never store secrets in repo
-- use .env files
-- validate all inputs
-- sanitize user data
+Backend testing uses pytest.
 
----
+Main test levels:
 
-# ⚡ Performance
+Unit tests
+    ↓
+business rules and isolated behavior
 
-- avoid unnecessary API calls
-- paginate data
-- cache where needed
+Integration tests
+    ↓
+API + service + repository + PostgreSQL
 
----
+Tests should cover:
 
-# 🚀 CI/CD
+happy paths
+validation errors
+ownership rules
+not-found behavior
+duplicate protection
+database constraints
+domain error mapping
+authentication
+transaction-sensitive operations
 
-Every PR must:
+Before completing backend work:
 
-- pass tests
-- pass lint
-- build successfully
+python -m pytest -x -v
 
----
+The local green test suite is the primary development check.
 
-# 📊 Logging
+🐳 Docker
 
-- log errors
-- log important actions
-- avoid sensitive data
+Docker Compose provides the local application environment.
 
----
+FastAPI
+   ↓
+PostgreSQL
 
-# 🔄 Versioning
+Start:
 
-Use semantic versioning:
+docker compose up --build
 
+The API container automatically applies:
 
-v0.1.0 → MVP
-v0.2.0 → new features
-v1.0.0 → stable
+alembic upgrade head
 
+before starting FastAPI.
 
----
+Stop containers while preserving data:
 
-# ⚠️ Anti-Patterns (Avoid)
+docker compose down
+🚀 CI
 
-- overengineering
-- premature optimization
-- copying without understanding
-- adding ML too early
-- building everything at once
+GitHub Actions runs backend CI on pushes and pull requests to main.
 
----
+Pipeline:
 
-# ✅ Development Order
+Checkout
+   ↓
+Python
+   ↓
+PostgreSQL
+   ↓
+Install dependencies
+   ↓
+Alembic migrations
+   ↓
+pytest
 
-Expenses
-Categories
-Limits
-Goals
-Dashboard
-OCR
-Analytics
-ML
+A feature is not considered complete when CI is failing.
 
----
+📦 Code Standards
 
-# 🎯 Definition of Done
+Python follows standard Python naming:
 
-Feature is done when:
+variables/functions → snake_case
+classes             → PascalCase
+constants           → UPPER_SNAKE_CASE
+modules/files       → snake_case
 
-- works end-to-end
-- tested
-- no critical bugs
-- readable code
+Code rules:
 
----
+keep functions focused;
+prefer explicit code over unnecessary abstraction;
+avoid hidden side effects;
+avoid unrelated refactoring during feature work;
+comments should explain intent or reasoning;
+remove dead code instead of commenting it out.
+🔒 Security Rules
+never commit .env files;
+never log secrets or access tokens;
+validate external input;
+enforce resource ownership;
+use ORM/database parameterization instead of constructing SQL manually;
+restrict development authentication to development environments;
+return safe API errors without exposing internal implementation details.
+⚡ Performance
 
-# 🚀 First Task
+Optimize only after identifying a real bottleneck.
 
-Implement:
+Preferred order:
 
+measure
+  ↓
+identify bottleneck
+  ↓
+optimize
+  ↓
+measure again
 
-POST /expenses
-GET /expenses
+Potential tools such as pagination, caching, queues, or separate services should be introduced when real requirements justify them.
 
+🌐 Web and Mobile
 
-And connect it to mobile app.
+Frontend clients consume the backend through its public API contract.
 
----
+Clients must not duplicate backend business rules.
 
-# 💡 Final Rule
+Expected flow:
 
-> If it's not working in real usage — it's not done.
+Web / Mobile
+      ↓
+Authentication
+      ↓
+Valor Finis API
+      ↓
+PostgreSQL
+
+Shared API clients/types should be generated or derived from the API contract when frontend development begins.
+
+✅ Definition of Done
+
+A feature is complete when:
+
+behavior is implemented
+API contract is correct
+business rules are covered
+ownership/security rules are respected
+database migration exists when required
+unit/integration tests pass
+full backend test suite passes
+CI passes
+documentation is updated when behavior changed
+📈 Scaling Rule
+
+Do not introduce infrastructure only because it is considered modern.
+
+Start with clear module boundaries.
+
+Extract queues, workers, caching, or independent services only when there is a demonstrated requirement such as:
+
+independent scaling
+failure isolation
+different infrastructure needs
+independent deployment
+clear organizational ownership
+🎯 Current Direction
+
+The backend MVP is implemented.
+
+Current priorities:
+
+Documentation
+    ↓
+Production Supabase verification
+    ↓
+Backend deployment
+    ↓
+Web / Mobile integration
+    ↓
+Improve the API based on real client usage
+💡 Final Rule
