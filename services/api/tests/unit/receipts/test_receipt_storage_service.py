@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
+import httpx
 
 import pytest
 from fastapi import UploadFile
@@ -456,3 +457,366 @@ def test_delete_receipt_file_wraps_filesystem_error(
     unlink_mock.assert_called_once_with(
         missing_ok=True,
     )
+
+# Verifies that Supabase storage saves a valid receipt object.
+# This test exists to confirm remote object path generation,
+# request authentication, and receipt content upload.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# Returns:
+# - None.
+def test_save_receipt_file_uploads_file_to_supabase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+
+    uploaded_file = build_upload_file(
+        filename="receipt.jpg",
+        content_type="image/jpeg",
+        content=b"receipt-content",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_driver",
+        "supabase",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_bucket",
+        "receipts",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_max_file_size_mb",
+        1,
+    )
+
+    response_mock = MagicMock()
+
+    post_mock = MagicMock(
+        return_value=response_mock,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "post",
+        post_mock,
+    )
+
+    result = receipt_storage_service.save_receipt_file(
+        uploaded_file=uploaded_file,
+        user_id=user_id,
+    )
+
+    assert result.startswith(
+        f"supabase://receipts/{user_id}/",
+    )
+    assert result.endswith(
+        ".jpg",
+    )
+
+    post_mock.assert_called_once()
+
+    call_args = post_mock.call_args
+
+    assert (
+        "/storage/v1/object/receipts/"
+        f"{user_id}/"
+        in call_args.args[0]
+    )
+
+    assert call_args.kwargs["headers"] == {
+        "apikey": "test-secret-key",
+        "Content-Type": "image/jpeg",
+        "x-upsert": "false",
+    }
+
+    assert (
+        call_args.kwargs["content"]
+        == b"receipt-content"
+    )
+
+    response_mock.raise_for_status.assert_called_once_with()
+
+
+# Verifies that empty files are rejected before calling Supabase.
+# This test exists to keep validation inside the backend storage layer.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings.
+# Returns:
+# - None.
+def test_save_receipt_file_rejects_empty_supabase_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+
+    uploaded_file = build_upload_file(
+        filename="receipt.jpg",
+        content_type="image/jpeg",
+        content=b"",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_driver",
+        "supabase",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_bucket",
+        "receipts",
+    )
+
+    post_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "post",
+        post_mock,
+    )
+
+    with pytest.raises(
+        ReceiptFileEmptyError,
+    ):
+        receipt_storage_service.save_receipt_file(
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    post_mock.assert_not_called()
+
+
+# Verifies that oversized files are rejected before calling Supabase.
+# This test exists to enforce the configured backend size limit
+# independently from Supabase bucket settings.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings.
+# Returns:
+# - None.
+def test_save_receipt_file_rejects_oversized_supabase_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+
+    uploaded_file = build_upload_file(
+        filename="receipt.jpg",
+        content_type="image/jpeg",
+        content=b"receipt-content",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_driver",
+        "supabase",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_bucket",
+        "receipts",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_max_file_size_mb",
+        0,
+    )
+
+    post_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "post",
+        post_mock,
+    )
+
+    with pytest.raises(
+        ReceiptFileTooLargeError,
+    ):
+        receipt_storage_service.save_receipt_file(
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    post_mock.assert_not_called()
+
+
+# Verifies that Supabase upload failures are converted into domain errors.
+# This test exists to prevent HTTP client implementation details
+# from escaping the receipt storage layer.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the HTTP request.
+# Returns:
+# - None.
+def test_save_receipt_file_wraps_supabase_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+
+    uploaded_file = build_upload_file(
+        filename="receipt.jpg",
+        content_type="image/jpeg",
+        content=b"receipt-content",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_driver",
+        "supabase",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_storage_bucket",
+        "receipts",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "receipt_max_file_size_mb",
+        1,
+    )
+
+    post_mock = MagicMock(
+        side_effect=httpx.ConnectError(
+            "Supabase unavailable",
+        ),
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "post",
+        post_mock,
+    )
+
+    with pytest.raises(
+        ReceiptFileStorageError,
+    ) as error_info:
+        receipt_storage_service.save_receipt_file(
+            uploaded_file=uploaded_file,
+            user_id=user_id,
+        )
+
+    assert isinstance(
+        error_info.value.__cause__,
+        httpx.ConnectError,
+    )
+
+
+# Verifies that Supabase receipt objects are deleted through Storage API.
+# This test exists to confirm remote cleanup for Supabase storage paths.
+# Parameters:
+# - monkeypatch: pytest fixture used to override settings
+#   and replace the HTTP request.
+# Returns:
+# - None.
+def test_delete_receipt_file_removes_supabase_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+
+    response_mock = MagicMock()
+
+    request_mock = MagicMock(
+        return_value=response_mock,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "request",
+        request_mock,
+    )
+
+    storage_path = (
+        "supabase://receipts/"
+        "user-id/receipt-id.jpg"
+    )
+
+    receipt_storage_service.delete_receipt_file(
+        storage_path=storage_path,
+    )
+
+    request_mock.assert_called_once_with(
+        method="DELETE",
+        url=(
+            "https://example.supabase.co"
+            "/storage/v1/object/receipts"
+        ),
+        headers={
+            "apikey": "test-secret-key",
+            "Content-Type": "application/json",
+        },
+        json={
+            "prefixes": [
+                "user-id/receipt-id.jpg",
+            ],
+        },
+        timeout=(
+            receipt_storage_service
+            .SUPABASE_STORAGE_TIMEOUT_SECONDS
+        ),
+    )
+
+    response_mock.raise_for_status.assert_called_once_with()
+
+
+# Verifies that malformed Supabase storage paths are rejected.
+# This test exists to prevent ambiguous remote deletion operations.
+# Parameters:
+# - None.
+# Returns:
+# - None.
+def test_delete_receipt_file_rejects_invalid_supabase_path() -> None:
+    with pytest.raises(
+        ReceiptFileStorageError,
+    ):
+        receipt_storage_service.delete_receipt_file(
+            storage_path="supabase://receipts",
+        )
