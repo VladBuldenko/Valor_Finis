@@ -363,3 +363,57 @@ def test_delete_receipt_raises_when_receipt_not_found(
 
     db_session.delete.assert_not_called()
     db_session.commit.assert_not_called()
+
+    # Verifies that receipt deletion can be flushed without committing.
+    # This test exists to allow the service layer to coordinate
+    # database deletion with external storage cleanup in one operation.
+    # Parameters:
+    # - db_session: mocked SQLAlchemy session.
+    # - monkeypatch: pytest fixture used to isolate get_receipt_by_id.
+    # Returns:
+    # - None.
+    def test_delete_receipt_flushes_without_commit_when_commit_disabled(
+        db_session: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        user_id = uuid.uuid4()
+        receipt_id = uuid.uuid4()
+
+        existing_receipt = ReceiptModel(
+            id=receipt_id,
+            user_id=user_id,
+            storage_path="receipts/receipt-1.jpg",
+            status="uploaded",
+        )
+
+        get_receipt_by_id_mock = MagicMock(
+            return_value=existing_receipt,
+        )
+
+        monkeypatch.setattr(
+            receipt_repository,
+            "get_receipt_by_id",
+            get_receipt_by_id_mock,
+        )
+
+        result = receipt_repository.delete_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+            commit=False,
+        )
+
+        assert result is None
+
+        get_receipt_by_id_mock.assert_called_once_with(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+        )
+
+        db_session.delete.assert_called_once_with(
+            existing_receipt,
+        )
+
+        db_session.flush.assert_called_once_with()
+        db_session.commit.assert_not_called()

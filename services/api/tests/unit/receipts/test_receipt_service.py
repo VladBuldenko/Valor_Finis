@@ -595,8 +595,8 @@ def test_update_receipt_stops_when_expense_validation_fails(
     map_receipt_mock.assert_not_called()
 
 
-# Verifies that receipt deletion delegates to the repository.
-# This test exists to confirm delete service orchestration.
+# Verifies that receipt deletion removes both metadata and stored file.
+# This test exists to confirm coordinated database and storage cleanup.
 # Parameters:
 # - db_session: mocked SQLAlchemy session.
 # - monkeypatch: pytest fixture used to replace dependencies.
@@ -609,12 +609,33 @@ def test_delete_receipt(
     user_id = uuid.uuid4()
     receipt_id = uuid.uuid4()
 
-    delete_receipt_mock = MagicMock()
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
 
+    storage_path = receipt.storage_path
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    delete_receipt_mock = MagicMock()
+    delete_receipt_file_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
     monkeypatch.setattr(
         receipt_service.receipt_repository,
         "delete_receipt",
         delete_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "delete_receipt_file",
+        delete_receipt_file_mock,
     )
 
     result = receipt_service.delete_receipt(
@@ -625,11 +646,97 @@ def test_delete_receipt(
 
     assert result is None
 
-    delete_receipt_mock.assert_called_once_with(
+    get_receipt_mock.assert_called_once_with(
         db_session=db_session,
         receipt_id=receipt_id,
         user_id=user_id,
     )
+
+    delete_receipt_mock.assert_called_once_with(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+        commit=False,
+    )
+
+    delete_receipt_file_mock.assert_called_once_with(
+        storage_path=storage_path,
+    )
+
+    db_session.commit.assert_called_once_with()
+    db_session.rollback.assert_not_called()
+
+# Verifies that database deletion is rolled back
+# when receipt file cleanup fails.
+# This test exists to prevent receipt metadata from being committed
+# when its stored file could not be removed.
+# Parameters:
+# - db_session: mocked SQLAlchemy session.
+# - monkeypatch: pytest fixture used to replace dependencies.
+# Returns:
+# - None.
+def test_delete_receipt_rolls_back_when_storage_cleanup_fails(
+    db_session: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    receipt_id = uuid.uuid4()
+
+    receipt = build_receipt_model(
+        user_id=user_id,
+        receipt_id=receipt_id,
+    )
+
+    storage_error = ReceiptFileStorageError()
+
+    get_receipt_mock = MagicMock(
+        return_value=receipt,
+    )
+    delete_receipt_mock = MagicMock()
+    delete_receipt_file_mock = MagicMock(
+        side_effect=storage_error,
+    )
+
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "get_receipt_by_id",
+        get_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_repository,
+        "delete_receipt",
+        delete_receipt_mock,
+    )
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "delete_receipt_file",
+        delete_receipt_file_mock,
+    )
+
+    with pytest.raises(
+        ReceiptFileStorageError,
+    ) as error_info:
+        receipt_service.delete_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+        )
+
+    assert error_info.value is storage_error
+
+    delete_receipt_mock.assert_called_once_with(
+        db_session=db_session,
+        receipt_id=receipt_id,
+        user_id=user_id,
+        commit=False,
+    )
+
+    delete_receipt_file_mock.assert_called_once_with(
+        storage_path=receipt.storage_path,
+    )
+
+    db_session.commit.assert_not_called()
+    db_session.rollback.assert_called_once_with()
 
 
 # Verifies that an uploaded file is stored before its receipt record is created.

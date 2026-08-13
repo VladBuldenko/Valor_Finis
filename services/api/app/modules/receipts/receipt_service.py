@@ -389,21 +389,43 @@ def update_receipt(
     return map_receipt_to_response(receipt)
 
 
-# Deletes a receipt owned by the authenticated user.
-# This function exists to remove receipt metadata through the business layer.
+# Deletes a receipt and its stored file for the authenticated user.
+# This function exists to coordinate database deletion
+# with receipt file cleanup across local or remote storage.
 # Parameters:
 # - db_session: active SQLAlchemy session.
 # - receipt_id: receipt identifier.
 # - user_id: authenticated user identifier.
 # Returns:
 # - None.
+# Raises:
+# - ReceiptNotFoundError when the receipt does not belong to the user.
+# - ReceiptFileStorageError when the stored receipt file cannot be removed.
 def delete_receipt(
     db_session: Session,
     receipt_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    receipt_repository.delete_receipt(
+    receipt = receipt_repository.get_receipt_by_id(
         db_session=db_session,
         receipt_id=receipt_id,
         user_id=user_id,
     )
+
+    try:
+        receipt_repository.delete_receipt(
+            db_session=db_session,
+            receipt_id=receipt_id,
+            user_id=user_id,
+            commit=False,
+        )
+
+        if receipt.storage_path:
+            receipt_storage_service.delete_receipt_file(
+                storage_path=receipt.storage_path,
+            )
+
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise

@@ -125,19 +125,23 @@ def update_receipt(
     return receipt
 
 # Deletes a receipt owned by the authenticated user.
-# This function exists to remove receipt metadata while preserving user data isolation.
+# This function exists to remove receipt metadata while preserving
+# user data isolation and optional transaction control.
 # Parameters:
 # - db_session: active SQLAlchemy session.
 # - receipt_id: receipt identifier.
 # - user_id: authenticated user identifier.
+# - commit: whether the repository should commit the transaction immediately.
 # Returns:
 # - None.
 # Raises:
-# - ReceiptNotFoundError when the receipt does not exist or belongs to another user.
+# - ReceiptNotFoundError when the receipt does not exist
+#   or belongs to another user.
 def delete_receipt(
     db_session: Session,
     receipt_id: uuid.UUID,
     user_id: uuid.UUID,
+    commit: bool = True,
 ) -> None:
     receipt = get_receipt_by_id(
         db_session=db_session,
@@ -145,5 +149,11 @@ def delete_receipt(
         user_id=user_id,
     )
 
-    db_session.delete(receipt)
-    db_session.commit()
+    db_session.delete(
+        receipt,
+    )
+
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()

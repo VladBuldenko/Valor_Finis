@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import Protocol
 
+from app.modules.receipts import receipt_storage_service
 from app.modules.receipts.receipt_errors import (
+    ReceiptFileStorageError,
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
 )
@@ -62,32 +64,48 @@ class UnconfiguredReceiptOcrProvider:
         raise ReceiptOcrProcessingError()
 
 
-receipt_ocr_provider: ReceiptOcrProvider = UnconfiguredReceiptOcrProvider()
+receipt_ocr_provider: ReceiptOcrProvider = (
+    UnconfiguredReceiptOcrProvider()
+)
 
 
 # Extracts normalized text from a stored receipt file.
 # This function exists to isolate receipt business logic
-# from the selected OCR provider implementation.
+# from both the selected OCR provider and storage provider.
 # Parameters:
 # - storage_path: internal path of the stored receipt file.
 # Returns:
 # - Non-empty normalized OCR text.
 # Raises:
-# - ReceiptOcrFileNotFoundError when the stored file does not exist.
-# - ReceiptOcrProcessingError when the provider fails or returns empty text.
-def extract_receipt_text(storage_path: str) -> str:
-    file_path = Path(storage_path)
-
-    if not file_path.is_file():
-        raise ReceiptOcrFileNotFoundError()
-
+# - ReceiptOcrFileNotFoundError when a local stored file does not exist.
+# - ReceiptOcrProcessingError when storage access fails,
+#   the OCR provider fails, or the provider returns empty text.
+def extract_receipt_text(
+    storage_path: str,
+) -> str:
     try:
-        extracted_text = receipt_ocr_provider.extract_text(
-            file_path=file_path,
-        )
+        with receipt_storage_service.materialize_receipt_file(
+            storage_path=storage_path,
+        ) as file_path:
+            if not file_path.is_file():
+                raise ReceiptOcrFileNotFoundError()
+
+            try:
+                extracted_text = (
+                    receipt_ocr_provider.extract_text(
+                        file_path=file_path,
+                    )
+                )
+            except ReceiptOcrProcessingError:
+                raise
+            except Exception as error:
+                raise ReceiptOcrProcessingError() from error
+
+    except ReceiptOcrFileNotFoundError:
+        raise
     except ReceiptOcrProcessingError:
         raise
-    except Exception as error:
+    except ReceiptFileStorageError as error:
         raise ReceiptOcrProcessingError() from error
 
     normalized_text = extracted_text.strip()

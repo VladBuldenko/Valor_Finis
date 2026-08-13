@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -5,6 +6,7 @@ import pytest
 
 from app.modules.receipts import receipt_ocr_service
 from app.modules.receipts.receipt_errors import (
+    ReceiptFileStorageError,
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
 )
@@ -196,3 +198,105 @@ def test_unconfigured_ocr_provider_raises_processing_error(
         provider.extract_text(
             file_path=receipt_file_path,
         )
+
+# Verifies that OCR can process a receipt materialized
+# from a non-local storage provider.
+# This test exists to keep OCR independent from
+# the receipt storage implementation.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace storage materialization
+#   and the OCR provider.
+# Returns:
+# - None.
+def test_extract_receipt_text_uses_materialized_storage_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_file_path = (
+        tmp_path / "receipt.jpg"
+    )
+
+    receipt_file_path.write_bytes(
+        b"remote-receipt-content",
+    )
+
+    materialize_mock = MagicMock(
+        return_value=nullcontext(
+            receipt_file_path,
+        ),
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.receipt_storage_service,
+        "materialize_receipt_file",
+        materialize_mock,
+    )
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.return_value = (
+        "  LIDL\nTOTAL 42.50 EUR  "
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    result = receipt_ocr_service.extract_receipt_text(
+        storage_path=(
+            "supabase://receipts/"
+            "user-id/receipt-id.jpg"
+        ),
+    )
+
+    assert result == (
+        "LIDL\nTOTAL 42.50 EUR"
+    )
+
+    materialize_mock.assert_called_once_with(
+        storage_path=(
+            "supabase://receipts/"
+            "user-id/receipt-id.jpg"
+        ),
+    )
+
+    ocr_provider_mock.extract_text.assert_called_once_with(
+        file_path=receipt_file_path,
+    )
+
+
+# Verifies that storage failures are converted into OCR processing errors.
+# This test exists to keep receipt processing independent
+# from storage-provider implementation errors.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace storage materialization.
+# Returns:
+# - None.
+def test_extract_receipt_text_wraps_storage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_error = ReceiptFileStorageError()
+
+    materialize_mock = MagicMock(
+        side_effect=storage_error,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.receipt_storage_service,
+        "materialize_receipt_file",
+        materialize_mock,
+    )
+
+    with pytest.raises(
+        ReceiptOcrProcessingError,
+    ) as error_info:
+        receipt_ocr_service.extract_receipt_text(
+            storage_path=(
+                "supabase://receipts/"
+                "user-id/receipt-id.jpg"
+            ),
+        )
+
+    assert error_info.value.__cause__ is storage_error

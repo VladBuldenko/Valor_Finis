@@ -1,8 +1,9 @@
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Dict, Optional, Set, Tuple
+from tempfile import TemporaryDirectory
+from typing import BinaryIO, Dict, Iterator, Optional, Set, Tuple
 from urllib.parse import quote
-
 import httpx
 from fastapi import UploadFile
 
@@ -443,6 +444,100 @@ def save_receipt_file(
         file_extension=file_extension,
     )
 
+# Downloads a receipt object from Supabase Storage.
+# This function exists to provide remote receipt content
+# to application components that require a local file.
+# Parameters:
+# - bucket: Supabase Storage bucket name.
+# - object_path: object path inside the bucket.
+# Returns:
+# - Downloaded receipt file content.
+# Raises:
+# - ReceiptFileStorageError when the remote file cannot be downloaded.
+def download_supabase_receipt_file(
+    bucket: str,
+    object_path: str,
+) -> bytes:
+    supabase_url, supabase_secret_key = (
+        get_supabase_storage_credentials()
+    )
+
+    encoded_bucket = quote(
+        bucket,
+        safe="",
+    )
+
+    encoded_object_path = quote(
+        object_path,
+        safe="/",
+    )
+
+    download_url = (
+        f"{supabase_url}"
+        f"/storage/v1/object/authenticated/"
+        f"{encoded_bucket}/"
+        f"{encoded_object_path}"
+    )
+
+    try:
+        response = httpx.get(
+            download_url,
+            headers={
+                "apikey": supabase_secret_key,
+            },
+            timeout=SUPABASE_STORAGE_TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise ReceiptFileStorageError() from error
+
+    if not response.content:
+        raise ReceiptFileStorageError()
+
+    return response.content
+
+@contextmanager
+def materialize_receipt_file(
+    storage_path: str,
+) -> Iterator[Path]:
+    supabase_path = parse_supabase_storage_path(
+        storage_path=storage_path,
+    )
+
+    if supabase_path is None:
+        yield Path(
+            storage_path,
+        )
+        return
+
+    bucket, object_path = supabase_path
+
+    file_content = download_supabase_receipt_file(
+        bucket=bucket,
+        object_path=object_path,
+    )
+
+    file_extension = Path(
+        object_path,
+    ).suffix
+
+    with TemporaryDirectory(
+        prefix="valor-receipt-",
+    ) as temporary_directory:
+        temporary_file_path = (
+            Path(temporary_directory)
+            / f"receipt{file_extension}"
+        )
+
+        try:
+            temporary_file_path.write_bytes(
+                file_content,
+            )
+        except OSError as error:
+            raise ReceiptFileStorageError() from error
+
+        yield temporary_file_path
 
 # Deletes a receipt file from local storage.
 # This function exists to isolate filesystem deletion
@@ -547,3 +642,4 @@ def delete_receipt_file(
     delete_local_receipt_file(
         storage_path=storage_path,
     )
+
