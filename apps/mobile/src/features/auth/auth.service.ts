@@ -21,3 +21,16 @@ export async function signInWithEmail(
 
   return data.session;
 }
+
+/**
+ * Signs out the current user through Supabase Auth.
+ *
+ * Auth state changes are handled globally by AuthProvider.
+ */
+export async function signOut(): Promise<void> {
+  const { error } = await supabase.auth.signOut();
+
+  if (error) {
+    throw error;
+  }
+}
