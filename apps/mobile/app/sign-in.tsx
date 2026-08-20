@@ -11,13 +11,11 @@ import {
 } from "react-native";
 
 import { signInWithEmail } from "../src/features/auth/auth.service";
-import { getCategories } from "../src/features/categories/category.service";
 
-export default function LoginScreen() {
+export default function SignInScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isBackendLoading, setIsBackendLoading] = useState(false);
 
   async function handleLogin() {
     if (!email.trim() || !password) {
@@ -41,13 +39,7 @@ export default function LoginScreen() {
           "Login failed",
           "Supabase did not return a session.",
         );
-        return;
       }
-
-      Alert.alert(
-        "Success",
-        "You are signed in.",
-      );
     } catch (error) {
       const message =
         error instanceof Error
@@ -57,31 +49,6 @@ export default function LoginScreen() {
       Alert.alert("Login failed", message);
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function handleBackendTest() {
-    try {
-      setIsBackendLoading(true);
-
-      const categories = await getCategories();
-
-      Alert.alert(
-        "Backend connected",
-        `Categories received: ${categories.length}`,
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to connect to backend.";
-
-      Alert.alert(
-        "Backend error",
-        message,
-      );
-    } finally {
-      setIsBackendLoading(false);
     }
   }
 
@@ -126,20 +93,6 @@ export default function LoginScreen() {
           ) : (
             <Text style={styles.buttonText}>
               Sign in
-            </Text>
-          )}
-        </Pressable>
-
-        <Pressable
-          disabled={isBackendLoading}
-          onPress={handleBackendTest}
-          style={styles.button}
-        >
-          {isBackendLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <Text style={styles.buttonText}>
-              Test Backend
             </Text>
           )}
         </Pressable>
