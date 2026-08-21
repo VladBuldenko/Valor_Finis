@@ -1,13 +1,15 @@
+import { QueryClientProvider } from "@tanstack/react-query";
+import { Stack } from "expo-router";
 import {
   ActivityIndicator,
   View,
 } from "react-native";
-import { Stack } from "expo-router";
 
 import {
   AuthProvider,
   useAuth,
 } from "../src/features/auth/auth-context";
+import { queryClient } from "../src/lib/query-client";
 
 function RootNavigator() {
   const { session, isLoading } = useAuth();
@@ -41,8 +43,10 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <RootNavigator />
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <RootNavigator />
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }
