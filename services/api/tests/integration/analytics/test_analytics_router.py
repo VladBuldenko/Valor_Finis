@@ -231,7 +231,88 @@ def test_category_summary_endpoint_returns_grouped_categories(
     assert response_data[0]["total_spent"] == "50.00"
     assert response_data[0]["expenses_count"] == 2
 
+# Tests that category summary filters expenses by the selected month.
+# This test exists to verify that year and month query parameters
+# are passed through the API and applied to category analytics.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if only expenses from the selected month are returned.
+def test_category_summary_endpoint_filters_by_selected_month(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
 
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+    category_id = category["id"]
+
+    may_expense_one = {
+        "category_id": category_id,
+        "title": "May groceries",
+        "amount": 20,
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "May groceries",
+        "source": "manual",
+    }
+    may_expense_two = {
+        "category_id": category_id,
+        "title": "May dinner",
+        "amount": 30,
+        "currency": "EUR",
+        "expense_date": "2026-05-20",
+        "description": "May dinner",
+        "source": "manual",
+    }
+    june_expense = {
+        "category_id": category_id,
+        "title": "June groceries",
+        "amount": 70,
+        "currency": "EUR",
+        "expense_date": "2026-06-07",
+        "description": "June groceries",
+        "source": "manual",
+    }
+
+    client.post(
+        "/api/v1/expenses",
+        json=may_expense_one,
+        headers=auth_headers(user_id),
+    )
+    client.post(
+        "/api/v1/expenses",
+        json=may_expense_two,
+        headers=auth_headers(user_id),
+    )
+    client.post(
+        "/api/v1/expenses",
+        json=june_expense,
+        headers=auth_headers(user_id),
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-summary?year=2026&month=5",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert len(response_data) == 1
+    assert response_data[0]["category_id"] == category_id
+    assert response_data[0]["category_name"] == "Food"
+    assert response_data[0]["total_spent"] == "50.00"
+    assert response_data[0]["expenses_count"] == 2
+    
 # Tests that the budget status endpoint returns exceeded budget information.
 # This test exists to verify budget analytics calculations through the API.
 # Parameters:

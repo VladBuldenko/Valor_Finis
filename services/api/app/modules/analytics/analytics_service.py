@@ -110,17 +110,30 @@ def get_monthly_summary(
 def get_category_summary(
     db_session: Session,
     user_id: UUID,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
 ) -> list[CategorySummaryItem]:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
         user_id=user_id,
     )
+
+    if year is not None and month is not None:
+        expenses = [
+            expense
+            for expense in expenses
+            if expense.expense_date.year == year
+            and expense.expense_date.month == month
+        ]
+
     category_name_map = build_category_name_map(
         db_session=db_session,
         user_id=user_id,
     )
 
-    category_totals: dict[Optional[UUID], Decimal] = defaultdict(lambda: Decimal("0"))
+    category_totals: dict[Optional[UUID], Decimal] = defaultdict(
+        lambda: Decimal("0")
+    )
     category_counts: dict[Optional[UUID], int] = defaultdict(int)
 
     for expense in expenses:

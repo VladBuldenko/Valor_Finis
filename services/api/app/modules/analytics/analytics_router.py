@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.db.database_session import get_db_session
 from app.modules.analytics import analytics_service
@@ -74,12 +75,34 @@ def get_monthly_summary(
     status_code=status.HTTP_200_OK,
 )
 def get_category_summary(
+    year: Optional[int] = Query(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Optional year used to filter category expenses.",
+        examples=[2026],
+    ),
+    month: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=12,
+        description="Optional month used to filter category expenses.",
+        examples=[8],
+    ),
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> list[CategorySummaryItem]:
+    if (year is None) != (month is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Year and month must be provided together.",
+        )
+
     return analytics_service.get_category_summary(
         db_session=db_session,
         user_id=current_user.id,
+        year=year,
+        month=month,
     )
 
 

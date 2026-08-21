@@ -1,7 +1,9 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { MonthlySummary } from "./analytics.types";
-import { resolve } from "path";
+import type {
+  CategorySummaryItem,
+  MonthlySummary,
+} from "./analytics.types";
 
 /**
  * Returns the authenticated user's spending summary
@@ -13,5 +15,16 @@ export async function getMonthlySummary(
 ): Promise<MonthlySummary> {
   return apiRequest<MonthlySummary>(
     `/api/v1/analytics/monthly-summary?year=${year}&month=${month}`,
+  );
+}
+
+/**
+ * Returns the authenticated user's spending grouped by category.
+ */
+export async function getCategorySummary(): Promise<
+  CategorySummaryItem[]
+> {
+  return apiRequest<CategorySummaryItem[]>(
+    "/api/v1/analytics/category-summary",
   );
 }

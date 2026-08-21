@@ -134,6 +134,79 @@ def test_get_category_summary_groups_expenses_by_category(
     assert summary_by_category_id[unknown_category_id].total_spent == Decimal("5.00")
     assert summary_by_category_id[unknown_category_id].expenses_count == 1
 
+# Tests that category summary includes only expenses from the selected month.
+# This test exists to verify monthly filtering for dashboard category analytics.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if expenses outside the selected month are excluded.
+def test_get_category_summary_filters_by_selected_month(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_category_id = uuid4()
+
+    categories = [
+        make_model(id=food_category_id, name="Food"),
+    ]
+
+    expenses = [
+        make_model(
+            category_id=food_category_id,
+            amount=Decimal("20.00"),
+            expense_date=date(2026, 5, 7),
+        ),
+        make_model(
+            category_id=food_category_id,
+            amount=Decimal("30.00"),
+            expense_date=date(2026, 5, 20),
+        ),
+        make_model(
+            category_id=food_category_id,
+            amount=Decimal("70.00"),
+            expense_date=date(2026, 6, 7),
+        ),
+    ]
+
+    def fake_get_expenses(
+        db_session: object,
+        user_id=None,
+    ):
+        return expenses
+
+    def fake_get_categories(
+        db_session: object,
+        user_id=None,
+    ):
+        return categories
+
+    monkeypatch.setattr(
+        analytics_service.expenses_repository,
+        "get_expenses",
+        fake_get_expenses,
+    )
+    monkeypatch.setattr(
+        analytics_service.categories_repository,
+        "get_categories",
+        fake_get_categories,
+    )
+
+    # Act
+    category_summary = analytics_service.get_category_summary(
+        db_session=db_session,
+        user_id=user_id,
+        year=2026,
+        month=5,
+    )
+
+    # Assert
+    assert len(category_summary) == 1
+    assert category_summary[0].category_id == food_category_id
+    assert category_summary[0].category_name == "Food"
+    assert category_summary[0].total_spent == Decimal("50.00")
+    assert category_summary[0].expenses_count == 2
 
 # Tests that budget status calculates spent, remaining, and exceeded amounts.
 # This test exists to verify budget analytics business logic without API or database.
