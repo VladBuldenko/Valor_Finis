@@ -312,7 +312,38 @@ def test_category_summary_endpoint_filters_by_selected_month(
     assert response_data[0]["category_name"] == "Food"
     assert response_data[0]["total_spent"] == "50.00"
     assert response_data[0]["expenses_count"] == 2
-    
+
+# Tests that category summary requires year and month to be provided together.
+# This test exists to prevent ambiguous partial date filters in the API.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if partial date filters are rejected.
+def test_category_summary_endpoint_rejects_partial_date_filter(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    urls = [
+        "/api/v1/analytics/category-summary?year=2026",
+        "/api/v1/analytics/category-summary?month=5",
+    ]
+
+    # Act and Assert
+    for url in urls:
+        response = client.get(
+            url,
+            headers=auth_headers(user_id),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "Year and month must be provided together."
+        )
+
 # Tests that the budget status endpoint returns exceeded budget information.
 # This test exists to verify budget analytics calculations through the API.
 # Parameters:
