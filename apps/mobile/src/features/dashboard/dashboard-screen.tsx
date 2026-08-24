@@ -15,6 +15,8 @@ import {
     getCategorySummary,
     getMonthlySummary,
   } from "../analytics/analytics.service";
+
+import { Link } from "expo-router";
 import { useAuth } from "../auth/auth-context";
 import { signOut } from "../auth/auth.service";
 import { styles } from "./dashboard.styles";
@@ -208,6 +210,14 @@ export function DashboardScreen() {
                 </View>
             )}
         </View>
+        <Link href="/expenses" asChild>
+            <Pressable style={styles.button}>
+                <Text style={styles.buttonText}>
+                Expenses
+                </Text>
+            </Pressable>
+        </Link>
+        
         <Pressable
           disabled={isSigningOut}
           onPress={handleSignOut}
