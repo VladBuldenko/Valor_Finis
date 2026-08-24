@@ -6,20 +6,21 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
 
 import {
-  getCategorySummary,
-  getMonthlySummary,
-} from "../../src/features/analytics/analytics.service";
-import { useAuth } from "../../src/features/auth/auth-context";
-import { signOut } from "../../src/features/auth/auth.service";
+    getBudgetStatus,
+    getCategorySummary,
+    getMonthlySummary,
+  } from "../analytics/analytics.service";
+import { useAuth } from "../auth/auth-context";
+import { signOut } from "../auth/auth.service";
+import { styles } from "./dashboard.styles";
 import React from "react";
 
-export default function DashboardScreen() {
+export function DashboardScreen() {
   const { session } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
@@ -59,6 +60,20 @@ export default function DashboardScreen() {
     enabled: Boolean(session),
   });
 
+  const {
+    data: budgetStatus = [],
+    isLoading: isBudgetStatusLoading,
+    error: budgetStatusError,
+  } = useQuery({
+    queryKey: [
+      "analytics",
+      "budget-status",
+      session?.user.id,
+    ],
+    queryFn: getBudgetStatus,
+    enabled: Boolean(session),
+  });
+
   async function handleSignOut() {
     try {
       setIsSigningOut(true);
@@ -78,9 +93,7 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-      >
+      <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>
           Valor Finis
         </Text>
@@ -153,7 +166,48 @@ export default function DashboardScreen() {
             </View>
           )}
         </View>
+        <View style={styles.card}>
+            <Text style={styles.sectionTitle}>
+                Budget status
+            </Text>
 
+            {isBudgetStatusLoading ? (
+                <ActivityIndicator style={styles.loader} />
+            ) : budgetStatusError ? (
+                <Text style={styles.errorText}>
+                Unable to load budget status.
+                </Text>
+            ) : budgetStatus.length === 0 ? (
+                <Text style={styles.secondaryText}>
+                No budgets yet.
+                </Text>
+            ) : (
+                <View style={styles.categoryList}>
+                {budgetStatus.map((budget) => (
+                    <View
+                    key={budget.budget_id}
+                    style={styles.categoryRow}
+                    >
+                    <View style={styles.categoryDetails}>
+                        <Text style={styles.categoryName}>
+                        {budget.budget_name}
+                        </Text>
+
+                        <Text style={styles.secondaryText}>
+                        Spent: €{budget.spent} / €{budget.limit_amount}
+                        </Text>
+
+                        <Text style={styles.secondaryText}>
+                        {budget.is_exceeded
+                            ? `Exceeded by €${budget.exceeded_amount}`
+                            : `Remaining €${budget.remaining}`}
+                        </Text>
+                    </View>
+                    </View>
+                ))}
+                </View>
+            )}
+        </View>
         <Pressable
           disabled={isSigningOut}
           onPress={handleSignOut}
@@ -171,80 +225,3 @@ export default function DashboardScreen() {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  content: {
-    paddingHorizontal: 24,
-    paddingTop: 32,
-    paddingBottom: 32,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: "700",
-  },
-  subtitle: {
-    fontSize: 20,
-    marginTop: 8,
-  },
-  card: {
-    marginTop: 32,
-    padding: 20,
-    borderWidth: 1,
-    borderRadius: 12,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-  },
-  amount: {
-    fontSize: 32,
-    fontWeight: "700",
-    marginTop: 12,
-  },
-  secondaryText: {
-    fontSize: 16,
-    marginTop: 8,
-  },
-  errorText: {
-    fontSize: 16,
-    marginTop: 12,
-  },
-  loader: {
-    marginTop: 16,
-  },
-  categoryList: {
-    marginTop: 8,
-  },
-  categoryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-  },
-  categoryDetails: {
-    flex: 1,
-    paddingRight: 16,
-  },
-  categoryName: {
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  categoryAmount: {
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  button: {
-    alignItems: "center",
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 14,
-    marginTop: 32,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "600",
-  },
-});

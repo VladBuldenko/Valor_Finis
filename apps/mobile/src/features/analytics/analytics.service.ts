@@ -1,6 +1,7 @@
 import { apiRequest } from "../../api/api-client";
 
 import type {
+  BudgetStatusItem,
   CategorySummaryItem,
   MonthlySummary,
 } from "./analytics.types";
@@ -19,12 +20,23 @@ export async function getMonthlySummary(
 }
 
 /**
- * Returns the authenticated user's spending grouped by category.
+ * Returns the authenticated user's spending grouped by category
+ * for the selected calendar month.
  */
-export async function getCategorySummary(): Promise<
-  CategorySummaryItem[]
-> {
+export async function getCategorySummary(
+  year: number,
+  month: number,
+): Promise<CategorySummaryItem[]> {
   return apiRequest<CategorySummaryItem[]>(
-    "/api/v1/analytics/category-summary",
+    `/api/v1/analytics/category-summary?year=${year}&month=${month}`,
+  );
+}
+
+/**
+ * Returns the authenticated user's budget status.
+ */
+export async function getBudgetStatus(): Promise<BudgetStatusItem[]> {
+  return apiRequest<BudgetStatusItem[]>(
+    "/api/v1/analytics/budget-status",
   );
 }
