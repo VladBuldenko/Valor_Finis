@@ -1,5 +1,10 @@
 import { apiRequest } from "../../api/api-client";
 
-export async function getCategories(): Promise<unknown[]> {
-  return apiRequest<unknown[]>("/api/v1/categories");
+import type { Category } from "./category.types";
+
+/**
+ * Returns categories available to the authenticated user.
+ */
+export async function getCategories(): Promise<Category[]> {
+  return apiRequest<Category[]>("/api/v1/categories");
 }
