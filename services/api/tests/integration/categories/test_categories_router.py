@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from tests.helpers import auth_headers, create_category
 from app.db.database_session import SessionLocal
 from app.modules.categories.category_models import CategoryModel
+from app.modules.categories.default_categories import DEFAULT_CATEGORIES
 
 
 # Marks an existing category as a protected default category.
@@ -88,7 +89,7 @@ def test_get_categories_endpoint_returns_authenticated_user_categories(
     create_category(
         client=client,
         user_id=user_id,
-        name="Transport",
+        name="Pets",
     )
     create_category(
         client=client,
@@ -105,9 +106,15 @@ def test_get_categories_endpoint_returns_authenticated_user_categories(
 
     # Assert
     assert response.status_code == 200
-    assert len(response_data) == 1
-    assert response_data[0]["user_id"] == user_id
-    assert response_data[0]["name"] == "Transport"
+    assert len(response_data) == len(DEFAULT_CATEGORIES) + 1
+    assert all(category["user_id"] == user_id for category in response_data)
+
+    custom_categories = [
+        category for category in response_data if category["is_default"] is False
+    ]
+
+    assert len(custom_categories) == 1
+    assert custom_categories[0]["name"] == "Pets"
 
 
 # Tests that duplicate category creation returns a conflict error.
@@ -250,7 +257,7 @@ def test_update_category_endpoint_updates_authenticated_user_category(
     )
 
     request_body = {
-        "name": "Groceries",
+        "name": "Hobbies",
         "color": "#22C55E",
         "icon": "shopping-cart",
     }
@@ -367,7 +374,7 @@ def test_update_category_endpoint_returns_conflict_for_duplicate_name(
     category_to_update = create_category(
         client=client,
         user_id=user_id,
-        name="Transport",
+        name="Pets",
     )
 
     request_body = {
@@ -422,7 +429,14 @@ def test_delete_category_endpoint_deletes_authenticated_user_category(
     assert delete_response.content == b""
 
     assert get_response.status_code == 200
-    assert get_response.json() == []
+
+    remaining_categories = get_response.json()
+
+    assert len(remaining_categories) == len(DEFAULT_CATEGORIES)
+    assert all(category["is_default"] for category in remaining_categories)
+    assert not any(
+        category["name"] == "Food" for category in remaining_categories
+    )
 
 
 # Tests that the API rejects deleting another user's category.
@@ -546,7 +560,7 @@ def test_update_category_endpoint_rejects_case_insensitive_duplicate(
     category_to_update = create_category(
         client=client,
         user_id=user_id,
-        name="Transport",
+        name="Pets",
     )
 
     response = client.patch(
@@ -709,3 +723,328 @@ def test_delete_category_endpoint_clears_expense_category(
     assert stored_expenses[0]["category_id"] is None
     assert stored_expenses[0]["title"] == "Groceries"
     assert stored_expenses[0]["amount"] == "24.99"
+
+
+# Finds a bootstrapped default category by its configured name.
+# This helper exists so tests can locate a specific predefined category from
+# a /categories response without depending on list position.
+# Parameters:
+# - categories: category list returned by the API.
+# - name: configured default category name to find.
+# Returns:
+# - The matching category dict.
+def find_category_by_name(categories: list, name: str) -> dict:
+    matches = [category for category in categories if category["name"] == name]
+
+    assert len(matches) == 1
+
+    return matches[0]
+
+
+# Tests that a brand-new user's first request bootstraps the full predefined
+# category set.
+# This test exists to verify lazy first-use bootstrap end-to-end through the API.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if every configured default category is present.
+def test_get_categories_endpoint_bootstraps_default_categories_for_new_user(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    # Act
+    response = client.get(
+        "/api/v1/categories",
+        headers=auth_headers(user_id),
+    )
+    response_data = response.json()
+
+    # Assert
+    assert response.status_code == 200
+    assert len(response_data) == len(DEFAULT_CATEGORIES)
+    assert all(category["is_default"] is True for category in response_data)
+    assert all(category["is_visible"] is True for category in response_data)
+    assert {category["system_key"] for category in response_data} == {
+        default_category["system_key"] for default_category in DEFAULT_CATEGORIES
+    }
+
+
+# Tests that two different users each get their own independent set of
+# predefined categories.
+# This test exists to verify that bootstrapped defaults are per-user rows,
+# not shared or cached across users.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if each user gets a full, disjoint default set.
+def test_get_categories_endpoint_bootstraps_independent_defaults_per_user(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    # Act
+    response = client.get("/api/v1/categories", headers=auth_headers(user_id))
+    other_response = client.get(
+        "/api/v1/categories", headers=auth_headers(other_user_id)
+    )
+
+    # Assert
+    response_data = response.json()
+    other_response_data = other_response.json()
+
+    assert len(response_data) == len(DEFAULT_CATEGORIES)
+    assert len(other_response_data) == len(DEFAULT_CATEGORIES)
+    assert all(category["user_id"] == user_id for category in response_data)
+    assert all(
+        category["user_id"] == other_user_id for category in other_response_data
+    )
+
+    category_ids = {category["id"] for category in response_data}
+    other_category_ids = {category["id"] for category in other_response_data}
+
+    assert category_ids.isdisjoint(other_category_ids)
+
+
+# Tests that a predefined category name is reserved and cannot be reused for
+# a custom category.
+# This test exists to verify reserved-name protection at the API layer for a
+# brand-new user (bootstrap always runs before create, so this is the only
+# way to observe the reservation through the public API).
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if creating a category with a reserved name returns a conflict.
+def test_create_category_endpoint_rejects_reserved_default_name(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    reserved_name = DEFAULT_CATEGORIES[0]["name"]
+
+    # Act
+    response = client.post(
+        "/api/v1/categories",
+        json={"name": reserved_name},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Category with this name already exists for this user."
+
+
+# Tests that renaming a custom category onto a reserved predefined name is rejected.
+# This test exists to verify reserved-name protection also applies to PATCH renames.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the rename returns a conflict.
+def test_update_category_endpoint_rejects_rename_onto_reserved_default_name(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    reserved_name = DEFAULT_CATEGORIES[0]["name"]
+
+    custom_category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Pets",
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{custom_category['id']}",
+        json={"name": reserved_name},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Category with this name already exists for this user."
+
+
+# Tests that hiding a predefined category does not release its reserved name.
+# This test exists to verify the specific product rule that hidden defaults
+# still block a custom category from reusing that name.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if creating a category with the hidden default's name still conflicts.
+def test_create_category_endpoint_rejects_reserved_name_while_default_is_hidden(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    reserved_name = DEFAULT_CATEGORIES[0]["name"]
+
+    bootstrap_response = client.get(
+        "/api/v1/categories", headers=auth_headers(user_id)
+    )
+    default_category = find_category_by_name(
+        bootstrap_response.json(), reserved_name
+    )
+
+    hide_response = client.patch(
+        f"/api/v1/categories/{default_category['id']}",
+        json={"is_visible": False},
+        headers=auth_headers(user_id),
+    )
+
+    assert hide_response.status_code == 200
+    assert hide_response.json()["is_visible"] is False
+
+    # Act
+    response = client.post(
+        "/api/v1/categories",
+        json={"name": reserved_name},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Category with this name already exists for this user."
+
+
+# Tests that a predefined category can be hidden and then unhidden.
+# This test exists to verify the hide/unhide flow keeps the category's
+# identity and default protection intact and is not a deletion.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if is_visible flips both ways while everything else stays the same.
+def test_update_category_endpoint_hides_and_unhides_default_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    default_name = DEFAULT_CATEGORIES[0]["name"]
+    default_system_key = DEFAULT_CATEGORIES[0]["system_key"]
+
+    bootstrap_response = client.get(
+        "/api/v1/categories", headers=auth_headers(user_id)
+    )
+    default_category = find_category_by_name(bootstrap_response.json(), default_name)
+
+    # Act
+    hide_response = client.patch(
+        f"/api/v1/categories/{default_category['id']}",
+        json={"is_visible": False},
+        headers=auth_headers(user_id),
+    )
+    unhide_response = client.patch(
+        f"/api/v1/categories/{default_category['id']}",
+        json={"is_visible": True},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert hide_response.status_code == 200
+    hide_data = hide_response.json()
+    assert hide_data["is_visible"] is False
+    assert hide_data["is_default"] is True
+    assert hide_data["system_key"] == default_system_key
+    assert hide_data["name"] == default_name
+
+    assert unhide_response.status_code == 200
+    unhide_data = unhide_response.json()
+    assert unhide_data["is_visible"] is True
+    assert unhide_data["is_default"] is True
+    assert unhide_data["system_key"] == default_system_key
+    assert unhide_data["name"] == default_name
+
+
+# Tests that hidden categories are excluded from the default category list.
+# This test exists to verify the include_hidden=false (default) behavior.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the hidden category is absent from the default response.
+def test_get_categories_endpoint_excludes_hidden_categories_by_default(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    default_name = DEFAULT_CATEGORIES[0]["name"]
+
+    bootstrap_response = client.get(
+        "/api/v1/categories", headers=auth_headers(user_id)
+    )
+    default_category = find_category_by_name(bootstrap_response.json(), default_name)
+
+    hide_response = client.patch(
+        f"/api/v1/categories/{default_category['id']}",
+        json={"is_visible": False},
+        headers=auth_headers(user_id),
+    )
+
+    assert hide_response.status_code == 200
+
+    # Act
+    response = client.get("/api/v1/categories", headers=auth_headers(user_id))
+    response_data = response.json()
+
+    # Assert
+    assert response.status_code == 200
+    assert len(response_data) == len(DEFAULT_CATEGORIES) - 1
+    assert not any(category["name"] == default_name for category in response_data)
+
+
+# Tests that hidden categories are included when include_hidden=true is requested.
+# This test exists to verify the include_hidden=true opt-in behavior.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the hidden category is present when explicitly requested.
+def test_get_categories_endpoint_includes_hidden_categories_when_requested(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    default_name = DEFAULT_CATEGORIES[0]["name"]
+
+    bootstrap_response = client.get(
+        "/api/v1/categories", headers=auth_headers(user_id)
+    )
+    default_category = find_category_by_name(bootstrap_response.json(), default_name)
+
+    hide_response = client.patch(
+        f"/api/v1/categories/{default_category['id']}",
+        json={"is_visible": False},
+        headers=auth_headers(user_id),
+    )
+
+    assert hide_response.status_code == 200
+
+    # Act
+    response = client.get(
+        "/api/v1/categories?include_hidden=true",
+        headers=auth_headers(user_id),
+    )
+    response_data = response.json()
+
+    # Assert
+    assert response.status_code == 200
+    assert len(response_data) == len(DEFAULT_CATEGORIES)
+    hidden_category = find_category_by_name(response_data, default_name)
+    assert hidden_category["is_visible"] is False

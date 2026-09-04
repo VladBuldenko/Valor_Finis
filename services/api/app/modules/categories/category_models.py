@@ -56,6 +56,17 @@ class CategoryModel(Base):
         default=False,
         server_default="false",
     )
+    is_visible: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
+
+    system_key: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -77,4 +88,10 @@ class CategoryModel(Base):
             func.lower(name),
             unique=True,
         ),
-    )   
+        Index(
+            "uq_categories_user_id_system_key",
+            user_id,
+            system_key,
+            unique=True,
+        ),
+    )

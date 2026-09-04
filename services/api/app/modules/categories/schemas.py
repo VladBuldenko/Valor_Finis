@@ -16,10 +16,10 @@ class CategoryBase(BaseModel):
     Base category schema.
 
     What:
-        Contains fields shared by category create, update, and response schemas.
+        Contains fields shared by category create and response schemas.
 
     Why:
-        Prevents duplication of common category fields.
+        Prevents duplication of common editable category fields.
     """
 
     name: str = Field(
@@ -41,6 +41,7 @@ class CategoryBase(BaseModel):
         description="Optional UI icon name for the category.",
         examples=["shopping-cart"],
     )
+
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: str) -> str:
@@ -96,7 +97,8 @@ class CategoryCreate(CategoryBase):
     Why:
         The client should provide only editable category fields.
         The user_id must come from authentication data.
-        The is_default flag must be controlled by the backend.
+        The is_default flag and system_key must be controlled
+        by the backend.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -135,6 +137,14 @@ class CategoryUpdate(BaseModel):
         description="Updated UI icon name for the category.",
         examples=["shopping-cart"],
     )
+    is_visible: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Controls whether the category is shown "
+            "in normal category selection."
+        ),
+    )
+
     @field_validator("name")
     @classmethod
     def normalize_name(
@@ -193,11 +203,13 @@ class CategoryUpdate(BaseModel):
             Checks that the client sent at least one editable field.
 
         Why:
-            Prevents empty PATCH/PUT requests that do not change anything.
+            Prevents empty PATCH requests that do not change anything.
         """
 
         if not self.model_fields_set:
-            raise ValueError("At least one field must be provided for category update.")
+            raise ValueError(
+                "At least one field must be provided for category update."
+            )
 
         if "name" in self.model_fields_set and self.name is None:
             raise ValueError("Category name cannot be null.")
@@ -220,6 +232,8 @@ class CategoryResponse(CategoryBase):
 
     id: UUID
     user_id: UUID
+    system_key: Optional[str]
     is_default: bool
+    is_visible: bool
     created_at: datetime
     updated_at: datetime

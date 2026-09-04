@@ -1,7 +1,8 @@
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,7 +12,7 @@ from app.modules.categories.errors import (
     CategoryNotFoundError,
 )
 from app.modules.categories.schemas import CategoryCreate, CategoryUpdate
-
+from app.modules.categories.default_categories import DEFAULT_CATEGORIES
 
 # Creates and saves a new category database record.
 # This function exists to isolate PostgreSQL write operations
@@ -73,11 +74,19 @@ def create_category(
 def get_categories(
     db_session: Session,
     user_id: Optional[UUID] = None,
+    include_hidden: bool = True,
 ) -> list[CategoryModel]:
     query = db_session.query(CategoryModel)
 
     if user_id is not None:
-        query = query.filter(CategoryModel.user_id == user_id)
+        query = query.filter(
+            CategoryModel.user_id == user_id,
+        )
+
+    if not include_hidden:
+        query = query.filter(
+            CategoryModel.is_visible.is_(True),
+        )
 
     return query.order_by(CategoryModel.name.asc()).all()
 
@@ -220,4 +229,88 @@ def delete_category(
     )
 
     db_session.delete(category_model)
+    db_session.commit()
+
+def ensure_default_categories(
+    db_session: Session,
+    user_id: UUID,
+) -> None:
+    """
+    Ensures that a user has all predefined categories.
+
+    Existing user categories with matching predefined names are promoted
+    to default categories so historical category IDs and relationships
+    are preserved.
+    """
+
+    existing_categories = (
+        db_session.query(CategoryModel)
+        .filter(CategoryModel.user_id == user_id)
+        .all()
+    )
+
+    categories_by_system_key = {
+        category.system_key: category
+        for category in existing_categories
+        if category.system_key is not None
+    }
+
+    categories_by_name = {
+        category.name.casefold(): category
+        for category in existing_categories
+    }
+
+    has_changes = False
+    rows_to_insert: list[dict] = []
+
+    for default_category in DEFAULT_CATEGORIES:
+        system_key = default_category["system_key"]
+        name = default_category["name"]
+
+        if system_key in categories_by_system_key:
+            continue
+
+        existing_category = categories_by_name.get(
+            name.casefold()
+        )
+
+        if existing_category is not None:
+            existing_category.system_key = system_key
+            existing_category.is_default = True
+
+            categories_by_system_key[system_key] = (
+                existing_category
+            )
+
+            has_changes = True
+            continue
+
+        rows_to_insert.append(
+            {
+                "id": uuid4(),
+                "user_id": user_id,
+                "name": name,
+                "system_key": system_key,
+                "color": None,
+                "icon": None,
+                "is_default": True,
+                "is_visible": True,
+            }
+        )
+
+        has_changes = True
+
+    if not has_changes:
+        return
+
+    # Target-less ON CONFLICT DO NOTHING skips a conflicting row regardless
+    # of which unique index (system_key or case-insensitive name) it hits,
+    # so two concurrent first-use bootstraps can't raise IntegrityError here.
+    if rows_to_insert:
+        db_session.execute(
+            pg_insert(CategoryModel)
+            .values(rows_to_insert)
+            .on_conflict_do_nothing()
+        )
+
     db_session.commit()

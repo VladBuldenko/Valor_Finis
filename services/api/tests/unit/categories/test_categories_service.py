@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from app.db.database_session import SessionLocal
 from app.modules.categories import service
+from app.modules.categories.default_categories import DEFAULT_CATEGORIES
 from app.modules.categories.schemas import CategoryCreate, CategoryResponse
 
 
@@ -59,15 +60,15 @@ def test_get_categories_returns_user_category_responses(
     other_user_id = uuid4()
 
     user_category_data = CategoryCreate(
-        name="Transport",
-        color="#2563EB",
-        icon="car",
+    name="Vacation",
+    color="#2563EB",
+    icon="plane",
     )
 
     other_user_category_data = CategoryCreate(
-        name="Food",
-        color="#FF5733",
-        icon="utensils",
+    name="Pets",
+    color="#FF5733",
+    icon="paw",
     )
 
     try:
@@ -89,11 +90,17 @@ def test_get_categories_returns_user_category_responses(
         )
 
         # Assert
-        assert len(categories) == 1
-        assert isinstance(categories[0], CategoryResponse)
-        assert categories[0].user_id == user_id
-        assert categories[0].name == user_category_data.name
-        assert categories[0].color == user_category_data.color
-        assert categories[0].icon == user_category_data.icon
+        assert len(categories) == len(DEFAULT_CATEGORIES) + 1
+        assert all(isinstance(category, CategoryResponse) for category in categories)
+        assert all(category.user_id == user_id for category in categories)
+
+        custom_categories = [
+            category for category in categories if category.is_default is False
+        ]
+
+        assert len(custom_categories) == 1
+        assert custom_categories[0].name == user_category_data.name
+        assert custom_categories[0].color == user_category_data.color
+        assert custom_categories[0].icon == user_category_data.icon
     finally:
         db_session.close()

@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Query, status
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
@@ -62,14 +62,18 @@ def create_category(
     status_code=status.HTTP_200_OK,
 )
 def get_categories(
+    include_hidden: bool = Query(
+        default=False,
+        description="Include categories hidden by the authenticated user.",
+    ),
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> list[CategoryResponse]:
     return service.get_categories(
         db_session=db_session,
         user_id=current_user.id,
+        include_hidden=include_hidden,
     )
-
 
 # Returns one category through the API.
 # This function exists to retrieve a single category

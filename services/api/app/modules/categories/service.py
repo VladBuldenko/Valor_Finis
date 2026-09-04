@@ -32,12 +32,10 @@ def create_category(
     category_data: CategoryCreate,
     user_id: UUID,
 ) -> CategoryResponse:
-    if repository.category_name_exists(
+    repository.ensure_default_categories(
         db_session=db_session,
         user_id=user_id,
-        category_name=category_data.name,
-    ):
-        raise CategoryAlreadyExistsError()
+    )
 
     category_model = repository.create_category(
         db_session=db_session,
@@ -45,7 +43,9 @@ def create_category(
         user_id=user_id,
     )
 
-    return CategoryResponse.model_validate(category_model)
+    return CategoryResponse.model_validate(
+        category_model
+    )
 
 
 # Returns categories for the authenticated user.
@@ -59,10 +59,17 @@ def create_category(
 def get_categories(
     db_session: Session,
     user_id: UUID,
+    include_hidden: bool = False,
 ) -> list[CategoryResponse]:
+    repository.ensure_default_categories(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
     category_models = repository.get_categories(
         db_session=db_session,
         user_id=user_id,
+        include_hidden=include_hidden,
     )
 
     return [
@@ -120,7 +127,14 @@ def update_category(
     )
 
     if existing_category.is_default:
-        raise CategoryDefaultModificationNotAllowedError()
+        disallowed_fields = (
+            field_name
+            for field_name in category_data.model_fields_set
+            if field_name != "is_visible"
+        )
+
+        if any(disallowed_fields):
+            raise CategoryDefaultModificationNotAllowedError()
 
     if (
         category_data.name is not None
