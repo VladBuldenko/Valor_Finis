@@ -2,10 +2,13 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+
 from app.db.database_session import SessionLocal
 from app.modules.expenses import expenses_repository
+from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.expenses.expenses_models import ExpenseModel
-from app.modules.expenses.expenses_schemas import ExpenseCreate
+from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
 
 
 # Tests that the repository creates a new expense in the database.
@@ -114,5 +117,196 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
         assert expenses[0].expense_date == user_expense_data.expense_date
         assert expenses[0].description == user_expense_data.description
         assert expenses[0].source == user_expense_data.source
+    finally:
+        db_session.close()
+
+
+# Tests that the repository updates an existing expense owned by the user.
+# This test exists to verify that only the provided fields are changed and
+# persisted through SQLAlchemy.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the updated fields are persisted and unset fields are unchanged.
+def test_update_expense_updates_expense_fields(clean_database: None) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="Lidl groceries",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=date(2026, 5, 7),
+        description="Milk, bread and fruits",
+        source="manual",
+    )
+
+    try:
+        created_expense = expenses_repository.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+        )
+
+        update_data = ExpenseUpdate(
+            title="Rewe groceries",
+            amount=Decimal("31.20"),
+        )
+
+        # Act
+        updated_expense = expenses_repository.update_expense(
+            db_session=db_session,
+            expense_id=created_expense.id,
+            expense_data=update_data,
+            user_id=user_id,
+        )
+
+        # Assert
+        assert updated_expense.id == created_expense.id
+        assert updated_expense.title == "Rewe groceries"
+        assert updated_expense.amount == Decimal("31.20")
+        assert updated_expense.currency == expense_data.currency
+        assert updated_expense.expense_date == expense_data.expense_date
+        assert updated_expense.description == expense_data.description
+    finally:
+        db_session.close()
+
+
+# Tests that updating another user's expense raises ExpenseNotFoundError.
+# This test exists to verify ownership isolation at the repository layer.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if ExpenseNotFoundError is raised.
+def test_update_expense_raises_not_found_for_other_user_expense(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="Lidl groceries",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=date(2026, 5, 7),
+        description="Milk, bread and fruits",
+        source="manual",
+    )
+
+    try:
+        created_expense = expenses_repository.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+        )
+
+        # Act / Assert
+        with pytest.raises(ExpenseNotFoundError):
+            expenses_repository.update_expense(
+                db_session=db_session,
+                expense_id=created_expense.id,
+                expense_data=ExpenseUpdate(title="Hijacked"),
+                user_id=other_user_id,
+            )
+    finally:
+        db_session.close()
+
+
+# Tests that the repository deletes an existing expense owned by the user.
+# This test exists to verify that the expense row is removed from the database.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the expense no longer appears in get_expenses.
+def test_delete_expense_deletes_expense(clean_database: None) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="Lidl groceries",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=date(2026, 5, 7),
+        description="Milk, bread and fruits",
+        source="manual",
+    )
+
+    try:
+        created_expense = expenses_repository.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+        )
+
+        # Act
+        expenses_repository.delete_expense(
+            db_session=db_session,
+            expense_id=created_expense.id,
+            user_id=user_id,
+        )
+
+        remaining_expenses = expenses_repository.get_expenses(
+            db_session=db_session,
+            user_id=user_id,
+        )
+
+        # Assert
+        assert remaining_expenses == []
+    finally:
+        db_session.close()
+
+
+# Tests that deleting another user's expense raises ExpenseNotFoundError.
+# This test exists to verify ownership isolation at the repository layer.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if ExpenseNotFoundError is raised and the expense is not deleted.
+def test_delete_expense_raises_not_found_for_other_user_expense(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="Lidl groceries",
+        amount=Decimal("24.99"),
+        currency="EUR",
+        expense_date=date(2026, 5, 7),
+        description="Milk, bread and fruits",
+        source="manual",
+    )
+
+    try:
+        created_expense = expenses_repository.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+        )
+
+        # Act / Assert
+        with pytest.raises(ExpenseNotFoundError):
+            expenses_repository.delete_expense(
+                db_session=db_session,
+                expense_id=created_expense.id,
+                user_id=other_user_id,
+            )
+
+        remaining_expenses = expenses_repository.get_expenses(
+            db_session=db_session,
+            user_id=user_id,
+        )
+
+        assert len(remaining_expenses) == 1
     finally:
         db_session.close()
