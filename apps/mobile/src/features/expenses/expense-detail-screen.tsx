@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   useMutation,
@@ -80,17 +80,26 @@ export function ExpenseDetailScreen() {
   const [selectedCategoryId, setSelectedCategoryId] =
     useState<string | null>(null);
 
-  useEffect(() => {
-    if (!expense) {
-      return;
-    }
+  // Tracks which expense the form fields were last synced from. `expense`
+  // arrives asynchronously (TanStack Query), so it is undefined on first
+  // render and only becomes available later -- the fields must be seeded
+  // once it does, and re-seeded if the route ever points at a different
+  // expense id while this screen instance stays mounted. Adjusting state
+  // during render (guarded on identity) is React's recommended replacement
+  // for an effect that only exists to sync local state from a prop/query
+  // result: https://react.dev/learn/you-might-not-need-an-effect
+  const [syncedExpenseId, setSyncedExpenseId] = useState<string | null>(
+    null,
+  );
 
+  if (expense && expense.id !== syncedExpenseId) {
+    setSyncedExpenseId(expense.id);
     setTitle(expense.title);
     setAmount(expense.amount);
     setExpenseDate(expense.expense_date);
     setDescription(expense.description ?? "");
     setSelectedCategoryId(expense.category_id);
-  }, [expense]);
+  }
 
   const updateExpenseMutation = useMutation({
     mutationFn: () =>
