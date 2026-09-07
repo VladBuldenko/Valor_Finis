@@ -21,3 +21,13 @@ export type Expense = {
     description?: string | null;
     source?: string;
   };
+
+  export type ExpenseUpdateInput = {
+    category_id?: string | null;
+    title?: string;
+    amount?: string;
+    currency?: string;
+    expense_date?: string;
+    description?: string | null;
+    source?: string;
+  };

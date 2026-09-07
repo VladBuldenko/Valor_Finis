@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "expo-router";
 import {
   useMutation,
   useQuery,
@@ -8,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Button,
+  Pressable,
   SafeAreaView,
   ScrollView,
   Text,
@@ -16,6 +18,8 @@ import {
 } from "react-native";
 
 import { useAuth } from "../auth/auth-context";
+import { getCategories } from "../categories/category.service";
+import { validateExpenseForm } from "./expense-validation";
 import {
   createExpense,
   getExpenses,
@@ -41,6 +45,8 @@ export function ExpensesScreen() {
     getCurrentLocalDate,
   );
   const [description, setDescription] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] =
+  useState<string | null>(null);
 
   const {
     data: expenses = [],
@@ -49,6 +55,16 @@ export function ExpensesScreen() {
   } = useQuery({
     queryKey: ["expenses", session?.user.id],
     queryFn: getExpenses,
+    enabled: Boolean(session),
+  });
+
+  const {
+    data: categories = [],
+    isLoading: isCategoriesLoading,
+    error: categoriesError,
+  } = useQuery({
+    queryKey: ["categories", session?.user.id],
+    queryFn: getCategories,
     enabled: Boolean(session),
   });
 
@@ -103,36 +119,19 @@ export function ExpensesScreen() {
     const normalizedAmount = amount.trim().replace(",", ".");
     const normalizedDescription = description.trim();
 
-    if (!normalizedTitle) {
-      Alert.alert(
-        "Invalid expense",
-        "Title is required.",
-      );
-      return;
-    }
+    const validationError = validateExpenseForm({
+      title,
+      amount,
+      expenseDate,
+    });
 
-    const numericAmount = Number(normalizedAmount);
-
-    if (
-      !Number.isFinite(numericAmount) ||
-      numericAmount <= 0
-    ) {
-      Alert.alert(
-        "Invalid expense",
-        "Amount must be greater than zero.",
-      );
-      return;
-    }
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(expenseDate)) {
-      Alert.alert(
-        "Invalid expense",
-        "Date must use YYYY-MM-DD format.",
-      );
+    if (validationError) {
+      Alert.alert("Invalid expense", validationError);
       return;
     }
 
     createExpenseMutation.mutate({
+      category_id: selectedCategoryId,
       title: normalizedTitle,
       amount: normalizedAmount,
       expense_date: expenseDate,
@@ -147,6 +146,41 @@ export function ExpensesScreen() {
 
         <View>
           <Text>Create expense</Text>
+
+          <Text>Category</Text>
+
+        {isCategoriesLoading ? (
+          <ActivityIndicator />
+        ) : categoriesError ? (
+          <Text>Unable to load categories.</Text>
+        ) : categories.length === 0 ? (
+          <Text>No categories available.</Text>
+        ) : (
+          <View>
+            <Button
+              title={
+                selectedCategoryId === null
+                  ? "✓ Uncategorized"
+                  : "Uncategorized"
+              }
+              onPress={() => setSelectedCategoryId(null)}
+            />
+
+            {categories.map((category) => (
+              <Button
+                key={category.id}
+                title={
+                  selectedCategoryId === category.id
+                    ? `✓ ${category.name}`
+                    : category.name
+                }
+                onPress={() =>
+                  setSelectedCategoryId(category.id)
+                }
+              />
+            ))}
+          </View>
+        )}
 
           <TextInput
             placeholder="Title"
@@ -192,15 +226,26 @@ export function ExpensesScreen() {
         ) : (
           <View>
             {expenses.map((expense) => (
-              <View key={expense.id}>
-                <Text>{expense.title}</Text>
+              <Link
+                key={expense.id}
+                href={{
+                  pathname: "/expenses/[id]",
+                  params: { id: expense.id },
+                }}
+                asChild
+              >
+                <Pressable>
+                  <View>
+                    <Text>{expense.title}</Text>
 
-                <Text>
-                  {expense.amount} {expense.currency}
-                </Text>
+                    <Text>
+                      {expense.amount} {expense.currency}
+                    </Text>
 
-                <Text>{expense.expense_date}</Text>
-              </View>
+                    <Text>{expense.expense_date}</Text>
+                  </View>
+                </Pressable>
+              </Link>
             ))}
           </View>
         )}

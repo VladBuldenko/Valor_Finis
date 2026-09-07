@@ -3,6 +3,7 @@ import { apiRequest } from "../../api/api-client";
 import type {
   Expense,
   ExpenseCreateInput,
+  ExpenseUpdateInput,
 } from "./expense.types";
 
 /**
@@ -23,6 +24,36 @@ export async function createExpense(
     {
       method: "POST",
       body: JSON.stringify(expenseData),
+    },
+  );
+}
+
+/**
+ * Updates an expense owned by the authenticated user.
+ */
+export async function updateExpense(
+  expenseId: string,
+  expenseData: ExpenseUpdateInput,
+): Promise<Expense> {
+  return apiRequest<Expense>(
+    `/api/v1/expenses/${expenseId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(expenseData),
+    },
+  );
+}
+
+/**
+ * Deletes an expense owned by the authenticated user.
+ */
+export async function deleteExpense(
+  expenseId: string,
+): Promise<void> {
+  return apiRequest<void>(
+    `/api/v1/expenses/${expenseId}`,
+    {
+      method: "DELETE",
     },
   );
 }
