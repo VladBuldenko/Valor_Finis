@@ -214,6 +214,9 @@ class CategoryUpdate(BaseModel):
         if "name" in self.model_fields_set and self.name is None:
             raise ValueError("Category name cannot be null.")
 
+        if "is_visible" in self.model_fields_set and self.is_visible is None:
+            raise ValueError("is_visible cannot be null.")
+
         return self
 
 

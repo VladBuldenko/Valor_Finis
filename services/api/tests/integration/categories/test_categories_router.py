@@ -1048,3 +1048,45 @@ def test_get_categories_endpoint_includes_hidden_categories_when_requested(
     assert len(response_data) == len(DEFAULT_CATEGORIES)
     hidden_category = find_category_by_name(response_data, default_name)
     assert hidden_category["is_visible"] is False
+
+
+# Tests that sending an explicit null for is_visible is rejected as a
+# validation error instead of reaching the database.
+# This test exists to verify that CategoryUpdate rejects an explicit
+# `is_visible: null` the same way it already rejects an explicit
+# `name: null`, since the column is NOT NULL and letting a null value
+# through would surface as an unhandled integrity error instead of a
+# clean 422 response.
+# Parameters:
+# - client: TestClient instance connected to the FastAPI app.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 422 and the category is unchanged.
+def test_update_category_endpoint_rejects_null_is_visible(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    category_to_update = create_category(
+        client=client,
+        user_id=user_id,
+        name="Pets",
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/categories/{category_to_update['id']}",
+        json={"is_visible": None},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+    get_response = client.get(
+        f"/api/v1/categories/{category_to_update['id']}",
+        headers=auth_headers(user_id),
+    )
+    assert get_response.json()["is_visible"] is True
