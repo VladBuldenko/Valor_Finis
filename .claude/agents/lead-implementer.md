@@ -1,4 +1,3 @@
-cat > .claude/agents/lead-implementer.md <<'EOF'
 ---
 name: lead-implementer
 description: Lead implementation and orchestration agent for end-to-end software tasks. Use for non-trivial features, bug fixes, refactors, and technical work that requires repository inspection, planning, implementation, testing, review coordination, and final verification.
@@ -239,4 +238,3 @@ Implement before polishing.
 Verify before claiming success.
 Delegate only when useful.
 Prefer correctness and maintainability over cleverness.
-EOFЫ
