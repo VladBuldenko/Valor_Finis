@@ -47,7 +47,7 @@ function invalidateExpenseQueries(
 
 export function ExpenseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { session } = useAuth();
+  const { session, isLoading: isAuthLoading } = useAuth();
   const queryClient = useQueryClient();
   const router = useRouter();
 
@@ -135,7 +135,14 @@ export function ExpenseDetailScreen() {
     },
   });
 
+  const isMutating =
+    updateExpenseMutation.isPending || deleteExpenseMutation.isPending;
+
   function handleSaveExpense() {
+    if (isMutating) {
+      return;
+    }
+
     const validationError = validateExpenseForm({
       title,
       amount,
@@ -151,6 +158,10 @@ export function ExpenseDetailScreen() {
   }
 
   function handleDeleteExpense() {
+    if (isMutating) {
+      return;
+    }
+
     Alert.alert(
       "Delete expense?",
       "This cannot be undone.",
@@ -165,7 +176,7 @@ export function ExpenseDetailScreen() {
     );
   }
 
-  if (isLoading) {
+  if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView>
         <ActivityIndicator />
@@ -256,7 +267,11 @@ export function ExpenseDetailScreen() {
         {updateExpenseMutation.isPending ? (
           <ActivityIndicator />
         ) : (
-          <Button title="Save changes" onPress={handleSaveExpense} />
+          <Button
+            title="Save changes"
+            onPress={handleSaveExpense}
+            disabled={isMutating}
+          />
         )}
 
         <View>
@@ -267,6 +282,7 @@ export function ExpenseDetailScreen() {
               title="Delete expense"
               color="red"
               onPress={handleDeleteExpense}
+              disabled={isMutating}
             />
           )}
         </View>
