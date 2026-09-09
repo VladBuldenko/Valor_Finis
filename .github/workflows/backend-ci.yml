@@ -42,6 +42,7 @@ jobs:
       RECEIPT_STORAGE_DRIVER: local
       RECEIPT_UPLOAD_DIR: uploads/receipts
       RECEIPT_MAX_FILE_SIZE_MB: "10"
+      RECEIPT_OCR_DRIVER: tesseract
 
     defaults:
       run:
