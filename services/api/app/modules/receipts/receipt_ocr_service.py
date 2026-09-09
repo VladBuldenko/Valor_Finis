@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Protocol
 
 import pytesseract
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.app_config import settings
 from app.modules.receipts import receipt_storage_service
@@ -84,19 +84,98 @@ class UnconfiguredReceiptOcrProvider:
         raise ReceiptOcrProcessingError()
 
 
+# Normalizes orientation and downscales a decoded receipt image for OCR.
+# This function exists to keep real-resolution camera photos (e.g. a
+# 3024x4032 iPhone photo, ~12,000,000 decoded pixels) fast and reliable to
+# process with Tesseract on a modest Render instance, without weakening the
+# existing pre-decode pixel-budget check in TesseractReceiptOcrProvider
+# .extract_text() (that check still runs first, against the *original*
+# image, before this function is ever called).
+# Parameters:
+# - receipt_image: decoded (already `.load()`-ed) receipt image. Ownership
+#   of this image transfers to this function: when downscaling occurs, the
+#   caller's image is closed here once no longer needed, so the caller
+#   must not use `receipt_image` again after calling this function.
+# Returns:
+# - The image to pass to Tesseract: the same image (only orientation-
+#   normalized, never upscaled) when it is already at or below the
+#   configured maximum long edge, otherwise a new, smaller image resized
+#   to that maximum long edge with the original aspect ratio preserved.
+def _prepare_receipt_image_for_ocr(
+    receipt_image: Image.Image,
+) -> Image.Image:
+    # Many phone cameras (including iPhones) store photos with an EXIF
+    # Orientation tag instead of physically rotating the pixel data, so a
+    # portrait photo can be decoded "sideways" unless this is applied.
+    # in_place=True avoids Pillow's own default behavior of always
+    # allocating a full extra copy of the image (even when no rotation is
+    # needed) - see PIL.ImageOps.exif_transpose() - which would add a
+    # third full-resolution buffer alongside the ones already accounted
+    # for in RECEIPT_OCR_MAX_IMAGE_PIXELS' memory analysis.
+    ImageOps.exif_transpose(receipt_image, in_place=True)
+
+    width, height = receipt_image.size
+    long_edge = max(width, height)
+    max_long_edge = settings.receipt_ocr_max_long_edge
+
+    # Never upscale: a smaller-than-budget image is already cheap for
+    # Tesseract, and enlarging it would add blur/interpolation artifacts
+    # without adding any real text detail.
+    if long_edge <= max_long_edge:
+        return receipt_image
+
+    scale = max_long_edge / long_edge
+    target_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
+
+    logger.info(
+        "receipt_ocr_image_resized "
+        "original_size=%sx%s resized_size=%sx%s",
+        width,
+        height,
+        target_size[0],
+        target_size[1],
+    )
+
+    # LANCZOS is a high-quality resampling filter well suited to
+    # downscaling text-heavy images without introducing the aliasing a
+    # cheaper filter (e.g. nearest-neighbor) would add to fine character
+    # strokes.
+    resized_image = receipt_image.resize(
+        target_size,
+        Image.Resampling.LANCZOS,
+    )
+
+    # Release the full-resolution buffer now that a smaller working copy
+    # exists, instead of holding both for the remainder of the OCR call.
+    receipt_image.close()
+
+    return resized_image
+
+
 class TesseractReceiptOcrProvider:
     """
     OCR provider backed by the open-source Tesseract OCR engine.
 
     What:
         Extracts raw text from JPEG/PNG receipt images using the
-        tesseract-ocr binary through the pytesseract wrapper.
+        tesseract-ocr binary through the pytesseract wrapper. Before OCR,
+        the decoded image is orientation-normalized and, only when larger
+        than the configured maximum long edge, downscaled for that OCR
+        call (the original stored receipt file is never modified).
 
     Why:
         Provides a production-usable, deterministic, and free OCR
         implementation suitable for an MVP, replacing the temporary
         UnconfiguredReceiptOcrProvider. Running Tesseract locally in the
         application container avoids external paid OCR credentials.
+        Downscaling real-resolution camera photos (e.g. ~12MP iPhone
+        photos) before OCR keeps processing time/CPU cost bounded on a
+        modest Render instance without weakening the pixel-budget
+        decompression-bomb protection, which still runs against the
+        original image first.
     """
 
     def extract_text(self, file_path: Path) -> str:
@@ -142,8 +221,18 @@ class TesseractReceiptOcrProvider:
                 # UnidentifiedImageError/OSError at this point.
                 receipt_image.load()
 
-                return pytesseract.image_to_string(
+                # Normalize orientation and downscale real-resolution
+                # camera photos (e.g. ~12MP iPhone photos) before OCR; see
+                # _prepare_receipt_image_for_ocr() for the memory/timing
+                # rationale. This only affects the in-memory working copy
+                # used for OCR - the original stored receipt file on disk
+                # is never modified.
+                ocr_image = _prepare_receipt_image_for_ocr(
                     receipt_image,
+                )
+
+                return pytesseract.image_to_string(
+                    ocr_image,
                     lang=TESSERACT_OCR_LANGUAGES,
                     timeout=settings.receipt_ocr_timeout_seconds,
                 )
