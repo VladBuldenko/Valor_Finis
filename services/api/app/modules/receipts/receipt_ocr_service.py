@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -11,6 +12,13 @@ from app.modules.receipts.receipt_errors import (
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
 )
+
+
+# Logger for this module. Only safe, non-sensitive reason categories are
+# logged here - never OCR-extracted text, receipt content, or local
+# file paths. See TesseractReceiptOcrProvider.extract_text() and
+# extract_receipt_text() for the specific categories logged.
+logger = logging.getLogger(__name__)
 
 
 # Languages loaded by the Tesseract OCR engine for receipt text extraction.
@@ -120,6 +128,13 @@ class TesseractReceiptOcrProvider:
                 declared_pixels = width * height
 
                 if declared_pixels > settings.receipt_ocr_max_image_pixels:
+                    logger.warning(
+                        "receipt_ocr_image_too_large "
+                        "declared_pixels=%s max_pixels=%s",
+                        declared_pixels,
+                        settings.receipt_ocr_max_image_pixels,
+                    )
+
                     raise ReceiptOcrProcessingError()
 
                 # Loading the image data here (instead of lazily, on first
@@ -132,17 +147,53 @@ class TesseractReceiptOcrProvider:
                     lang=TESSERACT_OCR_LANGUAGES,
                     timeout=settings.receipt_ocr_timeout_seconds,
                 )
-        except (
-            UnidentifiedImageError,
-            OSError,
-            pytesseract.TesseractError,
-            pytesseract.TesseractNotFoundError,
+        # The except clauses below are intentionally split by exception
+        # type (instead of one combined tuple) so that each failure mode
+        # can be logged under its own safe, non-sensitive reason category
+        # for Render log diagnosis, while still converting every case to
+        # the same generic ReceiptOcrProcessingError for the caller/client
+        # (fail-closed behavior and the external API contract are
+        # unchanged). Ordering matters: TesseractNotFoundError is an
+        # OSError subclass and TesseractError is a RuntimeError subclass,
+        # so the more specific pytesseract exceptions must be caught
+        # before the generic OSError/RuntimeError clauses.
+        except UnidentifiedImageError as error:
+            logger.warning("receipt_ocr_invalid_image")
+
+            raise ReceiptOcrProcessingError() from error
+        except pytesseract.TesseractNotFoundError as error:
+            # The tesseract binary itself is missing/not on PATH - an
+            # environment/deployment problem, not a bad receipt file.
+            logger.error("receipt_ocr_tesseract_not_found")
+
+            raise ReceiptOcrProcessingError() from error
+        except pytesseract.TesseractError as error:
+            # TesseractError covers both a non-zero engine exit (generic
+            # engine failure) and a missing language data file. The
+            # underlying tesseract CLI reports the latter by mentioning
+            # "tessdata" in its stderr output; only that safe keyword
+            # match is used for categorization, the raw message itself
+            # (which could in principle echo file paths) is never logged.
+            if "tessdata" in (error.message or "").lower():
+                logger.error(
+                    "receipt_ocr_tesseract_language_data_missing"
+                )
+            else:
+                logger.warning("receipt_ocr_engine_failed")
+
+            raise ReceiptOcrProcessingError() from error
+        except OSError as error:
+            logger.warning("receipt_ocr_invalid_image")
+
+            raise ReceiptOcrProcessingError() from error
+        except RuntimeError as error:
             # pytesseract raises a bare RuntimeError("Tesseract process
             # timeout") when the OCR subprocess exceeds `timeout` (see
-            # pytesseract.pytesseract.timeout_manager). TesseractError is
-            # itself a RuntimeError subclass, so this also covers it.
-            RuntimeError,
-        ) as error:
+            # pytesseract.pytesseract.timeout_manager). TesseractError
+            # (handled above) is itself a RuntimeError subclass, so by
+            # this point only the bare timeout RuntimeError remains.
+            logger.warning("receipt_ocr_timeout")
+
             raise ReceiptOcrProcessingError() from error
 
 
@@ -191,6 +242,8 @@ def extract_receipt_text(
             storage_path=storage_path,
         ) as file_path:
             if not file_path.is_file():
+                logger.warning("receipt_ocr_file_not_found")
+
                 raise ReceiptOcrFileNotFoundError()
 
             try:
@@ -214,6 +267,8 @@ def extract_receipt_text(
     normalized_text = extracted_text.strip()
 
     if not normalized_text:
+        logger.warning("receipt_ocr_empty_result")
+
         raise ReceiptOcrProcessingError()
 
     return normalized_text
