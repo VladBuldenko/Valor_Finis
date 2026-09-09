@@ -1366,3 +1366,278 @@ def test_tesseract_provider_telemetry_logs_do_not_leak_ocr_text(
 
     assert result == distinctive_ocr_text
     assert distinctive_ocr_text not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# CPU/cgroup throttling diagnostics (VF-006 - confirm Render CPU
+# throttling). See app/core/cgroup_metrics.py for the underlying reader,
+# tested independently in tests/unit/core/test_cgroup_metrics.py. These
+# tests confirm the OCR-side wiring: telemetry is logged immediately
+# before/after the Tesseract call, deltas are computed correctly, and
+# the diagnostic can never break OCR processing itself.
+# ---------------------------------------------------------------------------
+
+
+# Verifies that a successful OCR run logs cgroup CPU metrics both before
+# and after the Tesseract call, with correct before/after values and
+# correct deltas between them.
+# This test exists to confirm the diagnostic telemetry this task adds is
+# actually wired into the success path with the right fields, not just
+# that read_cgroup_cpu_metrics() itself works in isolation.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the cgroup CPU metrics reader.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_cpu_before_and_after_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    cpu_before_snapshot = receipt_ocr_service.CgroupCpuMetrics(
+        cgroup_version="v2",
+        quota_us=50000,
+        period_us=100000,
+        nr_periods=10,
+        nr_throttled=2,
+        throttled_usec=3000,
+        usage_usec=100000,
+    )
+    cpu_after_snapshot = receipt_ocr_service.CgroupCpuMetrics(
+        cgroup_version="v2",
+        quota_us=50000,
+        period_us=100000,
+        nr_periods=15,
+        nr_throttled=6,
+        throttled_usec=8000,
+        usage_usec=140000,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "read_cgroup_cpu_metrics",
+        MagicMock(side_effect=[cpu_before_snapshot, cpu_after_snapshot]),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert (
+        "receipt_ocr_cpu_before cgroup_version=v2 quota_us=50000 "
+        "period_us=100000 nr_periods=10 nr_throttled=2 "
+        "throttled_usec=3000" in caplog.text
+    )
+    assert (
+        "receipt_ocr_cpu_after cgroup_version=v2 nr_periods=15 "
+        "nr_throttled=6 throttled_usec=8000 usage_usec=140000 "
+        "delta_nr_periods=5 delta_nr_throttled=4 "
+        "delta_throttled_usec=5000 delta_usage_usec=40000" in caplog.text
+    )
+
+
+# Verifies that a Tesseract timeout still logs "after" CPU/cgroup
+# telemetry with deltas against the "before" snapshot, alongside the
+# existing timeout failure category log.
+# This test exists because a real timeout under CPU throttling is
+# exactly the production scenario this diagnostic was built to observe:
+# rising nr_throttled/throttled_usec across a timed-out OCR call is the
+# direct confirmation this task set out to obtain.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the cgroup CPU metrics reader.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_cpu_after_on_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(side_effect=RuntimeError("Tesseract process timeout")),
+    )
+
+    cpu_before_snapshot = receipt_ocr_service.CgroupCpuMetrics(
+        cgroup_version="v2",
+        quota_us=50000,
+        period_us=100000,
+        nr_periods=100,
+        nr_throttled=40,
+        throttled_usec=900000,
+        usage_usec=5000000,
+    )
+    cpu_after_snapshot = receipt_ocr_service.CgroupCpuMetrics(
+        cgroup_version="v2",
+        quota_us=50000,
+        period_us=100000,
+        nr_periods=145,
+        nr_throttled=88,
+        throttled_usec=4400000,
+        usage_usec=5600000,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "read_cgroup_cpu_metrics",
+        MagicMock(side_effect=[cpu_before_snapshot, cpu_after_snapshot]),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_cpu_before" in caplog.text
+    assert (
+        "receipt_ocr_cpu_after cgroup_version=v2 nr_periods=145 "
+        "nr_throttled=88 throttled_usec=4400000 usage_usec=5600000 "
+        "delta_nr_periods=45 delta_nr_throttled=48 "
+        "delta_throttled_usec=3500000 delta_usage_usec=600000"
+        in caplog.text
+    )
+    assert "receipt_ocr_timeout" in caplog.text
+
+
+# Verifies that no CPU/cgroup telemetry is logged for a failure that
+# happens before the Tesseract call is ever reached (an unreadable/
+# corrupt image), since there is no "before the Tesseract call"
+# snapshot to report or compare against in that case.
+# This test exists to confirm the telemetry stays scoped to the
+# Tesseract call itself, per the task's diagnostics-only, narrowly
+# isolated scope.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the cgroup CPU metrics
+#   reader (to prove it is never even called).
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_does_not_log_cpu_metrics_for_pre_tesseract_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    invalid_image_path = tmp_path / "receipt.png"
+    invalid_image_path.write_bytes(b"not-a-real-image")
+
+    cpu_metrics_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "read_cgroup_cpu_metrics",
+        cpu_metrics_mock,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=invalid_image_path,
+            )
+
+    cpu_metrics_mock.assert_not_called()
+    assert "receipt_ocr_cpu_before" not in caplog.text
+    assert "receipt_ocr_cpu_after" not in caplog.text
+
+
+# Verifies that OCR still succeeds and returns the correct text using
+# the real (unmocked) cgroup CPU metrics reader, which reports
+# "unavailable" values on a development machine without a Linux cgroup
+# filesystem.
+# This test exists to prove end-to-end - without mocking the diagnostic
+# itself away - that missing cgroup files degrade safely and never
+# break OCR processing, per the task's explicit safety requirement.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace only the pytesseract
+#   boundary; the cgroup metrics reader is left as the real
+#   implementation.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_cpu_telemetry_never_breaks_ocr_when_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        result = provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert result == "LIDL"
+    assert "receipt_ocr_cpu_before" in caplog.text
+    assert "receipt_ocr_cpu_after" in caplog.text
+    # On a host with no cgroup filesystem (e.g. this test environment),
+    # every field safely reports "unavailable" instead of raising.
+    assert "cgroup_version=unavailable" in caplog.text
+
+
+# Verifies that the CPU telemetry log lines never contain the local
+# file path, matching the same safe-logging requirement already
+# enforced for the other diagnostic log lines in this file.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the cgroup CPU metrics reader.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_cpu_telemetry_does_not_leak_file_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert str(tmp_path) not in caplog.text
