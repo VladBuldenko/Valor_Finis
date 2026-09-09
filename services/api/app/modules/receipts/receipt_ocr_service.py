@@ -1,6 +1,7 @@
 import logging
+import time
 from pathlib import Path
-from typing import Protocol
+from typing import Optional, Protocol
 
 import pytesseract
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -27,6 +28,23 @@ logger = logging.getLogger(__name__)
 # Dockerfile to correctly recognize German receipts (umlauts and common
 # German retail terms such as "SUMME"/"GESAMT"/"MWST" used by the parser).
 TESSERACT_OCR_LANGUAGES = "eng+deu"
+
+
+# Computes elapsed milliseconds since a `time.perf_counter()` start value,
+# for diagnostic logging.
+# This function exists to avoid repeating the same rounding/None-guard
+# logic in every except clause that reports how long Tesseract ran
+# before failing.
+# Parameters:
+# - start: a `time.perf_counter()` value, or None when OCR never reached
+#   the point of starting the Tesseract call.
+# Returns:
+# - Elapsed milliseconds since `start`, or None when `start` is None.
+def _elapsed_ms_since(start: Optional[float]) -> Optional[int]:
+    if start is None:
+        return None
+
+    return round((time.perf_counter() - start) * 1000)
 
 
 class ReceiptOcrProvider(Protocol):
@@ -97,13 +115,17 @@ class UnconfiguredReceiptOcrProvider:
 #   caller's image is closed here once no longer needed, so the caller
 #   must not use `receipt_image` again after calling this function.
 # Returns:
-# - The image to pass to Tesseract: the same image (only orientation-
-#   normalized, never upscaled) when it is already at or below the
-#   configured maximum long edge, otherwise a new, smaller image resized
-#   to that maximum long edge with the original aspect ratio preserved.
+# - A tuple of (the image to pass to Tesseract, whether it was resized).
+#   The image is the same image (only orientation-normalized, never
+#   upscaled) when it is already at or below the configured maximum long
+#   edge, otherwise a new, smaller image resized to that maximum long
+#   edge with the original aspect ratio preserved. The boolean lets the
+#   caller log whether a resize actually occurred without having to
+#   infer it from a size comparison (EXIF transpose alone can also
+#   change width/height by swapping them, which is not a resize).
 def _prepare_receipt_image_for_ocr(
     receipt_image: Image.Image,
-) -> Image.Image:
+) -> tuple[Image.Image, bool]:
     # Many phone cameras (including iPhones) store photos with an EXIF
     # Orientation tag instead of physically rotating the pixel data, so a
     # portrait photo can be decoded "sideways" unless this is applied.
@@ -122,21 +144,12 @@ def _prepare_receipt_image_for_ocr(
     # Tesseract, and enlarging it would add blur/interpolation artifacts
     # without adding any real text detail.
     if long_edge <= max_long_edge:
-        return receipt_image
+        return receipt_image, False
 
     scale = max_long_edge / long_edge
     target_size = (
         max(1, round(width * scale)),
         max(1, round(height * scale)),
-    )
-
-    logger.info(
-        "receipt_ocr_image_resized "
-        "original_size=%sx%s resized_size=%sx%s",
-        width,
-        height,
-        target_size[0],
-        target_size[1],
     )
 
     # LANCZOS is a high-quality resampling filter well suited to
@@ -152,7 +165,7 @@ def _prepare_receipt_image_for_ocr(
     # exists, instead of holding both for the remainder of the OCR call.
     receipt_image.close()
 
-    return resized_image
+    return resized_image, True
 
 
 class TesseractReceiptOcrProvider:
@@ -196,6 +209,13 @@ class TesseractReceiptOcrProvider:
           the configured timeout.
         """
 
+        # Set once OCR actually starts (right before the pytesseract call
+        # below); used by the except clauses below to report how long
+        # Tesseract itself ran before failing. Stays None if a failure
+        # happens earlier (bad file, oversized image), since there is no
+        # meaningful "Tesseract elapsed time" to report in that case.
+        tesseract_start = None
+
         try:
             with Image.open(file_path) as receipt_image:
                 # Image.open() only reads the file header, not the full
@@ -205,6 +225,12 @@ class TesseractReceiptOcrProvider:
                 # have been fully decoded into memory.
                 width, height = receipt_image.size
                 declared_pixels = width * height
+
+                logger.info(
+                    "receipt_ocr_started original_size=%sx%s",
+                    width,
+                    height,
+                )
 
                 if declared_pixels > settings.receipt_ocr_max_image_pixels:
                     logger.warning(
@@ -227,15 +253,54 @@ class TesseractReceiptOcrProvider:
                 # rationale. This only affects the in-memory working copy
                 # used for OCR - the original stored receipt file on disk
                 # is never modified.
-                ocr_image = _prepare_receipt_image_for_ocr(
+                preprocessing_start = time.perf_counter()
+
+                ocr_image, resized = _prepare_receipt_image_for_ocr(
                     receipt_image,
                 )
 
-                return pytesseract.image_to_string(
+                preprocessing_ms = round(
+                    (time.perf_counter() - preprocessing_start) * 1000
+                )
+
+                logger.info(
+                    "receipt_ocr_prepared "
+                    "ocr_size=%sx%s resized=%s preprocessing_ms=%s "
+                    "max_long_edge=%s",
+                    ocr_image.width,
+                    ocr_image.height,
+                    "true" if resized else "false",
+                    preprocessing_ms,
+                    settings.receipt_ocr_max_long_edge,
+                )
+
+                timeout_seconds = settings.receipt_ocr_timeout_seconds
+
+                logger.info(
+                    "receipt_ocr_tesseract_started "
+                    "timeout_seconds=%s languages=%s",
+                    timeout_seconds,
+                    TESSERACT_OCR_LANGUAGES,
+                )
+
+                tesseract_start = time.perf_counter()
+
+                extracted_text = pytesseract.image_to_string(
                     ocr_image,
                     lang=TESSERACT_OCR_LANGUAGES,
-                    timeout=settings.receipt_ocr_timeout_seconds,
+                    timeout=timeout_seconds,
                 )
+
+                tesseract_elapsed_ms = round(
+                    (time.perf_counter() - tesseract_start) * 1000
+                )
+
+                logger.info(
+                    "receipt_ocr_tesseract_completed elapsed_ms=%s",
+                    tesseract_elapsed_ms,
+                )
+
+                return extracted_text
         # The except clauses below are intentionally split by exception
         # type (instead of one combined tuple) so that each failure mode
         # can be logged under its own safe, non-sensitive reason category
@@ -253,7 +318,10 @@ class TesseractReceiptOcrProvider:
         except pytesseract.TesseractNotFoundError as error:
             # The tesseract binary itself is missing/not on PATH - an
             # environment/deployment problem, not a bad receipt file.
-            logger.error("receipt_ocr_tesseract_not_found")
+            logger.error(
+                "receipt_ocr_tesseract_not_found tesseract_elapsed_ms=%s",
+                _elapsed_ms_since(tesseract_start),
+            )
 
             raise ReceiptOcrProcessingError() from error
         except pytesseract.TesseractError as error:
@@ -265,10 +333,15 @@ class TesseractReceiptOcrProvider:
             # (which could in principle echo file paths) is never logged.
             if "tessdata" in (error.message or "").lower():
                 logger.error(
-                    "receipt_ocr_tesseract_language_data_missing"
+                    "receipt_ocr_tesseract_language_data_missing "
+                    "tesseract_elapsed_ms=%s",
+                    _elapsed_ms_since(tesseract_start),
                 )
             else:
-                logger.warning("receipt_ocr_engine_failed")
+                logger.warning(
+                    "receipt_ocr_engine_failed tesseract_elapsed_ms=%s",
+                    _elapsed_ms_since(tesseract_start),
+                )
 
             raise ReceiptOcrProcessingError() from error
         except OSError as error:
@@ -281,7 +354,10 @@ class TesseractReceiptOcrProvider:
             # pytesseract.pytesseract.timeout_manager). TesseractError
             # (handled above) is itself a RuntimeError subclass, so by
             # this point only the bare timeout RuntimeError remains.
-            logger.warning("receipt_ocr_timeout")
+            logger.warning(
+                "receipt_ocr_timeout tesseract_elapsed_ms=%s",
+                _elapsed_ms_since(tesseract_start),
+            )
 
             raise ReceiptOcrProcessingError() from error
 
