@@ -17,6 +17,67 @@ SUPPORTED_RECEIPT_STORAGE_DRIVERS = {
     "supabase",
 }
 
+SUPPORTED_RECEIPT_OCR_DRIVERS = {
+    "tesseract",
+    "unconfigured",
+}
+
+# Default maximum number of decoded receipt image pixels (width * height)
+# allowed before OCR processing.
+#
+# Rationale: sized to the worst-case *decoded* memory a single request can
+# hold on a modest single-instance production container, not to the
+# largest image a camera can produce.
+#
+# - RGB decodes to 3 bytes/pixel, RGBA (e.g. a PNG with transparency) to
+#   4 bytes/pixel. At 30,000,000 pixels that is ~90MB (RGB) / ~120MB
+#   (RGBA) for the raw decoded bitmap alone.
+# - pytesseract.image_to_string() is called with a PIL Image object (not
+#   a file path). For an image with an alpha channel, pytesseract's
+#   internal prepare()/save() flattens it onto a *new* opaque RGB copy
+#   before writing it to a temp file for the tesseract subprocess to
+#   read; that second full-resolution RGB buffer (~90MB more at 30MP)
+#   stays referenced in our process alongside the original RGBA buffer
+#   for the whole subprocess call, since the OCR provider keeps the
+#   source PIL Image open until the call returns. Worst case (RGBA
+#   input) is therefore ~7 bytes/pixel held concurrently in our own
+#   process: ~210MB at 30,000,000 pixels (versus ~420MB at the previous
+#   60,000,000-pixel default).
+# - Tesseract itself then runs as a *separate* OS subprocess (its own
+#   Leptonica image decode plus binarization/layout-analysis/LSTM
+#   buffers, which scale with image dimensions) on top of that, adding a
+#   further, comparable-order-of-magnitude cost sharing the same
+#   container memory ceiling as the FastAPI process.
+# - `process_receipt` is a sync route (FastAPI threadpool), so multiple
+#   uploads can each independently hold this footprint at the same time.
+#   A modest Render MVP instance (roughly 512MB-1GB total RAM) also has
+#   to fit the baseline Python/FastAPI/SQLAlchemy process. At the
+#   previous 60,000,000-pixel default, a single worst-case (RGBA) request
+#   could already approach or exceed a 512MB-1GB instance on its own once
+#   the tesseract subprocess is included, and two concurrent such
+#   requests could plausibly OOM-kill the whole container for all users
+#   -- a needlessly large resource-exhaustion window. 30,000,000 pixels
+#   cuts that single-request footprint roughly in half while still
+#   comfortably covering real iPhone receipt photos (~12-24MP, i.e.
+#   25%-150% headroom); unusually high-resolution 44-48MP ProRAW/HEIF-max
+#   captures fall outside this MVP budget and can be handled later via
+#   client- or server-side downscaling before OCR.
+# - This stays well below Pillow's own decompression-bomb warning
+#   threshold (~89,478,485 pixels, `PIL.Image.MAX_IMAGE_PIXELS`), so a
+#   compressed-but-small malicious file is still rejected before it can
+#   decode into a large in-memory bitmap.
+DEFAULT_RECEIPT_OCR_MAX_IMAGE_PIXELS = 30_000_000
+
+# Default Tesseract OCR execution timeout, in seconds.
+#
+# Rationale: this MVP processes one receipt photo per request (not a
+# batch job) on a modest Render instance. Normal OCR of a single receipt
+# image typically completes in a few seconds; 20 seconds gives generous
+# headroom for slower/cold hardware while still bounding the worst-case
+# CPU time a single request can consume, protecting the API worker from
+# a pathological or adversarial image tying up processing indefinitely.
+DEFAULT_RECEIPT_OCR_TIMEOUT_SECONDS = 20
+
 
 # Returns and validates the configured authentication mode.
 # This function exists to fail fast when AUTH_MODE contains
@@ -74,6 +135,97 @@ def get_receipt_storage_driver() -> str:
         )
 
     return storage_driver
+
+
+# Returns and validates the configured receipt OCR driver.
+# This function exists to fail fast when RECEIPT_OCR_DRIVER
+# contains an unsupported or misspelled value.
+# Parameters:
+# - None.
+# Returns:
+# - Validated receipt OCR driver.
+# Raises:
+# - ValueError when RECEIPT_OCR_DRIVER is unsupported.
+def get_receipt_ocr_driver() -> str:
+    ocr_driver = os.getenv(
+        "RECEIPT_OCR_DRIVER",
+        "tesseract",
+    ).strip().lower()
+
+    if ocr_driver not in SUPPORTED_RECEIPT_OCR_DRIVERS:
+        supported_drivers = ", ".join(
+            sorted(SUPPORTED_RECEIPT_OCR_DRIVERS),
+        )
+
+        raise ValueError(
+            "Unsupported RECEIPT_OCR_DRIVER "
+            f"'{ocr_driver}'. "
+            f"Supported values: {supported_drivers}."
+        )
+
+    return ocr_driver
+
+
+# Returns and validates the configured maximum decoded receipt image
+# pixel count allowed before OCR processing.
+# This function exists to bound OCR memory usage for decoded images
+# independently of the uploaded file's compressed byte size, since a
+# small compressed file can still decode into a very large bitmap
+# ("decompression bomb").
+# Parameters:
+# - None.
+# Returns:
+# - Validated maximum number of decoded image pixels.
+# Raises:
+# - ValueError when RECEIPT_OCR_MAX_IMAGE_PIXELS is not a positive integer.
+def get_receipt_ocr_max_image_pixels() -> int:
+    raw_value = os.getenv(
+        "RECEIPT_OCR_MAX_IMAGE_PIXELS",
+        str(DEFAULT_RECEIPT_OCR_MAX_IMAGE_PIXELS),
+    ).strip()
+
+    try:
+        max_image_pixels = int(raw_value)
+    except ValueError:
+        max_image_pixels = None
+
+    if max_image_pixels is None or max_image_pixels <= 0:
+        raise ValueError(
+            "Invalid RECEIPT_OCR_MAX_IMAGE_PIXELS "
+            f"'{raw_value}'. Must be a positive integer."
+        )
+
+    return max_image_pixels
+
+
+# Returns and validates the configured Tesseract OCR execution timeout.
+# This function exists to bound worst-case OCR CPU/wall-clock time per
+# receipt so a single pathological or adversarial image cannot tie up
+# an application worker indefinitely.
+# Parameters:
+# - None.
+# Returns:
+# - Validated Tesseract OCR timeout in seconds.
+# Raises:
+# - ValueError when RECEIPT_OCR_TIMEOUT_SECONDS is not a positive integer.
+def get_receipt_ocr_timeout_seconds() -> int:
+    raw_value = os.getenv(
+        "RECEIPT_OCR_TIMEOUT_SECONDS",
+        str(DEFAULT_RECEIPT_OCR_TIMEOUT_SECONDS),
+    ).strip()
+
+    try:
+        timeout_seconds = int(raw_value)
+    except ValueError:
+        timeout_seconds = None
+
+    if timeout_seconds is None or timeout_seconds <= 0:
+        raise ValueError(
+            "Invalid RECEIPT_OCR_TIMEOUT_SECONDS "
+            f"'{raw_value}'. Must be a positive integer."
+        )
+
+    return timeout_seconds
 
 
 # Validates authentication-related application configuration.
@@ -188,6 +340,11 @@ class AppSettings:
     - receipt_storage_bucket: Supabase Storage bucket used for receipts.
     - receipt_upload_dir: Local directory used for receipt file uploads.
     - receipt_max_file_size_mb: Maximum receipt file size in megabytes.
+    - receipt_ocr_driver: OCR provider used to extract text from receipts.
+    - receipt_ocr_max_image_pixels: maximum decoded receipt image pixel
+      count (width * height) allowed before OCR processing.
+    - receipt_ocr_timeout_seconds: maximum Tesseract OCR execution time,
+      in seconds, allowed per receipt.
     """
 
     def __init__(self) -> None:
@@ -232,6 +389,18 @@ class AppSettings:
                 "RECEIPT_MAX_FILE_SIZE_MB",
                 "10",
             )
+        )
+
+        self.receipt_ocr_driver = (
+            get_receipt_ocr_driver()
+        )
+
+        self.receipt_ocr_max_image_pixels = (
+            get_receipt_ocr_max_image_pixels()
+        )
+
+        self.receipt_ocr_timeout_seconds = (
+            get_receipt_ocr_timeout_seconds()
         )
 
         validate_auth_configuration(

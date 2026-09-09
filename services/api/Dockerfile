@@ -6,6 +6,16 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
+# Install the Tesseract OCR engine used to extract text from receipt images.
+# - tesseract-ocr: OCR binary, bundled with English (eng) trained data.
+# - tesseract-ocr-deu: German (deu) trained data, required to correctly
+#   recognize German receipts (umlauts and terms such as SUMME/GESAMT/MWST).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-deu \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 
 RUN python -m pip install --upgrade pip \

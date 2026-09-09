@@ -217,7 +217,15 @@ export function DashboardScreen() {
                 </Text>
             </Pressable>
         </Link>
-        
+
+        <Link href="/receipts/upload" asChild>
+            <Pressable style={styles.button}>
+                <Text style={styles.buttonText}>
+                Scan receipt
+                </Text>
+            </Pressable>
+        </Link>
+
         <Pressable
           disabled={isSigningOut}
           onPress={handleSignOut}

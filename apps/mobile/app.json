@@ -40,7 +40,15 @@
       "expo-font",
       "expo-image",
       "expo-web-browser",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Valor Finis to access your photos to attach a receipt.",
+          "cameraPermission": "Allow Valor Finis to access your camera to scan a receipt.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
