@@ -78,6 +78,47 @@ DEFAULT_RECEIPT_OCR_MAX_IMAGE_PIXELS = 30_000_000
 # a pathological or adversarial image tying up processing indefinitely.
 DEFAULT_RECEIPT_OCR_TIMEOUT_SECONDS = 20
 
+# Default maximum long edge (in pixels) of the image handed to Tesseract,
+# after EXIF orientation normalization and before OCR.
+#
+# Rationale: production evidence (iPhone 15 Pro Max, 3024x4032, ~12MP)
+# showed OCR timing out at 45s on a real receipt photo even though upload,
+# Supabase materialization, and Tesseract itself all work correctly - the
+# bottleneck is OCR wall-clock time on real-resolution photos, not a bug.
+# The receipt also occupies only part of the camera frame (the rest is
+# background/hand/desk), so most of those ~12,000,000 decoded pixels carry
+# no receipt text at all and only add Tesseract layout-analysis/LSTM cost.
+#
+# A local benchmark using a generated receipt-photo approximation (see
+# task history; not part of this repository) compared Tesseract text
+# extraction at the full synthetic resolution (3024x4032, ~12.2MP) against
+# downscaled long edges of 2500, 2000, and 1600px:
+# - 2500px and 2000px both preserved the extracted receipt fields
+#   (merchant, line items, total) at least as reliably as the untouched
+#   full-resolution image.
+# - 1600px measurably degraded text quality and dropped the total-amount
+#   line, which the receipt parser depends on (see receipt_parser_service
+#   "SUMME"/"GESAMT"/"MWST" matching) - too aggressive for an MVP default.
+# 2000px is chosen as the default: it matched full-resolution OCR
+# reliability in that comparison while cutting decoded pixels roughly 4x
+# (~12,000,000 -> ~3,000,000 for a 3:4 photo), which is what actually
+# drives Tesseract's CPU time on a modest Render instance.
+#
+# Memory reconciliation with RECEIPT_OCR_MAX_IMAGE_PIXELS above: this
+# long-edge downscale happens *after* the existing pre-decode pixel-budget
+# check (which still bounds the initial full-resolution decode) and *after*
+# EXIF orientation normalization. The full-resolution decoded buffer is
+# closed as soon as the smaller working copy is produced (see
+# _prepare_receipt_image_for_ocr() in receipt_ocr_service.py), so the
+# worst case is a brief overlap of the full-resolution buffer and the
+# much smaller resized
+# buffer, not a fourth full-resolution copy held for the whole OCR call.
+# The ~7 bytes/pixel worst case documented above is unaffected: it already
+# describes the pre-resize decode/orient/prepare() chain, and Tesseract
+# itself now runs against a smaller image than before, reducing (not
+# increasing) its own subprocess memory/CPU footprint.
+DEFAULT_RECEIPT_OCR_MAX_LONG_EDGE = 2000
+
 
 # Returns and validates the configured authentication mode.
 # This function exists to fail fast when AUTH_MODE contains
@@ -228,6 +269,39 @@ def get_receipt_ocr_timeout_seconds() -> int:
     return timeout_seconds
 
 
+# Returns and validates the configured maximum long edge (in pixels) used
+# to downscale a receipt image before OCR.
+# This function exists to bound OCR processing time/CPU cost for
+# real-resolution camera photos independently of the pre-decode pixel
+# budget, which protects against decompression-bomb-style files but does
+# not by itself keep normal, legitimately large iPhone photos fast to
+# process.
+# Parameters:
+# - None.
+# Returns:
+# - Validated maximum long edge in pixels.
+# Raises:
+# - ValueError when RECEIPT_OCR_MAX_LONG_EDGE is not a positive integer.
+def get_receipt_ocr_max_long_edge() -> int:
+    raw_value = os.getenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        str(DEFAULT_RECEIPT_OCR_MAX_LONG_EDGE),
+    ).strip()
+
+    try:
+        max_long_edge = int(raw_value)
+    except ValueError:
+        max_long_edge = None
+
+    if max_long_edge is None or max_long_edge <= 0:
+        raise ValueError(
+            "Invalid RECEIPT_OCR_MAX_LONG_EDGE "
+            f"'{raw_value}'. Must be a positive integer."
+        )
+
+    return max_long_edge
+
+
 # Validates authentication-related application configuration.
 # This function exists to fail fast during application startup
 # when Supabase authentication is enabled but required settings
@@ -345,6 +419,9 @@ class AppSettings:
       count (width * height) allowed before OCR processing.
     - receipt_ocr_timeout_seconds: maximum Tesseract OCR execution time,
       in seconds, allowed per receipt.
+    - receipt_ocr_max_long_edge: maximum long edge (in pixels) of the
+      image passed to Tesseract; larger images are downscaled (never
+      upscaled) before OCR.
     """
 
     def __init__(self) -> None:
@@ -401,6 +478,10 @@ class AppSettings:
 
         self.receipt_ocr_timeout_seconds = (
             get_receipt_ocr_timeout_seconds()
+        )
+
+        self.receipt_ocr_max_long_edge = (
+            get_receipt_ocr_max_long_edge()
         )
 
         validate_auth_configuration(

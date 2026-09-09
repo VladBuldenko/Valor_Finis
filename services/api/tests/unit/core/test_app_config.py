@@ -6,6 +6,7 @@ from app.core.app_config import (
     get_auth_mode,
     get_receipt_ocr_driver,
     get_receipt_ocr_max_image_pixels,
+    get_receipt_ocr_max_long_edge,
     get_receipt_ocr_timeout_seconds,
 )
 
@@ -538,6 +539,108 @@ def test_get_receipt_ocr_timeout_seconds_accepts_configured_value(
     assert timeout_seconds == 45
 
 
+# Tests that a safe default OCR downscale long edge is used when
+# RECEIPT_OCR_MAX_LONG_EDGE is missing.
+# This test exists to keep OCR downscaling active out of the box without
+# requiring extra configuration.
+# Parameters:
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+def test_get_receipt_ocr_max_long_edge_returns_default(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.delenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        raising=False,
+    )
+
+    # Act
+    max_long_edge = get_receipt_ocr_max_long_edge()
+
+    # Assert
+    assert max_long_edge == 2000
+
+
+# Tests that a configured positive OCR downscale long edge is honored.
+# This test exists to confirm that operators can tune the downscale
+# target without changing application code.
+# Parameters:
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+def test_get_receipt_ocr_max_long_edge_accepts_configured_value(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        "2500",
+    )
+
+    # Act
+    max_long_edge = get_receipt_ocr_max_long_edge()
+
+    # Assert
+    assert max_long_edge == 2500
+
+
+# Tests that a non-numeric OCR downscale long edge is rejected.
+# This test exists to fail fast on misconfiguration instead of silently
+# disabling the OCR downscale step.
+# Parameters:
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+def test_get_receipt_ocr_max_long_edge_rejects_non_numeric_value(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        "not-a-number",
+    )
+
+    # Act
+    with pytest.raises(ValueError) as error:
+        get_receipt_ocr_max_long_edge()
+
+    # Assert
+    assert "RECEIPT_OCR_MAX_LONG_EDGE" in str(error.value)
+
+
+# Tests that a zero or negative OCR downscale long edge is rejected.
+# This test exists to prevent a misconfiguration from silently disabling
+# or corrupting the OCR downscale step (a zero/negative long edge would
+# make every image "over budget" or produce an invalid target size).
+# Parameters:
+# - configured_value: long edge value placed in the environment.
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "configured_value",
+    ["0", "-5"],
+)
+def test_get_receipt_ocr_max_long_edge_rejects_non_positive_value(
+    configured_value: str,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        configured_value,
+    )
+
+    # Act
+    with pytest.raises(ValueError) as error:
+        get_receipt_ocr_max_long_edge()
+
+    # Assert
+    assert "RECEIPT_OCR_MAX_LONG_EDGE" in str(error.value)
+
+
 # Tests that a non-numeric Tesseract timeout is rejected.
 # This test exists to fail fast on misconfiguration instead of
 # silently running OCR without a bounded timeout.
@@ -612,6 +715,10 @@ def test_app_settings_exposes_receipt_ocr_hardening_configuration(
         "RECEIPT_OCR_TIMEOUT_SECONDS",
         "30",
     )
+    monkeypatch.setenv(
+        "RECEIPT_OCR_MAX_LONG_EDGE",
+        "2500",
+    )
 
     # Act
     settings = AppSettings()
@@ -619,3 +726,4 @@ def test_app_settings_exposes_receipt_ocr_hardening_configuration(
     # Assert
     assert settings.receipt_ocr_max_image_pixels == 12345
     assert settings.receipt_ocr_timeout_seconds == 30
+    assert settings.receipt_ocr_max_long_edge == 2500

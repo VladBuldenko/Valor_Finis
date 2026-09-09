@@ -897,3 +897,338 @@ def test_extract_receipt_text_logs_file_not_found_category(
             )
 
     assert "receipt_ocr_file_not_found" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Pre-Tesseract image preprocessing (EXIF orientation normalization and
+# downscaling of real-resolution camera photos). See
+# receipt_ocr_service._prepare_receipt_image_for_ocr().
+# ---------------------------------------------------------------------------
+
+
+# Verifies that an image already at or below the configured maximum long
+# edge is passed to Tesseract unchanged, instead of being enlarged.
+# This test exists to confirm that small receipt images are never
+# upscaled, since upscaling adds interpolation artifacts without adding
+# real text detail.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the configured maximum long edge.
+# Returns:
+# - None.
+def test_tesseract_provider_does_not_upscale_small_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (40, 30), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        2000,
+    )
+
+    image_to_string_mock = MagicMock(
+        return_value="LIDL",
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        image_to_string_mock,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    provider.extract_text(
+        file_path=receipt_image_path,
+    )
+
+    ocr_image = image_to_string_mock.call_args.args[0]
+    assert ocr_image.size == (40, 30)
+
+
+# Verifies that an image larger than the configured maximum long edge is
+# downscaled before being passed to Tesseract, preserving its aspect
+# ratio.
+# This test exists to confirm the actual downscale math (not just that
+# resizing happens), since an aspect-ratio bug would distort receipt text.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the configured maximum long edge.
+# Returns:
+# - None.
+def test_tesseract_provider_downscales_large_image_preserving_aspect_ratio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    # 2:1 aspect ratio, well above the configured long edge below.
+    Image.new("RGB", (400, 200), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        100,
+    )
+
+    image_to_string_mock = MagicMock(
+        return_value="LIDL",
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        image_to_string_mock,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    provider.extract_text(
+        file_path=receipt_image_path,
+    )
+
+    ocr_image = image_to_string_mock.call_args.args[0]
+    # Aspect ratio (2:1) preserved at the configured 100px long edge.
+    assert ocr_image.size == (100, 50)
+
+
+# Verifies that a receipt image with an EXIF Orientation tag is
+# re-oriented before OCR (portrait/landscape swap applied), instead of
+# being sent to Tesseract sideways.
+# This test exists to confirm that phone photos stored with an EXIF
+# orientation tag (instead of physically rotated pixel data) are
+# corrected before OCR.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# Returns:
+# - None.
+def test_tesseract_provider_normalizes_exif_orientation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.jpg"
+
+    # EXIF Orientation tag 6 ("Rotate 90 CW required to display upright")
+    # means the physically stored pixel data is 40x20 but must become
+    # 20x40 once orientation is applied.
+    source_image = Image.new("RGB", (40, 20), color="white")
+
+    exif = Image.Exif()
+    exif[0x0112] = 6
+
+    source_image.save(
+        receipt_image_path,
+        format="JPEG",
+        exif=exif,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        2000,
+    )
+
+    image_to_string_mock = MagicMock(
+        return_value="LIDL",
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        image_to_string_mock,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    provider.extract_text(
+        file_path=receipt_image_path,
+    )
+
+    ocr_image = image_to_string_mock.call_args.args[0]
+    assert ocr_image.size == (20, 40)
+
+
+# Verifies that the pixel-budget rejection still happens before the new
+# preprocessing step runs, so an oversized/decompression-bomb-style image
+# never reaches the (comparatively expensive) orientation/downscale work.
+# This test exists to confirm the preprocessing addition did not weaken
+# or reorder the existing security check.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the configured pixel
+#   budget and the preprocessing helper.
+# Returns:
+# - None.
+def test_tesseract_provider_rejects_oversized_image_before_preprocessing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (100, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_image_pixels",
+        (100 * 100) - 1,
+    )
+
+    prepare_image_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "_prepare_receipt_image_for_ocr",
+        prepare_image_mock,
+    )
+
+    image_to_string_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        image_to_string_mock,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with pytest.raises(ReceiptOcrProcessingError):
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    prepare_image_mock.assert_not_called()
+    image_to_string_mock.assert_not_called()
+
+
+# Verifies that a Tesseract timeout is still correctly converted into the
+# domain-specific OCR processing error when the image was also
+# downscaled by the new preprocessing step.
+# This test exists to confirm the preprocessing addition does not
+# interfere with existing timeout error mapping.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the configured maximum long edge.
+# Returns:
+# - None.
+def test_tesseract_provider_wraps_timeout_error_with_downscaled_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (400, 300), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        100,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=RuntimeError("Tesseract process timeout"),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with pytest.raises(ReceiptOcrProcessingError) as error_info:
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert isinstance(
+        error_info.value.__cause__,
+        RuntimeError,
+    )
+
+
+# Verifies that OCR preprocessing never modifies the original stored
+# receipt file on disk, even when downscaling occurs.
+# This test exists to confirm the preprocessing step only produces an
+# in-memory working image for OCR, never overwriting the source file
+# that the rest of the application (and the user) still relies on.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the configured maximum long edge.
+# Returns:
+# - None.
+def test_tesseract_provider_does_not_modify_original_stored_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (400, 300), color="white").save(receipt_image_path)
+
+    original_bytes = receipt_image_path.read_bytes()
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        100,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    provider.extract_text(
+        file_path=receipt_image_path,
+    )
+
+    assert receipt_image_path.read_bytes() == original_bytes
+
+
+# Verifies that a resize is logged with only safe, non-sensitive
+# dimension information, and never the local file path.
+# This test exists to confirm the new resize log line does not introduce
+# a path/content leakage regression.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the configured maximum long edge.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_resize_without_leaking_file_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (400, 200), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_long_edge",
+        100,
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert "receipt_ocr_image_resized" in caplog.text
+    assert "400x200" in caplog.text
+    assert "100x50" in caplog.text
+    assert str(tmp_path) not in caplog.text
