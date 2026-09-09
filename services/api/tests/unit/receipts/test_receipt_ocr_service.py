@@ -1,3 +1,4 @@
+import logging
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -617,3 +618,282 @@ def test_tesseract_provider_passes_configured_timeout_to_pytesseract(
     assert (
         image_to_string_mock.call_args.kwargs["timeout"] == 7
     )
+
+
+# Verifies that a missing Tesseract binary is logged under its own safe
+# diagnostic category, distinguishable from a generic engine failure.
+# This test exists to satisfy the requirement that Render logs can tell
+# apart "Tesseract binary unavailable" from other OCR failure modes,
+# without asserting the full formatted log message.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_tesseract_not_found_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (20, 20), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=receipt_ocr_service.pytesseract.TesseractNotFoundError(),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_tesseract_not_found" in caplog.text
+
+
+# Verifies that a generic Tesseract engine failure is logged under the
+# engine-failure category rather than the missing-language-data category.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_engine_failed_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (20, 20), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=receipt_ocr_service.pytesseract.TesseractError(
+                1,
+                "Segmentation fault (core dumped)",
+            ),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_engine_failed" in caplog.text
+    assert "receipt_ocr_tesseract_language_data_missing" not in caplog.text
+
+
+# Verifies that a Tesseract failure caused by missing language trained
+# data is logged under its own distinguishable category.
+# This test exists to satisfy the requirement that Render logs can tell
+# apart "required language data unavailable" from a generic engine
+# failure, using only a safe keyword match (never the raw engine
+# message, which is not logged).
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_language_data_missing_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (20, 20), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=receipt_ocr_service.pytesseract.TesseractError(
+                1,
+                "Failed loading language 'deu' Tessdata directory is not"
+                " writable",
+            ),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_tesseract_language_data_missing" in caplog.text
+
+
+# Verifies that a Tesseract subprocess timeout is logged under its own
+# timeout category, distinguishable from a generic engine failure.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_timeout_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (20, 20), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=RuntimeError("Tesseract process timeout"),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_timeout" in caplog.text
+
+
+# Verifies that an unreadable/corrupt image is logged under the
+# invalid-image category.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_invalid_image_category(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    invalid_image_path = tmp_path / "receipt.png"
+    invalid_image_path.write_bytes(b"not-a-real-image")
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=invalid_image_path,
+            )
+
+    assert "receipt_ocr_invalid_image" in caplog.text
+
+
+# Verifies that an oversized image is logged under the
+# image-too-large category before Tesseract would have been invoked.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the configured pixel
+#   budget.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_image_too_large_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (100, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.settings,
+        "receipt_ocr_max_image_pixels",
+        (100 * 100) - 1,
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_image_too_large" in caplog.text
+
+
+# Verifies that an empty OCR result is logged under its own category.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the OCR provider.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_extract_receipt_text_logs_empty_result_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_file_path = tmp_path / "receipt.jpg"
+    receipt_file_path.write_bytes(b"receipt-image-content")
+
+    ocr_provider_mock = MagicMock()
+    ocr_provider_mock.extract_text.return_value = "   "
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrProcessingError):
+            receipt_ocr_service.extract_receipt_text(
+                storage_path=receipt_file_path.as_posix(),
+            )
+
+    assert "receipt_ocr_empty_result" in caplog.text
+
+
+# Verifies that a missing stored receipt file is logged under its own
+# category.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the OCR provider.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_extract_receipt_text_logs_file_not_found_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    missing_file_path = tmp_path / "missing-receipt.jpg"
+
+    ocr_provider_mock = MagicMock()
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "receipt_ocr_provider",
+        ocr_provider_mock,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptOcrFileNotFoundError):
+            receipt_ocr_service.extract_receipt_text(
+                storage_path=missing_file_path.as_posix(),
+            )
+
+    assert "receipt_ocr_file_not_found" in caplog.text

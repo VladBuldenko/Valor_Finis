@@ -1,3 +1,4 @@
+import logging
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,13 @@ from app.modules.receipts.receipt_errors import (
     ReceiptFileTooLargeError,
     ReceiptFileTypeNotAllowedError,
 )
+
+
+# Logger for this module. No handler/level configuration is done here;
+# Uvicorn's default logging setup (stderr, captured by Render logs) is
+# relied upon. Only safe, non-sensitive reason categories are logged
+# here - never secrets, tokens, receipt content, or full object paths.
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_RECEIPT_FILE_TYPES: Dict[str, Set[str]] = {
@@ -472,9 +480,27 @@ def download_supabase_receipt_file(
         safe="/",
     )
 
+    # Deliberately the same "/object/{bucket}/{path}" endpoint family used
+    # by save_receipt_file_to_supabase() above (upload), not
+    # "/object/authenticated/{bucket}/{path}". Supabase's own storage
+    # backend reserves the "authenticated/" prefix for the image-render
+    # endpoint ("render/image/authenticated"); the current official
+    # Supabase client libraries download a private object - the exact
+    # operation performed here - via the plain "object" path. Verified
+    # directly against each library's current source:
+    # - supabase-js / @supabase/storage-js: StorageFileApi.download()
+    #   (packages/core/storage-js/src/packages/StorageFileApi.ts) uses
+    #   `renderPath = wantsTransformation ? 'render/image/authenticated'
+    #   : 'object'`, i.e. plain "object" for a non-transform download.
+    # - supabase-py / storage3: SyncBucketProxy.download()
+    #   (storage3/_sync/file_api.py) does the same.
+    # Calling "/object/authenticated/" for a plain download - what this
+    # function did before this fix - does not match either official
+    # client and is why every receipt processing request failed here
+    # while the matching upload (same endpoint family) succeeded.
     download_url = (
         f"{supabase_url}"
-        f"/storage/v1/object/authenticated/"
+        f"/storage/v1/object/"
         f"{encoded_bucket}/"
         f"{encoded_object_path}"
     )
@@ -483,6 +509,14 @@ def download_supabase_receipt_file(
         response = httpx.get(
             download_url,
             headers={
+                # Modern Supabase secret keys (format "sb_secret_...")
+                # are not JWTs. Per Supabase's official API-keys
+                # documentation, they must be sent in the "apikey" header
+                # only, never as "Authorization: Bearer" - a JWT-verifying
+                # code path could reject a non-JWT Authorization value.
+                # This matches save_receipt_file_to_supabase() (upload)
+                # above, which already authenticates the same way against
+                # this same endpoint family.
                 "apikey": supabase_secret_key,
             },
             timeout=SUPABASE_STORAGE_TIMEOUT_SECONDS,
@@ -490,9 +524,30 @@ def download_supabase_receipt_file(
 
         response.raise_for_status()
     except httpx.HTTPError as error:
+        status_code = getattr(
+            getattr(error, "response", None),
+            "status_code",
+            None,
+        )
+
+        # Safe to log: operation name, HTTP status code, and provider
+        # name only. Never log the apikey/Authorization header value,
+        # the object path (may embed the owning user id), or the
+        # response body.
+        logger.warning(
+            "receipt_storage_download_failed "
+            "operation=download provider=supabase status_code=%s",
+            status_code,
+        )
+
         raise ReceiptFileStorageError() from error
 
     if not response.content:
+        logger.warning(
+            "receipt_storage_download_failed "
+            "operation=download provider=supabase reason=empty_response"
+        )
+
         raise ReceiptFileStorageError()
 
     return response.content
@@ -535,6 +590,14 @@ def materialize_receipt_file(
                 file_content,
             )
         except OSError as error:
+            # Distinguish a local container filesystem failure (temp
+            # directory unwritable/out of space) from a remote Supabase
+            # download failure, without logging the local file path.
+            logger.warning(
+                "receipt_storage_materialize_failed "
+                "operation=write_temp_file"
+            )
+
             raise ReceiptFileStorageError() from error
 
         yield temporary_file_path

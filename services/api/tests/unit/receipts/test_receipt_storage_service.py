@@ -1,3 +1,4 @@
+import logging
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -820,3 +821,402 @@ def test_delete_receipt_file_rejects_invalid_supabase_path() -> None:
         receipt_storage_service.delete_receipt_file(
             storage_path="supabase://receipts",
         )
+
+
+# Verifies that a private Supabase Storage object download uses the same
+# "/object/{bucket}/{path}" endpoint family as the (working) upload
+# request - not "/object/authenticated/{bucket}/{path}" - and sends only
+# the apikey header built from the configured secret key.
+# This test exists to reproduce (and prevent a regression of) a
+# production bug where download called "/object/authenticated/{...}"
+# instead - an endpoint the current official Supabase client libraries do
+# not use for a plain object download (they reserve "authenticated/" for
+# the image-render/transform endpoint; a plain download uses the same
+# "object" path as upload) - causing every receipt processing request to
+# fail even though the matching upload succeeded.
+# Only "apikey" is asserted here, deliberately: modern Supabase secret
+# keys ("sb_secret_...") are not JWTs, and the project's chosen approach
+# is to follow Supabase's official API-keys documentation (apikey only,
+# never Authorization: Bearer for this key format) rather than rely on
+# the fact that the official SDKs happen to also send an Authorization
+# header for compatibility with legacy JWT-format keys.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# Returns:
+# - None.
+def test_download_supabase_receipt_file_sends_apikey_header_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+
+    response_mock = MagicMock()
+    response_mock.content = b"receipt-file-bytes"
+
+    get_mock = MagicMock(
+        return_value=response_mock,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        get_mock,
+    )
+
+    result = receipt_storage_service.download_supabase_receipt_file(
+        bucket="receipts",
+        object_path="user-id/receipt-id.jpg",
+    )
+
+    assert result == b"receipt-file-bytes"
+
+    get_mock.assert_called_once()
+
+    call_args = get_mock.call_args
+
+    assert call_args.args[0] == (
+        "https://example.supabase.co"
+        "/storage/v1/object/"
+        "receipts/user-id/receipt-id.jpg"
+    )
+
+    assert "authenticated" not in call_args.args[0]
+
+    assert call_args.kwargs["headers"] == {
+        "apikey": "test-secret-key",
+    }
+
+    assert (
+        call_args.kwargs["timeout"]
+        == receipt_storage_service.SUPABASE_STORAGE_TIMEOUT_SECONDS
+    )
+
+    response_mock.raise_for_status.assert_called_once_with()
+
+
+# Verifies that a modern-format `sb_secret_...` secret key is sent only
+# in the apikey header and is never placed in an Authorization header,
+# and that the request targets the plain "/object/{bucket}/{path}"
+# endpoint rather than "/object/authenticated/{bucket}/{path}".
+# This test exists because modern Supabase secret keys are not JWTs:
+# per Supabase's official API-keys documentation, they must be sent
+# using the apikey header only, since a JWT-verifying code path could
+# reject a non-JWT Authorization value. This is the project's confirmed
+# production credential format, so this exact behavior must be locked in
+# by a dedicated test, not only inferred from the generic-key-string test
+# above.
+# The value used below is an obviously-fake placeholder, not a real key.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# Returns:
+# - None.
+def test_download_supabase_receipt_file_modern_secret_key_omits_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modern_format_test_key = "sb_secret_test_fake_value_for_testing_only"
+
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        modern_format_test_key,
+    )
+
+    response_mock = MagicMock()
+    response_mock.content = b"receipt-file-bytes"
+
+    get_mock = MagicMock(
+        return_value=response_mock,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        get_mock,
+    )
+
+    result = receipt_storage_service.download_supabase_receipt_file(
+        bucket="receipts",
+        object_path="user-id/receipt-id.jpg",
+    )
+
+    assert result == b"receipt-file-bytes"
+
+    call_args = get_mock.call_args
+
+    assert call_args.args[0] == (
+        "https://example.supabase.co"
+        "/storage/v1/object/"
+        "receipts/user-id/receipt-id.jpg"
+    )
+
+    assert "authenticated" not in call_args.args[0]
+
+    assert call_args.kwargs["headers"] == {
+        "apikey": modern_format_test_key,
+    }
+
+    assert "Authorization" not in call_args.kwargs["headers"]
+
+
+# Verifies that the Supabase secret key is never written to the logs,
+# even when a download fails and diagnostic logging is emitted.
+# This test exists to guard the safe-logging requirement: failure
+# categories may be logged, but credential values must never appear
+# in server logs.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_download_supabase_receipt_file_never_logs_secret_key(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "super-secret-value",
+    )
+
+    request = httpx.Request(
+        "GET",
+        "https://example.supabase.co/storage/v1/object/x",
+    )
+    response = httpx.Response(
+        status_code=403,
+        request=request,
+    )
+
+    response_mock = MagicMock()
+    response_mock.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Forbidden",
+        request=request,
+        response=response,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        MagicMock(return_value=response_mock),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptFileStorageError):
+            receipt_storage_service.download_supabase_receipt_file(
+                bucket="receipts",
+                object_path="user-id/receipt-id.jpg",
+            )
+
+    assert "super-secret-value" not in caplog.text
+    assert "receipt_storage_download_failed" in caplog.text
+
+
+# Verifies that an HTTP error status (401/403/5xx) from Supabase Storage
+# is converted into the domain-specific storage error and logged with a
+# safe reason category.
+# This test exists to confirm that authentication/authorization and
+# server failures from the private-object download endpoint do not leak
+# implementation details to callers while remaining diagnosable in logs.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# - caplog: pytest fixture used to capture emitted log records.
+# - status_code: simulated Supabase Storage HTTP response status code.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "status_code",
+    [401, 403, 500, 503],
+)
+def test_download_supabase_receipt_file_wraps_http_status_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    status_code: int,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+
+    request = httpx.Request(
+        "GET",
+        "https://example.supabase.co/storage/v1/object/x",
+    )
+    response = httpx.Response(
+        status_code=status_code,
+        request=request,
+    )
+
+    response_mock = MagicMock()
+    response_mock.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "HTTP error",
+        request=request,
+        response=response,
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        MagicMock(return_value=response_mock),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ReceiptFileStorageError) as error_info:
+            receipt_storage_service.download_supabase_receipt_file(
+                bucket="receipts",
+                object_path="user-id/receipt-id.jpg",
+            )
+
+    assert isinstance(
+        error_info.value.__cause__,
+        httpx.HTTPStatusError,
+    )
+    assert "receipt_storage_download_failed" in caplog.text
+    assert str(status_code) in caplog.text
+
+
+# Verifies that a connection-level failure (no HTTP response at all) is
+# also converted into the domain-specific storage error.
+# This test exists to confirm network failures are handled the same way
+# as HTTP status errors, without requiring a response object.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# Returns:
+# - None.
+def test_download_supabase_receipt_file_wraps_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        MagicMock(
+            side_effect=httpx.ConnectError("Supabase unavailable"),
+        ),
+    )
+
+    with pytest.raises(ReceiptFileStorageError) as error_info:
+        receipt_storage_service.download_supabase_receipt_file(
+            bucket="receipts",
+            object_path="user-id/receipt-id.jpg",
+        )
+
+    assert isinstance(
+        error_info.value.__cause__,
+        httpx.ConnectError,
+    )
+
+
+# Verifies that an empty (zero-byte) downloaded object is rejected.
+# This test exists to prevent OCR processing from starting against
+# empty content silently returned by the storage provider.
+# Parameters:
+# - monkeypatch: pytest fixture used to override application settings
+#   and the HTTP client.
+# Returns:
+# - None.
+def test_download_supabase_receipt_file_rejects_empty_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_url",
+        "https://example.supabase.co",
+    )
+    monkeypatch.setattr(
+        receipt_storage_service.settings,
+        "supabase_secret_key",
+        "test-secret-key",
+    )
+
+    response_mock = MagicMock()
+    response_mock.content = b""
+
+    monkeypatch.setattr(
+        receipt_storage_service.httpx,
+        "get",
+        MagicMock(return_value=response_mock),
+    )
+
+    with pytest.raises(ReceiptFileStorageError):
+        receipt_storage_service.download_supabase_receipt_file(
+            bucket="receipts",
+            object_path="user-id/receipt-id.jpg",
+        )
+
+
+# Verifies that materializing a Supabase-stored receipt writes the
+# downloaded bytes to a local temporary file usable by the OCR provider.
+# This test exists to confirm the download-to-local-file bridge still
+# works end-to-end after the download endpoint/header fix, independent
+# of the OCR service's own (mocked) tests for the same behavior.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the Supabase download.
+# Returns:
+# - None.
+def test_materialize_receipt_file_writes_downloaded_supabase_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_mock = MagicMock(
+        return_value=b"downloaded-receipt-bytes",
+    )
+
+    monkeypatch.setattr(
+        receipt_storage_service,
+        "download_supabase_receipt_file",
+        download_mock,
+    )
+
+    with receipt_storage_service.materialize_receipt_file(
+        storage_path="supabase://receipts/user-id/receipt-id.jpg",
+    ) as file_path:
+        assert file_path.exists()
+        assert file_path.read_bytes() == b"downloaded-receipt-bytes"
+        assert file_path.suffix == ".jpg"
+
+    download_mock.assert_called_once_with(
+        bucket="receipts",
+        object_path="user-id/receipt-id.jpg",
+    )
+
+    # The temporary file/directory must be cleaned up once the context
+    # manager exits.
+    assert not file_path.exists()
