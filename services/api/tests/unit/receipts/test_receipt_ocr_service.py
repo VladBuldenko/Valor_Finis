@@ -1565,18 +1565,28 @@ def test_tesseract_provider_does_not_log_cpu_metrics_for_pre_tesseract_failure(
     assert "receipt_ocr_cpu_after" not in caplog.text
 
 
-# Verifies that OCR still succeeds and returns the correct text using
-# the real (unmocked) cgroup CPU metrics reader, which reports
-# "unavailable" values on a development machine without a Linux cgroup
-# filesystem.
-# This test exists to prove end-to-end - without mocking the diagnostic
-# itself away - that missing cgroup files degrade safely and never
-# break OCR processing, per the task's explicit safety requirement.
+# Verifies that OCR still succeeds and returns the correct text when the
+# cgroup CPU metrics reader reports every field as "unavailable" (the
+# real reader's own degrade-safely behavior when cgroup files are
+# missing/unreadable, e.g. on a host with no Linux cgroup filesystem).
+# This test exists to prove that an "unavailable" cgroup snapshot never
+# breaks OCR processing, per the task's explicit safety requirement.
+#
+# The cgroup reader is deliberately mocked here rather than left as the
+# real implementation: whether the *real* reader actually returns
+# "unavailable" depends on the host's own cgroup exposure, which is not
+# something a unit test should assume. macOS (no cgroup filesystem)
+# reports "unavailable", but a Linux CI runner can genuinely expose a
+# real cgroup v2 hierarchy (a correct, different, and equally valid
+# outcome for that host) - asserting a specific `cgroup_version` from
+# the unmocked reader made this test environment-dependent, which is
+# exactly what broke it in CI. Real-reader/real-filesystem behavior
+# (including cgroup v2 detection, cgroup v1 fallback, and genuinely
+# missing files) is covered independently in test_cgroup_metrics.py.
 # Parameters:
 # - tmp_path: temporary filesystem directory provided by pytest.
-# - monkeypatch: pytest fixture used to replace only the pytesseract
-#   boundary; the cgroup metrics reader is left as the real
-#   implementation.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary
+#   and the cgroup metrics reader with a fixed "unavailable" snapshot.
 # - caplog: pytest fixture used to capture emitted log records.
 # Returns:
 # - None.
@@ -1594,6 +1604,22 @@ def test_tesseract_provider_cpu_telemetry_never_breaks_ocr_when_unavailable(
         MagicMock(return_value="LIDL"),
     )
 
+    unavailable_snapshot = receipt_ocr_service.CgroupCpuMetrics(
+        cgroup_version="unavailable",
+        quota_us="unavailable",
+        period_us="unavailable",
+        nr_periods="unavailable",
+        nr_throttled="unavailable",
+        throttled_usec="unavailable",
+        usage_usec="unavailable",
+    )
+
+    monkeypatch.setattr(
+        receipt_ocr_service,
+        "read_cgroup_cpu_metrics",
+        MagicMock(return_value=unavailable_snapshot),
+    )
+
     provider = receipt_ocr_service.TesseractReceiptOcrProvider()
 
     with caplog.at_level(logging.INFO):
@@ -1604,8 +1630,6 @@ def test_tesseract_provider_cpu_telemetry_never_breaks_ocr_when_unavailable(
     assert result == "LIDL"
     assert "receipt_ocr_cpu_before" in caplog.text
     assert "receipt_ocr_cpu_after" in caplog.text
-    # On a host with no cgroup filesystem (e.g. this test environment),
-    # every field safely reports "unavailable" instead of raising.
     assert "cgroup_version=unavailable" in caplog.text
 
 
