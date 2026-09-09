@@ -1228,7 +1228,141 @@ def test_tesseract_provider_logs_resize_without_leaking_file_path(
             file_path=receipt_image_path,
         )
 
-    assert "receipt_ocr_image_resized" in caplog.text
+    assert "receipt_ocr_started" in caplog.text
+    assert "receipt_ocr_prepared" in caplog.text
+    assert "resized=true" in caplog.text
     assert "400x200" in caplog.text
     assert "100x50" in caplog.text
     assert str(tmp_path) not in caplog.text
+
+
+# Verifies that a successful OCR run emits the full diagnostic telemetry
+# sequence (started, prepared, tesseract started, tesseract completed)
+# with the expected fields, so production timing bottlenecks can be
+# diagnosed from Render logs.
+# This test exists to prove the telemetry required to answer "where did
+# the 45+ seconds go" is actually present end-to-end for the success
+# path, not just reasoned about.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_logs_full_telemetry_sequence_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value="LIDL"),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert "receipt_ocr_started original_size=200x100" in caplog.text
+    assert "receipt_ocr_prepared" in caplog.text
+    assert "ocr_size=200x100" in caplog.text
+    assert "resized=false" in caplog.text
+    assert "preprocessing_ms=" in caplog.text
+    assert f"max_long_edge={receipt_ocr_service.settings.receipt_ocr_max_long_edge}" in caplog.text
+    assert "receipt_ocr_tesseract_started" in caplog.text
+    assert (
+        f"timeout_seconds={receipt_ocr_service.settings.receipt_ocr_timeout_seconds}"
+        in caplog.text
+    )
+    assert "languages=eng+deu" in caplog.text
+    assert "receipt_ocr_tesseract_completed" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+
+
+# Verifies that a Tesseract timeout is logged with how long Tesseract
+# actually ran before the timeout fired (tesseract_elapsed_ms), not just
+# that a timeout occurred.
+# This test exists because knowing the elapsed time at failure is the
+# specific diagnostic signal needed to distinguish "Tesseract is slow on
+# this image" from "Tesseract never started" when reading Render logs.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_timeout_log_includes_tesseract_elapsed_ms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(
+            side_effect=RuntimeError("Tesseract process timeout"),
+        ),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ReceiptOcrProcessingError):
+            provider.extract_text(
+                file_path=receipt_image_path,
+            )
+
+    assert "receipt_ocr_timeout" in caplog.text
+    assert "tesseract_elapsed_ms=" in caplog.text
+    # tesseract_elapsed_ms must be a real number, not a missing/None
+    # placeholder, since Tesseract did start before timing out here.
+    assert "tesseract_elapsed_ms=None" not in caplog.text
+
+
+# Verifies that none of the new diagnostic telemetry log lines contain
+# the actual OCR-extracted text or receipt content.
+# This test exists to guard the safe-logging requirement specifically
+# for the new started/prepared/tesseract-started/tesseract-completed
+# events, using a distinctive extracted-text value that would be easy
+# to spot if it leaked into any log line.
+# Parameters:
+# - tmp_path: temporary filesystem directory provided by pytest.
+# - monkeypatch: pytest fixture used to replace the pytesseract boundary.
+# - caplog: pytest fixture used to capture emitted log records.
+# Returns:
+# - None.
+def test_tesseract_provider_telemetry_logs_do_not_leak_ocr_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    receipt_image_path = tmp_path / "receipt.png"
+    Image.new("RGB", (200, 100), color="white").save(receipt_image_path)
+
+    distinctive_ocr_text = "SUPER-SECRET-RECEIPT-CONTENTS-42"
+
+    monkeypatch.setattr(
+        receipt_ocr_service.pytesseract,
+        "image_to_string",
+        MagicMock(return_value=distinctive_ocr_text),
+    )
+
+    provider = receipt_ocr_service.TesseractReceiptOcrProvider()
+
+    with caplog.at_level(logging.INFO):
+        result = provider.extract_text(
+            file_path=receipt_image_path,
+        )
+
+    assert result == distinctive_ocr_text
+    assert distinctive_ocr_text not in caplog.text
