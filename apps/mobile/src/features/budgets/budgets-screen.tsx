@@ -1,6 +1,8 @@
+import { Link } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
+  Pressable,
   SafeAreaView,
   ScrollView,
   Text,
@@ -58,6 +60,12 @@ export function BudgetsScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>Budgets</Text>
+
+        <Link href="/budgets/new" asChild>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Add Budget</Text>
+          </Pressable>
+        </Link>
 
         {budgetStatusError ? (
           <Text style={styles.noticeText}>

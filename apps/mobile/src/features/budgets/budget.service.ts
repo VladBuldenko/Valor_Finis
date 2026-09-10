@@ -1,6 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Budget } from "./budget.types";
+import type { Budget, BudgetCreateInput } from "./budget.types";
 
 /**
  * Returns all budgets that belong to the authenticated user.
@@ -12,4 +12,16 @@ import type { Budget } from "./budget.types";
  */
 export async function getBudgets(): Promise<Budget[]> {
   return apiRequest<Budget[]>("/api/v1/budgets");
+}
+
+/**
+ * Creates a budget for the authenticated user.
+ */
+export async function createBudget(
+  budgetData: BudgetCreateInput,
+): Promise<Budget> {
+  return apiRequest<Budget>("/api/v1/budgets", {
+    method: "POST",
+    body: JSON.stringify(budgetData),
+  });
 }
