@@ -9,6 +9,12 @@ export default function AppLayout() {
           title: "Valor Finis",
         }}
       />
+      <Stack.Screen
+        name="budgets"
+        options={{
+          title: "Budgets",
+        }}
+      />
     </Stack>
   );
 }
