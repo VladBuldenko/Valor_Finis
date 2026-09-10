@@ -8,6 +8,7 @@ from app.modules.budgets.budget_schemas import (
     BudgetResponse,
     BudgetUpdate,
 )
+from app.modules.categories import service as categories_service
 
 
 # Creates a new budget using validated input data and authenticated user id.
@@ -19,11 +20,24 @@ from app.modules.budgets.budget_schemas import (
 # - user_id: authenticated user identifier that owns the budget.
 # Returns:
 # - BudgetResponse created from the saved database model.
+# Raises:
+# - CategoryNotFoundError: when category_id is set and the category does not
+#   exist or does not belong to the authenticated user.
 def create_budget(
     db_session: Session,
     budget_data: BudgetCreate,
     user_id: UUID,
 ) -> BudgetResponse:
+    if budget_data.category_id is not None:
+        # A budget can only reference a category the authenticated user owns.
+        # This mirrors the expense category ownership check so cross-user
+        # category ids are rejected before persistence.
+        categories_service.get_category_by_id(
+            db_session=db_session,
+            category_id=budget_data.category_id,
+            user_id=user_id,
+        )
+
     budget_model = budget_repository.create_budget(
         db_session=db_session,
         budget_data=budget_data,
@@ -66,12 +80,30 @@ def get_budgets(
 # - user_id: authenticated user identifier that owns the budget.
 # Returns:
 # - BudgetResponse created from the updated database model.
+# Raises:
+# - CategoryNotFoundError: when category_id is being changed to a non-null
+#   value and the category does not exist or does not belong to the
+#   authenticated user.
 def update_budget(
     db_session: Session,
     budget_id: UUID,
     budget_data: BudgetUpdate,
     user_id: UUID,
 ) -> BudgetResponse:
+    if (
+        "category_id" in budget_data.model_fields_set
+        and budget_data.category_id is not None
+    ):
+        # Only validate ownership when category_id is explicitly being
+        # changed to a non-null value. An omitted category_id must not
+        # trigger a lookup, and an explicit null clears the category
+        # without needing ownership validation.
+        categories_service.get_category_by_id(
+            db_session=db_session,
+            category_id=budget_data.category_id,
+            user_id=user_id,
+        )
+
     budget_model = budget_repository.update_budget(
         db_session=db_session,
         budget_id=budget_id,
