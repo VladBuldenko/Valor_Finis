@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from tests.helpers import auth_headers, create_budget
+from tests.helpers import auth_headers, create_budget, create_category
 
 
 # Tests that the API creates a new budget successfully.
@@ -522,3 +522,353 @@ def test_delete_budget_endpoint_rejects_other_user_budget(
     # Assert
     assert response.status_code == 404
     assert response.json()["detail"] == "Budget not found."
+
+
+# Tests that a budget can use a category owned by the authenticated user.
+# This test exists to verify valid category ownership during budget creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the created budget references the owned category.
+def test_create_budget_endpoint_allows_authenticated_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    payload = {
+        "category_id": category["id"],
+        "name": "Food budget",
+        "limit_amount": 400,
+        "currency": "EUR",
+        "period": "monthly",
+        "start_date": "2026-05-01",
+        "end_date": None,
+    }
+
+    # Act
+    response = client.post(
+        "/api/v1/budgets",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 201, response.text
+    assert response.json()["category_id"] == category["id"]
+    assert response.json()["user_id"] == user_id
+
+
+# Tests that a budget cannot use another user's category.
+# This test exists to prevent cross-user category assignment during creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found and no budget is saved.
+def test_create_budget_endpoint_rejects_other_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    other_user_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
+    )
+
+    payload = {
+        "category_id": other_user_category["id"],
+        "name": "Food budget",
+        "limit_amount": 400,
+        "currency": "EUR",
+        "period": "monthly",
+        "start_date": "2026-05-01",
+        "end_date": None,
+    }
+
+    # Act
+    response = client.post(
+        "/api/v1/budgets",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
+
+    budgets_response = client.get(
+        "/api/v1/budgets",
+        headers=auth_headers(user_id),
+    )
+
+    assert budgets_response.status_code == 200
+    assert budgets_response.json() == []
+
+
+# Tests that a budget cannot use a category that does not exist.
+# This test exists to return a controlled API error instead of relying
+# only on a database foreign key failure.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found.
+def test_create_budget_endpoint_rejects_missing_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    payload = {
+        "category_id": str(uuid4()),
+        "name": "Food budget",
+        "limit_amount": 400,
+        "currency": "EUR",
+        "period": "monthly",
+        "start_date": "2026-05-01",
+        "end_date": None,
+    }
+
+    # Act
+    response = client.post(
+        "/api/v1/budgets",
+        json=payload,
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
+
+
+# Tests that a budget can be assigned to a category owned by the user.
+# This test exists to verify valid category ownership during PATCH requests.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the updated budget references the owned category.
+def test_update_budget_endpoint_allows_authenticated_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    created_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/budgets/{created_budget['id']}",
+        json={
+            "category_id": category["id"],
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json()["category_id"] == category["id"]
+
+
+# Tests that a budget cannot be assigned to another user's category.
+# This test exists to prevent cross-user category assignment during updates.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found and the budget's
+#   category is left unchanged.
+def test_update_budget_endpoint_rejects_other_user_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+
+    created_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
+    )
+
+    other_user_category = create_category(
+        client=client,
+        user_id=other_user_id,
+        name="Food",
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/budgets/{created_budget['id']}",
+        json={
+            "category_id": other_user_category["id"],
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
+
+    budgets_response = client.get(
+        "/api/v1/budgets",
+        headers=auth_headers(user_id),
+    )
+
+    assert budgets_response.status_code == 200
+    assert budgets_response.json()[0]["category_id"] is None
+
+
+# Tests that a budget cannot be updated to reference a category id that does
+# not exist.
+# This test exists to return a controlled API error instead of relying
+# only on a database foreign key failure during updates.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns not found.
+def test_update_budget_endpoint_rejects_missing_category(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    created_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=None,
+        name="Food budget",
+        limit_amount=400,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/budgets/{created_budget['id']}",
+        json={
+            "category_id": str(uuid4()),
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Category not found."
+
+
+# Tests that a budget category can be explicitly cleared.
+# This test exists to distinguish category_id=null from an omitted
+# category_id field during PATCH, and to confirm that clearing a category
+# still does not require an ownership lookup.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the budget's category is cleared.
+def test_update_budget_endpoint_clears_category_with_null(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    created_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=category["id"],
+        name="Food budget",
+        limit_amount=400,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/budgets/{created_budget['id']}",
+        json={
+            "category_id": None,
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json()["category_id"] is None
+
+
+# Tests that an omitted category_id does not change the existing category.
+# This test exists to verify correct partial update semantics.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the budget's category is left unchanged.
+def test_update_budget_endpoint_keeps_category_when_field_is_omitted(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Food",
+    )
+
+    created_budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=category["id"],
+        name="Food budget",
+        limit_amount=400,
+    )
+
+    # Act
+    response = client.patch(
+        f"/api/v1/budgets/{created_budget['id']}",
+        json={
+            "limit_amount": 550,
+        },
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json()["limit_amount"] == "550.00"
+    assert response.json()["category_id"] == category["id"]
