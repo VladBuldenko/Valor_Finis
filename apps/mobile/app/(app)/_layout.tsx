@@ -15,6 +15,12 @@ export default function AppLayout() {
           title: "Budgets",
         }}
       />
+      <Stack.Screen
+        name="budgets/new"
+        options={{
+          title: "Add Budget",
+        }}
+      />
     </Stack>
   );
 }
