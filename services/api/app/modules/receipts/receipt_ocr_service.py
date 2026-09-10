@@ -7,6 +7,11 @@ import pytesseract
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.app_config import settings
+from app.core.cgroup_metrics import (
+    CgroupCpuMetrics,
+    cpu_metric_delta,
+    read_cgroup_cpu_metrics,
+)
 from app.modules.receipts import receipt_storage_service
 from app.modules.receipts.receipt_errors import (
     ReceiptFileStorageError,
@@ -45,6 +50,82 @@ def _elapsed_ms_since(start: Optional[float]) -> Optional[int]:
         return None
 
     return round((time.perf_counter() - start) * 1000)
+
+
+# Reads and logs cgroup CPU quota/throttling accounting immediately
+# before the Tesseract call, returning the snapshot so the matching
+# "after" telemetry (see _log_receipt_ocr_cpu_after() below) can compute
+# deltas.
+# This function exists as diagnostics for a prior root-cause
+# investigation into a 45+ second production Tesseract timeout, which
+# strongly indicated (but could not directly confirm) Render CPU-quota
+# throttling as the dominant cause. Only numeric CPU/cgroup values (or
+# the safe "max"/"unavailable" placeholders from cgroup_metrics) are
+# logged here - never receipt text, image contents, file paths, user
+# IDs, or host/container identifiers.
+# Parameters:
+# - None.
+# Returns:
+# - The CPU metrics snapshot just logged.
+def _log_receipt_ocr_cpu_before() -> CgroupCpuMetrics:
+    cpu_before = read_cgroup_cpu_metrics()
+
+    logger.info(
+        "receipt_ocr_cpu_before "
+        "cgroup_version=%s quota_us=%s period_us=%s "
+        "nr_periods=%s nr_throttled=%s throttled_usec=%s",
+        cpu_before.cgroup_version,
+        cpu_before.quota_us,
+        cpu_before.period_us,
+        cpu_before.nr_periods,
+        cpu_before.nr_throttled,
+        cpu_before.throttled_usec,
+    )
+
+    return cpu_before
+
+
+# Reads and logs cgroup CPU quota/throttling accounting immediately
+# after the Tesseract call, whether it succeeded or failed (Tesseract
+# not found, engine failure, or timeout), together with the delta
+# versus the "before" snapshot.
+# This function exists to avoid duplicating the after-call telemetry
+# formatting across the success path and each Tesseract-related except
+# clause in TesseractReceiptOcrProvider.extract_text() below. See
+# _log_receipt_ocr_cpu_before() for what this diagnostic is for and why
+# only safe numeric values are logged.
+# Parameters:
+# - cpu_before: snapshot returned by _log_receipt_ocr_cpu_before(), or
+#   None when OCR never reached the Tesseract call (in which case there
+#   is nothing to compare against, so no "after" telemetry is logged).
+# Returns:
+# - None.
+def _log_receipt_ocr_cpu_after(
+    cpu_before: Optional[CgroupCpuMetrics],
+) -> None:
+    if cpu_before is None:
+        return
+
+    cpu_after = read_cgroup_cpu_metrics()
+
+    logger.info(
+        "receipt_ocr_cpu_after "
+        "cgroup_version=%s nr_periods=%s nr_throttled=%s "
+        "throttled_usec=%s usage_usec=%s "
+        "delta_nr_periods=%s delta_nr_throttled=%s "
+        "delta_throttled_usec=%s delta_usage_usec=%s",
+        cpu_after.cgroup_version,
+        cpu_after.nr_periods,
+        cpu_after.nr_throttled,
+        cpu_after.throttled_usec,
+        cpu_after.usage_usec,
+        cpu_metric_delta(cpu_before.nr_periods, cpu_after.nr_periods),
+        cpu_metric_delta(cpu_before.nr_throttled, cpu_after.nr_throttled),
+        cpu_metric_delta(
+            cpu_before.throttled_usec, cpu_after.throttled_usec
+        ),
+        cpu_metric_delta(cpu_before.usage_usec, cpu_after.usage_usec),
+    )
 
 
 class ReceiptOcrProvider(Protocol):
@@ -216,6 +297,13 @@ class TesseractReceiptOcrProvider:
         # meaningful "Tesseract elapsed time" to report in that case.
         tesseract_start = None
 
+        # Set alongside tesseract_start, right before the pytesseract
+        # call below; used by the except clauses to log "after" CPU/
+        # cgroup diagnostics with a delta against this "before" snapshot.
+        # Stays None for the same reason tesseract_start does, and
+        # _log_receipt_ocr_cpu_after() no-ops when this is None.
+        cpu_before = None
+
         try:
             with Image.open(file_path) as receipt_image:
                 # Image.open() only reads the file header, not the full
@@ -284,6 +372,7 @@ class TesseractReceiptOcrProvider:
                 )
 
                 tesseract_start = time.perf_counter()
+                cpu_before = _log_receipt_ocr_cpu_before()
 
                 extracted_text = pytesseract.image_to_string(
                     ocr_image,
@@ -294,6 +383,8 @@ class TesseractReceiptOcrProvider:
                 tesseract_elapsed_ms = round(
                     (time.perf_counter() - tesseract_start) * 1000
                 )
+
+                _log_receipt_ocr_cpu_after(cpu_before)
 
                 logger.info(
                     "receipt_ocr_tesseract_completed elapsed_ms=%s",
@@ -316,6 +407,8 @@ class TesseractReceiptOcrProvider:
 
             raise ReceiptOcrProcessingError() from error
         except pytesseract.TesseractNotFoundError as error:
+            _log_receipt_ocr_cpu_after(cpu_before)
+
             # The tesseract binary itself is missing/not on PATH - an
             # environment/deployment problem, not a bad receipt file.
             logger.error(
@@ -325,6 +418,8 @@ class TesseractReceiptOcrProvider:
 
             raise ReceiptOcrProcessingError() from error
         except pytesseract.TesseractError as error:
+            _log_receipt_ocr_cpu_after(cpu_before)
+
             # TesseractError covers both a non-zero engine exit (generic
             # engine failure) and a missing language data file. The
             # underlying tesseract CLI reports the latter by mentioning
@@ -349,6 +444,8 @@ class TesseractReceiptOcrProvider:
 
             raise ReceiptOcrProcessingError() from error
         except RuntimeError as error:
+            _log_receipt_ocr_cpu_after(cpu_before)
+
             # pytesseract raises a bare RuntimeError("Tesseract process
             # timeout") when the OCR subprocess exceeds `timeout` (see
             # pytesseract.pytesseract.timeout_manager). TesseractError
