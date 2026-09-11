@@ -42,3 +42,14 @@ export async function updateGoal(
     body: JSON.stringify(goalData),
   });
 }
+
+/**
+ * Deletes a goal owned by the authenticated user.
+ * The backend returns 204 No Content on success, which apiRequest already
+ * handles centrally (it returns undefined without parsing a body).
+ */
+export async function deleteGoal(goalId: string): Promise<void> {
+  return apiRequest<void>(`/api/v1/goals/${goalId}`, {
+    method: "DELETE",
+  });
+}

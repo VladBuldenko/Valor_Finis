@@ -1,7 +1,12 @@
 import { Link } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,9 +17,9 @@ import {
 import { getGoalProgress } from "../analytics/analytics.service";
 import type { GoalProgressItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
-import { getGoals } from "./goal.service";
+import { deleteGoal, getGoals } from "./goal.service";
 import { styles } from "./goals.styles";
-import type { GoalStatus } from "./goal.types";
+import type { Goal, GoalStatus } from "./goal.types";
 
 // Readable labels for the backend's lowercase status literal. Status is
 // rendered as-is from the backend -- this is presentation-only text
@@ -32,6 +37,7 @@ function formatStatus(status: GoalStatus): string {
 
 export function GoalsScreen() {
   const { session } = useAuth();
+  const queryClient = useQueryClient();
 
   const {
     data: goals = [],
@@ -60,6 +66,52 @@ export function GoalsScreen() {
   const goalProgressById = new Map<string, GoalProgressItem>(
     goalProgress.map((progress) => [progress.goal_id, progress]),
   );
+
+  const deleteGoalMutation = useMutation({
+    mutationFn: (goalId: string) => deleteGoal(goalId),
+
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["goals", session?.user.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "goal-progress", session?.user.id],
+        }),
+      ]);
+    },
+
+    onError: (mutationError) => {
+      const message =
+        mutationError instanceof Error
+          ? mutationError.message
+          : "Unable to delete goal.";
+
+      Alert.alert("Delete goal failed", message);
+    },
+  });
+
+  function handleDeleteGoal(goal: Goal) {
+    // Guards against a double tap firing a second DELETE while the first
+    // one is still in flight -- mirrors budgets-screen.tsx's
+    // deleteBudgetMutation.isPending guard.
+    if (deleteGoalMutation.isPending) {
+      return;
+    }
+
+    Alert.alert(
+      "Delete goal?",
+      `"${goal.name}" will be permanently deleted.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => deleteGoalMutation.mutate(goal.id),
+        },
+      ],
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -135,6 +187,21 @@ export function GoalsScreen() {
                       <Text style={styles.editButtonText}>Edit goal</Text>
                     </Pressable>
                   </Link>
+
+                  <Pressable
+                    style={styles.deleteButton}
+                    disabled={deleteGoalMutation.isPending}
+                    onPress={() => handleDeleteGoal(goal)}
+                  >
+                    {deleteGoalMutation.isPending &&
+                    deleteGoalMutation.variables === goal.id ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <Text style={styles.deleteButtonText}>
+                        Delete goal
+                      </Text>
+                    )}
+                  </Pressable>
                 </View>
               );
             })}
