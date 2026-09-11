@@ -45,3 +45,14 @@ export async function updateBudget(
     body: JSON.stringify(budgetData),
   });
 }
+
+/**
+ * Deletes a budget owned by the authenticated user.
+ * The backend returns 204 No Content on success, which apiRequest already
+ * handles centrally (it returns undefined without parsing a body).
+ */
+export async function deleteBudget(budgetId: string): Promise<void> {
+  return apiRequest<void>(`/api/v1/budgets/${budgetId}`, {
+    method: "DELETE",
+  });
+}
