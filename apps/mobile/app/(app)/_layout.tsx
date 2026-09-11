@@ -27,6 +27,12 @@ export default function AppLayout() {
           title: "Edit Budget",
         }}
       />
+      <Stack.Screen
+        name="goals"
+        options={{
+          title: "Goals",
+        }}
+      />
     </Stack>
   );
 }

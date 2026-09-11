@@ -3,6 +3,7 @@ import { apiRequest } from "../../api/api-client";
 import type {
   BudgetStatusItem,
   CategorySummaryItem,
+  GoalProgressItem,
   MonthlySummary,
 } from "./analytics.types";
 
@@ -38,5 +39,14 @@ export async function getCategorySummary(
 export async function getBudgetStatus(): Promise<BudgetStatusItem[]> {
   return apiRequest<BudgetStatusItem[]>(
     "/api/v1/analytics/budget-status",
+  );
+}
+
+/**
+ * Returns the authenticated user's financial goal progress.
+ */
+export async function getGoalProgress(): Promise<GoalProgressItem[]> {
+  return apiRequest<GoalProgressItem[]>(
+    "/api/v1/analytics/goal-progress",
   );
 }

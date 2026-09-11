@@ -226,6 +226,14 @@ export function DashboardScreen() {
             </Pressable>
         </Link>
 
+        <Link href="/goals" asChild>
+            <Pressable style={styles.button}>
+                <Text style={styles.buttonText}>
+                Goals
+                </Text>
+            </Pressable>
+        </Link>
+
         <Link href="/receipts/upload" asChild>
             <Pressable style={styles.button}>
                 <Text style={styles.buttonText}>
