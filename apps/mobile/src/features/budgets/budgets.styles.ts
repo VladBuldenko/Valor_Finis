@@ -62,6 +62,22 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
+  // Compact per-card "Edit budget" control on the Budgets list -- smaller
+  // than the full-width `button` so it reads as a secondary card action
+  // rather than a primary screen action.
+  editButton: {
+    alignSelf: "flex-start",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 12,
+  },
+  editButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
   // --- Create budget form ---
   formGroup: {
     marginTop: 20,

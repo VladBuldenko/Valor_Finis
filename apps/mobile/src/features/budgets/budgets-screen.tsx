@@ -124,6 +124,18 @@ export function BudgetsScreen() {
                       </Text>
                     </>
                   ) : null}
+
+                  <Link
+                    href={{
+                      pathname: "/budgets/[id]/edit",
+                      params: { id: budget.id },
+                    }}
+                    asChild
+                  >
+                    <Pressable style={styles.editButton}>
+                      <Text style={styles.editButtonText}>Edit budget</Text>
+                    </Pressable>
+                  </Link>
                 </View>
               );
             })}

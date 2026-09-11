@@ -21,6 +21,12 @@ export default function AppLayout() {
           title: "Add Budget",
         }}
       />
+      <Stack.Screen
+        name="budgets/[id]/edit"
+        options={{
+          title: "Edit Budget",
+        }}
+      />
     </Stack>
   );
 }

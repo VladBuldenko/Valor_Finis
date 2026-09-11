@@ -1,6 +1,10 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Budget, BudgetCreateInput } from "./budget.types";
+import type {
+  Budget,
+  BudgetCreateInput,
+  BudgetUpdateInput,
+} from "./budget.types";
 
 /**
  * Returns all budgets that belong to the authenticated user.
@@ -22,6 +26,22 @@ export async function createBudget(
 ): Promise<Budget> {
   return apiRequest<Budget>("/api/v1/budgets", {
     method: "POST",
+    body: JSON.stringify(budgetData),
+  });
+}
+
+/**
+ * Updates a budget owned by the authenticated user.
+ * Only the fields present in budgetData are changed -- callers are
+ * responsible for omitting fields that did not change (see
+ * BudgetUpdateInput / the backend's exclude_unset PATCH semantics).
+ */
+export async function updateBudget(
+  budgetId: string,
+  budgetData: BudgetUpdateInput,
+): Promise<Budget> {
+  return apiRequest<Budget>(`/api/v1/budgets/${budgetId}`, {
+    method: "PATCH",
     body: JSON.stringify(budgetData),
   });
 }
