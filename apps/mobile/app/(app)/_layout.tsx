@@ -33,6 +33,12 @@ export default function AppLayout() {
           title: "Goals",
         }}
       />
+      <Stack.Screen
+        name="goals/new"
+        options={{
+          title: "Add Goal",
+        }}
+      />
     </Stack>
   );
 }

@@ -1,6 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Goal } from "./goal.types";
+import type { Goal, GoalCreateInput } from "./goal.types";
 
 /**
  * Returns all financial goals that belong to the authenticated user.
@@ -13,4 +13,16 @@ import type { Goal } from "./goal.types";
  */
 export async function getGoals(): Promise<Goal[]> {
   return apiRequest<Goal[]>("/api/v1/goals");
+}
+
+/**
+ * Creates a goal for the authenticated user.
+ */
+export async function createGoal(
+  goalData: GoalCreateInput,
+): Promise<Goal> {
+  return apiRequest<Goal>("/api/v1/goals", {
+    method: "POST",
+    body: JSON.stringify(goalData),
+  });
 }
