@@ -19,3 +19,20 @@ export type Goal = {
   created_at: string;
   updated_at: string;
 };
+
+// Mirrors backend GoalCreate (services/api/app/modules/goals/goal_schemas.py).
+// user_id is intentionally omitted -- it is derived from authentication on
+// the server and must never be sent from the client. current_amount and
+// status are intentionally omitted entirely: this UI slice does not expose
+// either control, and the backend already defaults them (0 / "active") when
+// omitted. currency stays optional and unsent by the create form for the
+// same reason Budget's create form never sends it (see BudgetCreateInput /
+// budget-create-screen.tsx) -- the app is EUR-first and the backend already
+// defaults currency to "EUR". target_date is optional and nullable, matching
+// the backend's `date | None` field.
+export type GoalCreateInput = {
+  name: string;
+  target_amount: string;
+  currency?: string;
+  target_date?: string | null;
+};

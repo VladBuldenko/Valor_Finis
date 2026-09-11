@@ -1,6 +1,8 @@
+import { Link } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
+  Pressable,
   SafeAreaView,
   ScrollView,
   Text,
@@ -63,6 +65,12 @@ export function GoalsScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>Goals</Text>
+
+        <Link href="/goals/new" asChild>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Add Goal</Text>
+          </Pressable>
+        </Link>
 
         {goalProgressError ? (
           <Text style={styles.noticeText}>
