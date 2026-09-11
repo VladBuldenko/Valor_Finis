@@ -1,6 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Goal, GoalCreateInput } from "./goal.types";
+import type { Goal, GoalCreateInput, GoalUpdateInput } from "./goal.types";
 
 /**
  * Returns all financial goals that belong to the authenticated user.
@@ -23,6 +23,22 @@ export async function createGoal(
 ): Promise<Goal> {
   return apiRequest<Goal>("/api/v1/goals", {
     method: "POST",
+    body: JSON.stringify(goalData),
+  });
+}
+
+/**
+ * Updates a goal owned by the authenticated user.
+ * Only the fields present in goalData are changed -- callers are
+ * responsible for omitting fields that did not change (see
+ * GoalUpdateInput / the backend's exclude_unset PATCH semantics).
+ */
+export async function updateGoal(
+  goalId: string,
+  goalData: GoalUpdateInput,
+): Promise<Goal> {
+  return apiRequest<Goal>(`/api/v1/goals/${goalId}`, {
+    method: "PATCH",
     body: JSON.stringify(goalData),
   });
 }

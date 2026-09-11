@@ -57,6 +57,22 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
+  // Compact per-card "Edit goal" control on the Goals list -- smaller than
+  // the full-width `button` so it reads as a secondary card action rather
+  // than a primary screen action (mirrors Budgets' editButton).
+  editButton: {
+    alignSelf: "flex-start",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 12,
+  },
+  editButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
   // --- Create goal form ---
   formGroup: {
     marginTop: 20,
@@ -83,6 +99,24 @@ export const styles = StyleSheet.create({
   inputOptional: {
     borderStyle: "dashed",
   },
+  // Compact "tap to open a picker" control used for Status on the Edit Goal
+  // form, replacing a permanently-rendered vertical list of options
+  // (mirrors Budgets' selectControl, used there for Category and Period).
+  selectControl: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    height: 48,
+  },
+  selectControlText: {
+    fontSize: 16,
+  },
+  selectControlChevron: {
+    fontSize: 14,
+  },
   // Read-only value display (Currency), styled like an input but dimmed to
   // signal it is not editable in this flow.
   readOnlyField: {
@@ -95,5 +129,46 @@ export const styles = StyleSheet.create({
   },
   readOnlyFieldText: {
     fontSize: 16,
+  },
+  // Bottom-sheet picker (React Native's built-in Modal) used for Status
+  // selection on the Edit Goal form.
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
+  },
+  modalSheet: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingTop: 12,
+    paddingBottom: 32,
+    paddingHorizontal: 20,
+    maxHeight: "70%",
+  },
+  modalOptionList: {
+    marginTop: 4,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  modalOption: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+  },
+  modalOptionText: {
+    fontSize: 16,
+  },
+  modalOptionSelectedText: {
+    fontWeight: "700",
+  },
+  modalCloseButton: {
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 14,
+    marginTop: 16,
   },
 });

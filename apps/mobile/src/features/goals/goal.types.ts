@@ -36,3 +36,22 @@ export type GoalCreateInput = {
   currency?: string;
   target_date?: string | null;
 };
+
+// Mirrors backend GoalUpdate (services/api/app/modules/goals/goal_schemas.py).
+// Every field is optional -- an omitted field is left unchanged by the
+// backend (it uses `model_dump(exclude_unset=True)`). target_date is the
+// only field where an explicit null is meaningful (it clears the target
+// date); the backend rejects an explicit null for name, target_amount,
+// current_amount, currency, and status, so those stay plain optional values
+// rather than nullable. currency is part of the backend PATCH contract but
+// intentionally unused here -- Edit Goal shows currency read-only and never
+// sends it (see goal-edit-screen.tsx). user_id is intentionally omitted --
+// it is derived from authentication on the server.
+export type GoalUpdateInput = {
+  name?: string;
+  target_amount?: string;
+  current_amount?: string;
+  currency?: string;
+  target_date?: string | null;
+  status?: GoalStatus;
+};

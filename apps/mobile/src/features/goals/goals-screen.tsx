@@ -123,6 +123,18 @@ export function GoalsScreen() {
                       ? `Target date: ${goal.target_date}`
                       : "No target date"}
                   </Text>
+
+                  <Link
+                    href={{
+                      pathname: "/goals/[id]/edit",
+                      params: { id: goal.id },
+                    }}
+                    asChild
+                  >
+                    <Pressable style={styles.editButton}>
+                      <Text style={styles.editButtonText}>Edit goal</Text>
+                    </Pressable>
+                  </Link>
                 </View>
               );
             })}
