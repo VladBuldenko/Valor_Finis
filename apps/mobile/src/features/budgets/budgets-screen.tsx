@@ -1,7 +1,12 @@
 import { Link } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,8 +17,9 @@ import {
 import { getBudgetStatus } from "../analytics/analytics.service";
 import type { BudgetStatusItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
-import { getBudgets } from "./budget.service";
+import { deleteBudget, getBudgets } from "./budget.service";
 import { styles } from "./budgets.styles";
+import type { Budget } from "./budget.types";
 
 // Capitalizes the backend's lowercase period literal ("monthly") for display.
 // This is presentation-only text formatting, not a financial calculation.
@@ -27,6 +33,7 @@ function formatDateRange(startDate: string, endDate: string | null): string {
 
 export function BudgetsScreen() {
   const { session } = useAuth();
+  const queryClient = useQueryClient();
 
   const {
     data: budgets = [],
@@ -55,6 +62,52 @@ export function BudgetsScreen() {
   const budgetStatusById = new Map<string, BudgetStatusItem>(
     budgetStatus.map((status) => [status.budget_id, status]),
   );
+
+  const deleteBudgetMutation = useMutation({
+    mutationFn: (budgetId: string) => deleteBudget(budgetId),
+
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["budgets", session?.user.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "budget-status", session?.user.id],
+        }),
+      ]);
+    },
+
+    onError: (mutationError) => {
+      const message =
+        mutationError instanceof Error
+          ? mutationError.message
+          : "Unable to delete budget.";
+
+      Alert.alert("Delete budget failed", message);
+    },
+  });
+
+  function handleDeleteBudget(budget: Budget) {
+    // Guards against a double tap firing a second DELETE while the first
+    // one is still in flight -- mirrors expense-detail-screen.tsx's
+    // isMutating guard.
+    if (deleteBudgetMutation.isPending) {
+      return;
+    }
+
+    Alert.alert(
+      "Delete budget?",
+      `"${budget.name}" will be permanently deleted.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => deleteBudgetMutation.mutate(budget.id),
+        },
+      ],
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -136,6 +189,21 @@ export function BudgetsScreen() {
                       <Text style={styles.editButtonText}>Edit budget</Text>
                     </Pressable>
                   </Link>
+
+                  <Pressable
+                    style={styles.deleteButton}
+                    disabled={deleteBudgetMutation.isPending}
+                    onPress={() => handleDeleteBudget(budget)}
+                  >
+                    {deleteBudgetMutation.isPending &&
+                    deleteBudgetMutation.variables === budget.id ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <Text style={styles.deleteButtonText}>
+                        Delete budget
+                      </Text>
+                    )}
+                  </Pressable>
                 </View>
               );
             })}

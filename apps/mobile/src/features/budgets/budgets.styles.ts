@@ -78,6 +78,26 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
+  // Compact per-card "Delete budget" control, sized like `editButton` but
+  // tinted to read as destructive -- this file otherwise avoids relying on
+  // color for emphasis, but a delete action is the one case where a
+  // recognizable destructive color is warranted alongside the Alert
+  // confirmation's own native destructive styling.
+  deleteButton: {
+    alignSelf: "flex-start",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 8,
+    borderColor: "#cc3333",
+  },
+  deleteButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#cc3333",
+  },
   // --- Create budget form ---
   formGroup: {
     marginTop: 20,
