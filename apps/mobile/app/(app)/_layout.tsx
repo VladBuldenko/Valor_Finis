@@ -34,6 +34,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="categories/new"
+        options={{
+          title: "Add Category",
+        }}
+      />
+      <Stack.Screen
         name="expenses"
         options={{
           title: "Expenses",
