@@ -28,6 +28,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="categories"
+        options={{
+          title: "Categories",
+        }}
+      />
+      <Stack.Screen
         name="goals"
         options={{
           title: "Goals",
