@@ -8,7 +8,9 @@ import {
 import {
   ActivityIndicator,
   Alert,
-  Button,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -24,6 +26,7 @@ import {
   createExpense,
   getExpenses,
 } from "./expense.service";
+import { styles } from "./expenses.styles";
 
 function getCurrentLocalDate(): string {
   const now = new Date();
@@ -48,6 +51,12 @@ export function ExpensesScreen() {
   const [selectedCategoryId, setSelectedCategoryId] =
   useState<string | null>(null);
 
+  // Compact "tap to open" picker replaces the previous permanently-rendered
+  // vertical list of category Buttons (see budget-create-screen.tsx / VF-007D
+  // for the pattern this mirrors).
+  const [isCategoryPickerVisible, setIsCategoryPickerVisible] =
+    useState(false);
+
   const {
     data: expenses = [],
     isLoading,
@@ -67,6 +76,12 @@ export function ExpensesScreen() {
     queryFn: getCategories,
     enabled: Boolean(session),
   });
+
+  const selectedCategoryLabel =
+    selectedCategoryId === null
+      ? "Uncategorized"
+      : (categories.find((category) => category.id === selectedCategoryId)
+          ?.name ?? "Uncategorized");
 
   const createExpenseMutation = useMutation({
     mutationFn: createExpense,
@@ -115,6 +130,12 @@ export function ExpensesScreen() {
   });
 
   function handleCreateExpense() {
+    // Guards against duplicate submissions from a double tap while the
+    // request is already in flight.
+    if (createExpenseMutation.isPending) {
+      return;
+    }
+
     const normalizedTitle = title.trim();
     const normalizedAmount = amount.trim().replace(",", ".");
     const normalizedDescription = description.trim();
@@ -140,116 +161,206 @@ export function ExpensesScreen() {
   }
 
   return (
-    <SafeAreaView>
-      <ScrollView>
-        <Text>Expenses</Text>
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.title}>Expenses</Text>
 
-        <View>
-          <Text>Create expense</Text>
+          <Text style={styles.sectionTitle}>Create expense</Text>
 
-          <Text>Category</Text>
+          <Text style={styles.helperText}>* Required fields</Text>
 
-        {isCategoriesLoading ? (
-          <ActivityIndicator />
-        ) : categoriesError ? (
-          <Text>Unable to load categories.</Text>
-        ) : categories.length === 0 ? (
-          <Text>No categories available.</Text>
-        ) : (
-          <View>
-            <Button
-              title={
-                selectedCategoryId === null
-                  ? "✓ Uncategorized"
-                  : "Uncategorized"
-              }
-              onPress={() => setSelectedCategoryId(null)}
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Title *</Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Coffee"
+              value={title}
+              onChangeText={setTitle}
             />
-
-            {categories.map((category) => (
-              <Button
-                key={category.id}
-                title={
-                  selectedCategoryId === category.id
-                    ? `✓ ${category.name}`
-                    : category.name
-                }
-                onPress={() =>
-                  setSelectedCategoryId(category.id)
-                }
-              />
-            ))}
           </View>
-        )}
 
-          <TextInput
-            placeholder="Title"
-            value={title}
-            onChangeText={setTitle}
-          />
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Amount *</Text>
 
-          <TextInput
-            placeholder="Amount"
-            value={amount}
-            onChangeText={setAmount}
-            keyboardType="decimal-pad"
-          />
-
-          <TextInput
-            placeholder="YYYY-MM-DD"
-            value={expenseDate}
-            onChangeText={setExpenseDate}
-          />
-
-          <TextInput
-            placeholder="Description (optional)"
-            value={description}
-            onChangeText={setDescription}
-          />
-
-          {createExpenseMutation.isPending ? (
-            <ActivityIndicator />
-          ) : (
-            <Button
-              title="Add expense"
-              onPress={handleCreateExpense}
+            <TextInput
+              style={styles.input}
+              placeholder="0.00"
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="decimal-pad"
             />
-          )}
-        </View>
+          </View>
 
-        {isLoading ? (
-          <ActivityIndicator />
-        ) : error ? (
-          <Text>Unable to load expenses.</Text>
-        ) : expenses.length === 0 ? (
-          <Text>No expenses yet.</Text>
-        ) : (
-          <View>
-            {expenses.map((expense) => (
-              <Link
-                key={expense.id}
-                href={{
-                  pathname: "/expenses/[id]",
-                  params: { id: expense.id },
-                }}
-                asChild
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Category</Text>
+
+            {isCategoriesLoading ? (
+              <ActivityIndicator style={styles.loader} />
+            ) : categoriesError ? (
+              <Text style={styles.errorText}>Unable to load categories.</Text>
+            ) : (
+              <Pressable
+                style={styles.selectControl}
+                onPress={() => setIsCategoryPickerVisible(true)}
               >
-                <Pressable>
-                  <View>
-                    <Text>{expense.title}</Text>
+                <Text style={styles.selectControlText}>
+                  {selectedCategoryLabel}
+                </Text>
 
-                    <Text>
+                <Text style={styles.selectControlChevron}>▾</Text>
+              </Pressable>
+            )}
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Date *</Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="YYYY-MM-DD"
+              value={expenseDate}
+              onChangeText={setExpenseDate}
+            />
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Description</Text>
+
+            <TextInput
+              style={[styles.input, styles.inputOptional]}
+              placeholder="Optional note"
+              value={description}
+              onChangeText={setDescription}
+            />
+          </View>
+
+          <Pressable
+            disabled={createExpenseMutation.isPending}
+            onPress={handleCreateExpense}
+            style={[styles.button, styles.formGroup]}
+          >
+            {createExpenseMutation.isPending ? (
+              <ActivityIndicator />
+            ) : (
+              <Text style={styles.buttonText}>Add expense</Text>
+            )}
+          </Pressable>
+
+          <Text style={styles.listSectionTitle}>Recent expenses</Text>
+
+          {isLoading ? (
+            <ActivityIndicator style={styles.loader} />
+          ) : error ? (
+            <Text style={styles.errorText}>Unable to load expenses.</Text>
+          ) : expenses.length === 0 ? (
+            <Text style={styles.secondaryText}>No expenses yet.</Text>
+          ) : (
+            <View style={styles.list}>
+              {expenses.map((expense) => (
+                <Link
+                  key={expense.id}
+                  href={{
+                    pathname: "/expenses/[id]",
+                    params: { id: expense.id },
+                  }}
+                  asChild
+                >
+                  <Pressable style={styles.card}>
+                    <Text style={styles.name}>{expense.title}</Text>
+
+                    <Text style={styles.amount}>
                       {expense.amount} {expense.currency}
                     </Text>
 
-                    <Text>{expense.expense_date}</Text>
-                  </View>
+                    <Text style={styles.secondaryText}>
+                      {expense.expense_date}
+                    </Text>
+                  </Pressable>
+                </Link>
+              ))}
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <Modal
+        visible={isCategoryPickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsCategoryPickerVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setIsCategoryPickerVisible(false)}
+        >
+          <Pressable
+            style={styles.modalSheet}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <Text style={styles.modalTitle}>Select category</Text>
+
+            <ScrollView style={styles.modalOptionList}>
+              <Pressable
+                style={styles.modalOption}
+                onPress={() => {
+                  setSelectedCategoryId(null);
+                  setIsCategoryPickerVisible(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.modalOptionText,
+                    selectedCategoryId === null &&
+                      styles.modalOptionSelectedText,
+                  ]}
+                >
+                  {selectedCategoryId === null
+                    ? "✓ Uncategorized"
+                    : "Uncategorized"}
+                </Text>
+              </Pressable>
+
+              {categories.map((category) => (
+                <Pressable
+                  key={category.id}
+                  style={styles.modalOption}
+                  onPress={() => {
+                    setSelectedCategoryId(category.id);
+                    setIsCategoryPickerVisible(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.modalOptionText,
+                      selectedCategoryId === category.id &&
+                        styles.modalOptionSelectedText,
+                    ]}
+                  >
+                    {selectedCategoryId === category.id
+                      ? `✓ ${category.name}`
+                      : category.name}
+                  </Text>
                 </Pressable>
-              </Link>
-            ))}
-          </View>
-        )}
-      </ScrollView>
+              ))}
+            </ScrollView>
+
+            <Pressable
+              style={styles.modalCloseButton}
+              onPress={() => setIsCategoryPickerVisible(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
