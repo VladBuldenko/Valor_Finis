@@ -1,6 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Category } from "./category.types";
+import type { Category, CategoryCreateInput } from "./category.types";
 
 export type GetCategoriesOptions = {
   // Mirrors the backend's `include_hidden` query parameter. Defaults to
@@ -34,4 +34,18 @@ export async function getCategories(
     : "/api/v1/categories";
 
   return apiRequest<Category[]>(path);
+}
+
+/**
+ * Creates a category for the authenticated user.
+ * The backend always creates it as a normal visible custom category --
+ * is_visible/is_default/system_key are not part of create input at all.
+ */
+export async function createCategory(
+  categoryData: CategoryCreateInput,
+): Promise<Category> {
+  return apiRequest<Category>("/api/v1/categories", {
+    method: "POST",
+    body: JSON.stringify(categoryData),
+  });
 }

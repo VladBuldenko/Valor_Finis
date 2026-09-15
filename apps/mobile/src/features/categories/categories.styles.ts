@@ -48,4 +48,45 @@ export const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#cc3333",
   },
+  // "Add Category" CTA on the management screen, and the primary "Save
+  // category" action on the create form -- same shape as goals.styles.ts /
+  // budgets.styles.ts's `button`.
+  button: {
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 14,
+    marginTop: 16,
+  },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  // --- Create category form ---
+  formGroup: {
+    marginTop: 20,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: "600",
+    marginBottom: 6,
+  },
+  helperText: {
+    fontSize: 13,
+    marginTop: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    height: 48,
+    fontSize: 16,
+  },
+  // Applied in addition to `input` for the optional Color/Icon fields so
+  // they read as visually distinct from the required Name input (dashed vs
+  // solid border) without relying on color -- matches goals.styles.ts /
+  // budgets.styles.ts's inputOptional.
+  inputOptional: {
+    borderStyle: "dashed",
+  },
 });
