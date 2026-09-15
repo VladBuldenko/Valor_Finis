@@ -14,12 +14,15 @@ import {
 import {
   getBudgetStatus,
   getCategorySummary,
+  getGoalProgress,
   getMonthlySummary,
 } from "../analytics/analytics.service";
+import type { GoalProgressItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
 import { signOut } from "../auth/auth.service";
 import { getBudgets } from "../budgets/budget.service";
 import type { Budget } from "../budgets/budget.types";
+import { getGoals } from "../goals/goal.service";
 import { styles } from "./dashboard.styles";
 
 // monthly-summary and category-summary do not return a currency field.
@@ -111,6 +114,34 @@ export function DashboardScreen() {
 
   const budgetsById = new Map<string, Budget>(
     budgets.map((budget) => [budget.id, budget]),
+  );
+
+  // Goals are the authoritative source for id/currency/target_amount/
+  // current_amount -- mirrors goals-screen.tsx, where the Goal list (not
+  // goal-progress) drives what renders.
+  const {
+    data: goals = [],
+    isLoading: isGoalsLoading,
+    error: goalsError,
+  } = useQuery({
+    queryKey: ["goals", session?.user.id],
+    queryFn: getGoals,
+    enabled: Boolean(session),
+  });
+
+  // Supplementary: Remaining/Progress rows only. A failure here must not
+  // blank the Goal list -- it surfaces as a small non-blocking notice,
+  // same as goalProgressError on goals-screen.tsx.
+  const { data: goalProgress = [], error: goalProgressError } = useQuery({
+    queryKey: ["analytics", "goal-progress", session?.user.id],
+    queryFn: getGoalProgress,
+    enabled: Boolean(session),
+  });
+
+  // goal_id is the join key back to Goal.id -- never join by name, never
+  // assume array order matches (mirrors goals-screen.tsx / budgetsById above).
+  const goalProgressById = new Map<string, GoalProgressItem>(
+    goalProgress.map((progress) => [progress.goal_id, progress]),
   );
 
   async function handleSignOut() {
@@ -249,6 +280,56 @@ export function DashboardScreen() {
                               currency,
                             )}`}
                       </Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Goal progress</Text>
+
+          {goalProgressError ? (
+            <Text style={styles.noticeText}>
+              Goal progress is temporarily unavailable.
+            </Text>
+          ) : null}
+
+          {isGoalsLoading ? (
+            <ActivityIndicator style={styles.loader} />
+          ) : goalsError ? (
+            <Text style={styles.errorText}>Unable to load goals.</Text>
+          ) : goals.length === 0 ? (
+            <Text style={styles.secondaryText}>No goals yet.</Text>
+          ) : (
+            <View style={styles.categoryList}>
+              {goals.map((goal) => {
+                const progress = goalProgressById.get(goal.id);
+
+                return (
+                  <View key={goal.id} style={styles.categoryRow}>
+                    <View style={styles.categoryDetails}>
+                      <Text style={styles.categoryName}>{goal.name}</Text>
+
+                      <Text style={styles.secondaryText}>
+                        Saved: {goal.current_amount} / {goal.target_amount}{" "}
+                        {goal.currency}
+                      </Text>
+
+                      {progress ? (
+                        <>
+                          <Text style={styles.secondaryText}>
+                            Remaining: {progress.remaining_amount}{" "}
+                            {goal.currency}
+                          </Text>
+
+                          <Text style={styles.secondaryText}>
+                            Progress: {progress.progress_percent}%
+                          </Text>
+                        </>
+                      ) : null}
                     </View>
                   </View>
                 );
