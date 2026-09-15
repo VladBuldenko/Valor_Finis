@@ -121,25 +121,33 @@ DEFAULT_RECEIPT_OCR_MAX_LONG_EDGE = 2000
 
 
 # Returns and validates the configured authentication mode.
-# This function exists to fail fast when AUTH_MODE contains
-# an unsupported or misspelled value.
+# This function exists to fail fast when AUTH_MODE is missing, blank,
+# or contains an unsupported or misspelled value. AUTH_MODE has no
+# implicit default: an absent or blank value must not silently select
+# development authentication (X-User-Id, no signature/existence check),
+# since that would fail open if a deployed environment forgot to set it.
 # Parameters:
 # - None.
 # Returns:
 # - Validated authentication mode.
 # Raises:
-# - ValueError when AUTH_MODE is unsupported.
+# - ValueError when AUTH_MODE is missing, blank, or unsupported.
 def get_auth_mode() -> str:
-    auth_mode = os.getenv(
-        "AUTH_MODE",
-        "development",
-    ).strip().lower()
+    supported_modes = ", ".join(
+        sorted(SUPPORTED_AUTH_MODES),
+    )
 
-    if auth_mode not in SUPPORTED_AUTH_MODES:
-        supported_modes = ", ".join(
-            sorted(SUPPORTED_AUTH_MODES),
+    raw_auth_mode = os.getenv("AUTH_MODE")
+
+    if raw_auth_mode is None or not raw_auth_mode.strip():
+        raise ValueError(
+            "AUTH_MODE is required and must not be blank. "
+            f"Supported values: {supported_modes}."
         )
 
+    auth_mode = raw_auth_mode.strip().lower()
+
+    if auth_mode not in SUPPORTED_AUTH_MODES:
         raise ValueError(
             "Unsupported AUTH_MODE "
             f"'{auth_mode}'. "
