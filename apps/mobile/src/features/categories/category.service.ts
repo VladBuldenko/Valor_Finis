@@ -80,3 +80,21 @@ export async function updateCategory(
     body: JSON.stringify(categoryData),
   });
 }
+
+/**
+ * Deletes a custom category owned by the authenticated user.
+ * Mirrors deleteBudget/deleteGoal's 204-response pattern -- apiRequest
+ * already special-cases a 204 response to resolve as `undefined as T`, so
+ * no manual response handling is needed here. The backend rejects deleting
+ * a default category with 409; this function does not special-case that --
+ * the caller is responsible for never offering Delete for a default
+ * category in the first place (see categories-screen.tsx).
+ * Related expenses/budgets are not deleted -- Expense.category_id and
+ * Budget.category_id use ON DELETE SET NULL, so they survive and become
+ * uncategorized.
+ */
+export async function deleteCategory(categoryId: string): Promise<void> {
+  return apiRequest<void>(`/api/v1/categories/${categoryId}`, {
+    method: "DELETE",
+  });
+}

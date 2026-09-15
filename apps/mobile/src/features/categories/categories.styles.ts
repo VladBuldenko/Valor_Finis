@@ -80,6 +80,24 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
+  // Compact per-card "Delete" control for a custom category, sized like
+  // `editButton` but tinted to read as destructive -- mirrors
+  // budgets.styles.ts's / goals.styles.ts's deleteButton exactly.
+  deleteButton: {
+    alignSelf: "flex-start",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 8,
+    borderColor: "#cc3333",
+  },
+  deleteButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#cc3333",
+  },
   // --- Create category form ---
   formGroup: {
     marginTop: 20,
