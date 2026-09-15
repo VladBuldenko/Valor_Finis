@@ -11,13 +11,16 @@ from app.core.app_config import (
 )
 
 
-# Tests that development mode is used when AUTH_MODE is missing.
-# This test exists to keep local development configuration predictable.
+# Tests that a missing AUTH_MODE fails closed instead of silently
+# defaulting to development authentication.
+# This test exists to prevent a deployed environment that forgot to set
+# AUTH_MODE from starting up with implicit, unauthenticated-by-default
+# access (X-User-Id development auth with no signature/existence check).
 # Parameters:
 # - monkeypatch: pytest fixture used to modify environment variables.
 # Returns:
 # - None.
-def test_get_auth_mode_returns_development_by_default(
+def test_get_auth_mode_rejects_missing_value(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
@@ -27,10 +30,48 @@ def test_get_auth_mode_returns_development_by_default(
     )
 
     # Act
-    auth_mode = get_auth_mode()
+    with pytest.raises(ValueError) as error:
+        get_auth_mode()
 
     # Assert
-    assert auth_mode == "development"
+    assert str(error.value) == (
+        "AUTH_MODE is required and must not be blank. "
+        "Supported values: development, supabase."
+    )
+
+
+# Tests that a blank or whitespace-only AUTH_MODE fails closed.
+# This test exists to close the same fail-open gap as a missing
+# AUTH_MODE for an environment variable that is set but empty.
+# Parameters:
+# - configured_value: blank/whitespace AUTH_MODE value placed in the
+#   environment.
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+@pytest.mark.parametrize(
+    "configured_value",
+    ["", "   "],
+)
+def test_get_auth_mode_rejects_blank_value(
+    configured_value: str,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv(
+        "AUTH_MODE",
+        configured_value,
+    )
+
+    # Act
+    with pytest.raises(ValueError) as error:
+        get_auth_mode()
+
+    # Assert
+    assert str(error.value) == (
+        "AUTH_MODE is required and must not be blank. "
+        "Supported values: development, supabase."
+    )
 
 
 # Tests that supported authentication modes are normalized.
@@ -131,6 +172,36 @@ def test_app_settings_allows_missing_supabase_settings_in_development(
     assert settings.auth_mode == "development"
     assert settings.supabase_url is None
     assert settings.supabase_publishable_key is None
+
+
+# Tests that AppSettings construction fails closed when AUTH_MODE is
+# missing from the environment.
+# This test exists to confirm the fail-closed behavior is enforced at
+# application startup (AppSettings() is what app/main.py and Alembic's
+# env.py trigger via the module-level `settings` instance), not only in
+# the standalone get_auth_mode() helper.
+# Parameters:
+# - monkeypatch: pytest fixture used to modify environment variables.
+# Returns:
+# - None.
+def test_app_settings_fails_closed_when_auth_mode_missing(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    monkeypatch.delenv(
+        "AUTH_MODE",
+        raising=False,
+    )
+
+    # Act
+    with pytest.raises(ValueError) as error:
+        AppSettings()
+
+    # Assert
+    assert str(error.value) == (
+        "AUTH_MODE is required and must not be blank. "
+        "Supported values: development, supabase."
+    )
 
 
 # Tests that Supabase authentication requires a project URL.
