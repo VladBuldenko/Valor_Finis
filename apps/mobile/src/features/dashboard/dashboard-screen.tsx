@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
@@ -11,16 +12,39 @@ import {
 } from "react-native";
 
 import {
-    getBudgetStatus,
-    getCategorySummary,
-    getMonthlySummary,
-  } from "../analytics/analytics.service";
-
-import { Link } from "expo-router";
+  getBudgetStatus,
+  getCategorySummary,
+  getMonthlySummary,
+} from "../analytics/analytics.service";
 import { useAuth } from "../auth/auth-context";
 import { signOut } from "../auth/auth.service";
+import { getBudgets } from "../budgets/budget.service";
+import type { Budget } from "../budgets/budget.types";
 import { styles } from "./dashboard.styles";
-import React from "react";
+
+// monthly-summary and category-summary do not return a currency field.
+// The product is currently EUR-first; this local constant makes that
+// assumption explicit instead of repeating a bare "€" at each call site.
+// Budget Status must NOT use this fallback -- its currency comes from the
+// joined Budget entity (see formatBudgetAmount below).
+const DASHBOARD_ANALYTICS_CURRENCY_SYMBOL = "€";
+
+// "1 expenses" reads wrong -- singularize only for exactly one.
+function formatExpenseCount(count: number): string {
+  return `${count} ${count === 1 ? "expense" : "expenses"}`;
+}
+
+// Budget Status doesn't carry currency directly -- it is resolved by joining
+// BudgetStatusItem.budget_id back to the matching Budget entity's currency
+// field. If no matching Budget is found (e.g. the budgets list failed to
+// load, or hasn't caught up with a just-deleted budget), the amount is shown
+// without a currency unit rather than guessing one.
+function formatBudgetAmount(
+  amount: string,
+  currency: string | undefined,
+): string {
+  return currency ? `${amount} ${currency}` : amount;
+}
 
 export function DashboardScreen() {
   const { session } = useAuth();
@@ -30,18 +54,21 @@ export function DashboardScreen() {
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
 
+  // Locale-safe label for the period the monthly/category summary cards are
+  // scoped to (e.g. "September 2026"). This only clarifies what is already
+  // displayed -- it does not refresh the period while the screen stays
+  // mounted across a month boundary.
+  const periodLabel = new Date(year, month - 1, 1).toLocaleDateString(
+    "en-US",
+    { month: "long", year: "numeric" },
+  );
+
   const {
     data: monthlySummary,
     isLoading: isSummaryLoading,
     error: summaryError,
   } = useQuery({
-    queryKey: [
-      "analytics",
-      "monthly-summary",
-      session?.user.id,
-      year,
-      month,
-    ],
+    queryKey: ["analytics", "monthly-summary", session?.user.id, year, month],
     queryFn: () => getMonthlySummary(year, month),
     enabled: Boolean(session),
   });
@@ -67,14 +94,24 @@ export function DashboardScreen() {
     isLoading: isBudgetStatusLoading,
     error: budgetStatusError,
   } = useQuery({
-    queryKey: [
-      "analytics",
-      "budget-status",
-      session?.user.id,
-    ],
+    queryKey: ["analytics", "budget-status", session?.user.id],
     queryFn: getBudgetStatus,
     enabled: Boolean(session),
   });
+
+  // Secondary, supplementary data used only to resolve Budget Status
+  // currency -- the Budget Status card's own loading/error state stays
+  // driven by budgetStatus above, and a failure here surfaces as a small
+  // non-blocking notice instead of replacing the whole card.
+  const { data: budgets = [], error: budgetsError } = useQuery({
+    queryKey: ["budgets", session?.user.id],
+    queryFn: getBudgets,
+    enabled: Boolean(session),
+  });
+
+  const budgetsById = new Map<string, Budget>(
+    budgets.map((budget) => [budget.id, budget]),
+  );
 
   async function handleSignOut() {
     try {
@@ -83,9 +120,7 @@ export function DashboardScreen() {
       await signOut();
     } catch (error) {
       const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to sign out.";
+        error instanceof Error ? error.message : "Unable to sign out.";
 
       Alert.alert("Sign out failed", message);
     } finally {
@@ -96,18 +131,14 @@ export function DashboardScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>
-          Valor Finis
-        </Text>
+        <Text style={styles.title}>Valor Finis</Text>
 
-        <Text style={styles.subtitle}>
-          Dashboard
-        </Text>
+        <Text style={styles.subtitle}>Dashboard</Text>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>
-            This month
-          </Text>
+          <Text style={styles.sectionTitle}>This month</Text>
+
+          <Text style={styles.secondaryText}>{periodLabel}</Text>
 
           {isSummaryLoading ? (
             <ActivityIndicator style={styles.loader} />
@@ -118,20 +149,19 @@ export function DashboardScreen() {
           ) : (
             <>
               <Text style={styles.amount}>
-                €{monthlySummary?.total_spent ?? "0.00"}
+                {DASHBOARD_ANALYTICS_CURRENCY_SYMBOL}
+                {monthlySummary?.total_spent ?? "0.00"}
               </Text>
 
               <Text style={styles.secondaryText}>
-                {monthlySummary?.expenses_count ?? 0} expenses
+                {formatExpenseCount(monthlySummary?.expenses_count ?? 0)}
               </Text>
             </>
           )}
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>
-            Spending by category
-          </Text>
+          <Text style={styles.sectionTitle}>Spending by category</Text>
 
           {isCategorySummaryLoading ? (
             <ActivityIndicator style={styles.loader} />
@@ -156,98 +186,105 @@ export function DashboardScreen() {
                     </Text>
 
                     <Text style={styles.secondaryText}>
-                      {category.expenses_count} expenses
+                      {formatExpenseCount(category.expenses_count)}
                     </Text>
                   </View>
 
                   <Text style={styles.categoryAmount}>
-                    €{category.total_spent}
+                    {DASHBOARD_ANALYTICS_CURRENCY_SYMBOL}
+                    {category.total_spent}
                   </Text>
                 </View>
               ))}
             </View>
           )}
         </View>
+
         <View style={styles.card}>
-            <Text style={styles.sectionTitle}>
-                Budget status
+          <Text style={styles.sectionTitle}>Budget status</Text>
+
+          {budgetsError ? (
+            <Text style={styles.noticeText}>
+              Budget currency details are unavailable right now.
             </Text>
+          ) : null}
 
-            {isBudgetStatusLoading ? (
-                <ActivityIndicator style={styles.loader} />
-            ) : budgetStatusError ? (
-                <Text style={styles.errorText}>
-                Unable to load budget status.
-                </Text>
-            ) : budgetStatus.length === 0 ? (
-                <Text style={styles.secondaryText}>
-                No budgets yet.
-                </Text>
-            ) : (
-                <View style={styles.categoryList}>
-                {budgetStatus.map((budget) => (
-                    <View
-                    key={budget.budget_id}
-                    style={styles.categoryRow}
-                    >
+          {isBudgetStatusLoading ? (
+            <ActivityIndicator style={styles.loader} />
+          ) : budgetStatusError ? (
+            <Text style={styles.errorText}>
+              Unable to load budget status.
+            </Text>
+          ) : budgetStatus.length === 0 ? (
+            <Text style={styles.secondaryText}>No budgets yet.</Text>
+          ) : (
+            <View style={styles.categoryList}>
+              {budgetStatus.map((budget) => {
+                const currency = budgetsById.get(budget.budget_id)?.currency;
+
+                return (
+                  <View key={budget.budget_id} style={styles.categoryRow}>
                     <View style={styles.categoryDetails}>
-                        <Text style={styles.categoryName}>
+                      <Text style={styles.categoryName}>
                         {budget.budget_name}
-                        </Text>
+                      </Text>
 
-                        <Text style={styles.secondaryText}>
-                        Spent: €{budget.spent} / €{budget.limit_amount}
-                        </Text>
+                      <Text style={styles.secondaryText}>
+                        {budget.category_name}
+                      </Text>
 
-                        <Text style={styles.secondaryText}>
+                      <Text style={styles.secondaryText}>
+                        Spent: {formatBudgetAmount(budget.spent, currency)} /{" "}
+                        {formatBudgetAmount(budget.limit_amount, currency)}
+                      </Text>
+
+                      <Text style={styles.secondaryText}>
                         {budget.is_exceeded
-                            ? `Exceeded by €${budget.exceeded_amount}`
-                            : `Remaining €${budget.remaining}`}
-                        </Text>
+                          ? `Exceeded by ${formatBudgetAmount(
+                              budget.exceeded_amount,
+                              currency,
+                            )}`
+                          : `Remaining ${formatBudgetAmount(
+                              budget.remaining,
+                              currency,
+                            )}`}
+                      </Text>
                     </View>
-                    </View>
-                ))}
-                </View>
-            )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </View>
+
         <Link href="/expenses" asChild>
-            <Pressable style={styles.button}>
-                <Text style={styles.buttonText}>
-                Expenses
-                </Text>
-            </Pressable>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Expenses</Text>
+          </Pressable>
         </Link>
 
         <Link href="/budgets" asChild>
-            <Pressable style={styles.button}>
-                <Text style={styles.buttonText}>
-                Budgets
-                </Text>
-            </Pressable>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Budgets</Text>
+          </Pressable>
         </Link>
 
         <Link href="/categories" asChild>
-            <Pressable style={styles.button}>
-                <Text style={styles.buttonText}>
-                Categories
-                </Text>
-            </Pressable>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Categories</Text>
+          </Pressable>
         </Link>
 
         <Link href="/goals" asChild>
-            <Pressable style={styles.button}>
-                <Text style={styles.buttonText}>
-                Goals
-                </Text>
-            </Pressable>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Goals</Text>
+          </Pressable>
         </Link>
 
         <Link href="/receipts/upload" asChild>
-            <Pressable style={styles.button}>
-                <Text style={styles.buttonText}>
-                Scan receipt
-                </Text>
-            </Pressable>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Scan receipt</Text>
+          </Pressable>
         </Link>
 
         <Pressable
@@ -258,9 +295,7 @@ export function DashboardScreen() {
           {isSigningOut ? (
             <ActivityIndicator />
           ) : (
-            <Text style={styles.buttonText}>
-              Log out
-            </Text>
+            <Text style={styles.buttonText}>Log out</Text>
           )}
         </Pressable>
       </ScrollView>
