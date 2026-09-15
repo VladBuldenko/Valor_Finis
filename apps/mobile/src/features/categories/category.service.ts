@@ -1,6 +1,10 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Category, CategoryCreateInput } from "./category.types";
+import type {
+  Category,
+  CategoryCreateInput,
+  CategoryUpdateInput,
+} from "./category.types";
 
 export type GetCategoriesOptions = {
   // Mirrors the backend's `include_hidden` query parameter. Defaults to
@@ -46,6 +50,33 @@ export async function createCategory(
 ): Promise<Category> {
   return apiRequest<Category>("/api/v1/categories", {
     method: "POST",
+    body: JSON.stringify(categoryData),
+  });
+}
+
+/**
+ * Returns a single category owned by the authenticated user.
+ * The backend returns 404 for both a nonexistent category and one owned by
+ * another user -- ownership is never distinguishable from "not found" here.
+ */
+export async function getCategory(categoryId: string): Promise<Category> {
+  return apiRequest<Category>(`/api/v1/categories/${categoryId}`);
+}
+
+/**
+ * Updates a category owned by the authenticated user.
+ * Only the fields present in categoryData are changed -- callers are
+ * responsible for omitting fields that did not change (see
+ * CategoryUpdateInput / the backend's exclude_unset PATCH semantics). A
+ * default category rejects name/color/icon changes with 409; only
+ * is_visible may be updated on a default category.
+ */
+export async function updateCategory(
+  categoryId: string,
+  categoryData: CategoryUpdateInput,
+): Promise<Category> {
+  return apiRequest<Category>(`/api/v1/categories/${categoryId}`, {
+    method: "PATCH",
     body: JSON.stringify(categoryData),
   });
 }

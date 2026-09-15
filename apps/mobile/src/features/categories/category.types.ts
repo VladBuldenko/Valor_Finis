@@ -27,3 +27,20 @@ export type CategoryCreateInput = {
   color?: string | null;
   icon?: string | null;
 };
+
+// Mirrors backend CategoryUpdate (services/api/app/modules/categories/schemas.py).
+// Every field is optional -- an omitted field is left unchanged by the
+// backend (it uses `model_dump(exclude_unset=True)`), so callers must send
+// only the fields that actually changed. color/icon accept an explicit null
+// to clear them; the backend rejects an explicit null for name and
+// is_visible, so those stay plain optional values rather than nullable.
+// id, user_id, is_default, system_key, and timestamps are intentionally
+// omitted -- they are either server-derived or not editable through this
+// endpoint (is_default/system_key never change; a default category's
+// name/color/icon are backend-protected and rejected with 409).
+export type CategoryUpdateInput = {
+  name?: string;
+  color?: string | null;
+  icon?: string | null;
+  is_visible?: boolean;
+};

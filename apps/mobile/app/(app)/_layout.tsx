@@ -40,6 +40,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="categories/[id]/edit"
+        options={{
+          title: "Edit Category",
+        }}
+      />
+      <Stack.Screen
         name="expenses"
         options={{
           title: "Expenses",

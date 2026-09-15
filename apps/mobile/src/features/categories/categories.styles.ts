@@ -49,8 +49,8 @@ export const styles = StyleSheet.create({
     color: "#cc3333",
   },
   // "Add Category" CTA on the management screen, and the primary "Save
-  // category" action on the create form -- same shape as goals.styles.ts /
-  // budgets.styles.ts's `button`.
+  // category" action on the create/edit forms -- same shape as
+  // goals.styles.ts / budgets.styles.ts's `button`.
   button: {
     alignItems: "center",
     borderWidth: 1,
@@ -60,6 +60,24 @@ export const styles = StyleSheet.create({
   },
   buttonText: {
     fontSize: 16,
+    fontWeight: "600",
+  },
+  // Compact per-card action control on the Categories list -- doubles as
+  // "Edit" for a custom category and "Hide"/"Show" for a default category
+  // (the two are mutually exclusive per category, see categories-screen.tsx),
+  // smaller than the full-width `button` so it reads as a secondary card
+  // action. Mirrors goals.styles.ts's / budgets.styles.ts's editButton.
+  editButton: {
+    alignSelf: "flex-start",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 12,
+  },
+  editButtonText: {
+    fontSize: 14,
     fontWeight: "600",
   },
   // --- Create category form ---
