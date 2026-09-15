@@ -40,6 +40,10 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     marginTop: 12,
   },
+  noticeText: {
+    fontSize: 14,
+    marginTop: 12,
+  },
   loader: {
     marginTop: 16,
   },
