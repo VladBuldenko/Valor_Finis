@@ -906,8 +906,24 @@ Response:
 
 {
   "total_spent": "250.75",
-  "expenses_count": 12
+  "expenses_count": 12,
+  "base_currency": "EUR",
+  "unresolved_expenses_count": 0
 }
+
+VF-014B5D: total_spent is BASE-currency spending, summed from each
+matching Expense's already-persisted base_amount (VF-014B5C) - never the
+original mixed-currency amount, and never recomputed at read time (no
+amount * fx_rate here, no ECB/NBU call). base_currency is the user's
+authoritative base currency (VF-014B5B), from financial_settings, not
+derived from whichever Expense happens to appear first; it is still
+returned with zero Expenses. expenses_count counts only resolved
+Expenses (base_amount is not null) included in total_spent.
+unresolved_expenses_count counts matching legacy Expenses whose FX
+snapshot has not been resolved yet (base_amount is null) - these are
+excluded from total_spent but are never silently treated as zero-valued;
+expenses_count + unresolved_expenses_count is the total number of
+matching Expenses for the period.
 
 Category Summary
 
@@ -919,8 +935,16 @@ Response item:
   "category_id": "<uuid-or-null>",
   "category_name": "Food",
   "total_spent": "120.50",
-  "expenses_count": 5
+  "expenses_count": 5,
+  "base_currency": "EUR",
+  "unresolved_expenses_count": 0
 }
+
+VF-014B5D: total_spent/expenses_count/base_currency/
+unresolved_expenses_count follow the same base-currency rules as Monthly
+Summary above, applied per category. A category whose matching Expenses
+are all unresolved is still returned (never silently omitted), with
+total_spent 0, expenses_count 0, and unresolved_expenses_count > 0.
 
 Budget Status
 

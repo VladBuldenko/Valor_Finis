@@ -19,15 +19,45 @@ class MonthlySummaryResponse(BaseModel):
 
     total_spent: Decimal = Field(
         ...,
-        description="Total amount spent.",
+        description=(
+            "Total spending in base_currency (VF-014B5D), summed from each "
+            "resolved Expense's base_amount - never the original mixed-"
+            "currency amount. Excludes unresolved legacy Expenses; see "
+            "unresolved_expenses_count."
+        ),
         examples=["250.75"],
     )
 
     expenses_count: int = Field(
         ...,
         ge=0,
-        description="Number of expense records.",
+        description=(
+            "Number of resolved Expense records included in total_spent."
+        ),
         examples=[12],
+    )
+
+    base_currency: str = Field(
+        ...,
+        description=(
+            "The authoritative base currency (VF-014B5B) total_spent is "
+            "denominated in, from the user's financial settings - never "
+            "derived from whichever Expense happens to appear first."
+        ),
+        examples=["EUR"],
+    )
+
+    unresolved_expenses_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of matching legacy unresolved Expenses (base_amount is "
+            "NULL) excluded from total_spent. Not counted as zero-valued - "
+            "this makes incomplete legacy data explicit rather than silent. "
+            "expenses_count + unresolved_expenses_count is the total number "
+            "of matching Expenses for the period."
+        ),
+        examples=[0],
     )
 
 
@@ -55,15 +85,45 @@ class CategorySummaryItem(BaseModel):
 
     total_spent: Decimal = Field(
         ...,
-        description="Total amount spent in this category.",
+        description=(
+            "Total spending in base_currency (VF-014B5D) for this category, "
+            "summed from each resolved Expense's base_amount - never the "
+            "original mixed-currency amount. 0 when every matching Expense "
+            "in this category is unresolved; see unresolved_expenses_count."
+        ),
         examples=["120.50"],
     )
 
     expenses_count: int = Field(
         ...,
         ge=0,
-        description="Number of expenses in this category.",
+        description=(
+            "Number of resolved expenses in this category included in "
+            "total_spent."
+        ),
         examples=[5],
+    )
+
+    base_currency: str = Field(
+        ...,
+        description=(
+            "The authoritative base currency (VF-014B5B) total_spent is "
+            "denominated in, from the user's financial settings."
+        ),
+        examples=["EUR"],
+    )
+
+    unresolved_expenses_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of matching legacy unresolved Expenses (base_amount is "
+            "NULL) in this category, excluded from total_spent. A category "
+            "whose matching Expenses are all unresolved is still returned - "
+            "with total_spent=0, expenses_count=0, and this field > 0 - "
+            "rather than silently omitted."
+        ),
+        examples=[0],
     )
 
 

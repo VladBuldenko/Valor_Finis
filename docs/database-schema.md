@@ -421,6 +421,17 @@ EUR before VF-014B5C were backfilled as identity snapshots
 were left fully unresolved (all five columns NULL) rather than guessing
 a rate or assuming EUR.
 
+General spending analytics (monthly-summary, category-summary - VF-014B5D)
+sum base_amount for every resolved Expense (base_amount is not null) and
+treat currency correctly: a legacy row with no snapshot yet (base_amount
+NULL) is excluded from monetary totals and separately counted, never
+treated as zero-valued; a resolved row is only summed when its persisted
+base_currency matches the user's current base_currency, otherwise it is
+excluded and counted the same way an unresolved row is. Budget Status
+(VF-014B3/B4) is unaffected by this - it still evaluates using
+expense.amount against the Budget's own currency, not base_amount; see
+"Budgets" below.
+
 5. Budgets
 
 Table:

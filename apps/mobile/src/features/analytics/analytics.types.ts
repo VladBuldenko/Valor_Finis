@@ -1,13 +1,21 @@
+// total_spent is base-currency spending (VF-014B5D): summed from each
+// resolved Expense's backend-persisted base_amount, never the original
+// mixed-currency amount, and never recomputed client-side.
 export type MonthlySummary = {
     total_spent: string;
     expenses_count: number;
+    base_currency: string;
+    unresolved_expenses_count: number;
   };
-  
+
+  // total_spent is base-currency spending (VF-014B5D) - see MonthlySummary above.
   export type CategorySummaryItem = {
     category_id: string | null;
     category_name: string;
     total_spent: string;
     expenses_count: number;
+    base_currency: string;
+    unresolved_expenses_count: number;
   };
   
   export type BudgetStatusItem = {
