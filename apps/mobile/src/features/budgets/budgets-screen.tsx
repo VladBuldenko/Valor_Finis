@@ -17,18 +17,143 @@ import {
 import { getBudgetStatus } from "../analytics/analytics.service";
 import type { BudgetStatusItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
+import {
+  formatAmount,
+  formatPercent,
+  formatPeriodLabel,
+  formatPeriodStateLabel,
+  formatRiskLabel,
+} from "./budget-status-presentation";
 import { deleteBudget, getBudgets } from "./budget.service";
 import { styles } from "./budgets.styles";
 import type { Budget } from "./budget.types";
 
-// Capitalizes the backend's lowercase period literal ("monthly") for display.
-// This is presentation-only text formatting, not a financial calculation.
-function formatPeriod(period: string): string {
-  return period.charAt(0).toUpperCase() + period.slice(1);
-}
-
 function formatDateRange(startDate: string, endDate: string | null): string {
   return endDate ? `${startDate} – ${endDate}` : `${startDate} – Ongoing`;
+}
+
+// A backend Decimal-string amount, compared only against the literal
+// zero-quantized form the backend always emits for these two fields
+// (both are `max(x, Decimal("0")).quantize(Decimal("0.01"))`, so a zero
+// value is always exactly "0.00"). This decides which of two already-
+// computed backend fields to display, per Section 10 - it is not a
+// recalculation of either value.
+function isPositiveAmount(value: string): boolean {
+  return value !== "0.00";
+}
+
+// Full status presentation for one Budget with a resolved BudgetStatusItem,
+// branched by lifecycle state (VF-014B6, Section 5). Every number/label
+// here comes directly from the backend - nothing is recomputed. Kept as
+// its own component so BudgetsScreen's list body stays readable.
+function BudgetStatusDetails({
+  status,
+  currency,
+}: {
+  status: BudgetStatusItem;
+  currency: string;
+}) {
+  const isActive = status.period_state === "active";
+  const isEnded = status.period_state === "ended";
+  const isNotStarted = status.period_state === "not_started";
+
+  return (
+    <View style={styles.statusSection}>
+      <View style={styles.badgeRow}>
+        <Text style={styles.stateBadgeText}>
+          {formatPeriodStateLabel(status.period_state)}
+        </Text>
+
+        {status.is_partial_period ? (
+          <Text style={styles.partialBadgeText}>Partial period</Text>
+        ) : null}
+      </View>
+
+      <Text style={styles.secondaryText}>
+        Current period: {status.effective_start} – {status.effective_end}
+      </Text>
+
+      <Text style={styles.amount}>
+        {formatAmount(status.limit_amount, currency)}
+      </Text>
+
+      {isNotStarted ? (
+        <>
+          <Text style={styles.secondaryText}>
+            Planned allowance: {formatAmount(status.daily_spending_allowance, currency)}{" "}
+            per day once this budget starts
+          </Text>
+
+          <Text style={styles.noticeText}>
+            Projection available after spending begins.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={styles.secondaryText}>
+            Spent: {formatAmount(status.spent, currency)}
+          </Text>
+
+          <Text
+            style={
+              status.is_exceeded ? styles.exceededText : styles.secondaryText
+            }
+          >
+            {status.is_exceeded
+              ? `Exceeded by ${formatAmount(status.exceeded_amount, currency)}`
+              : `Remaining ${formatAmount(status.remaining, currency)}`}
+          </Text>
+
+          <Text style={styles.secondaryText}>
+            Utilization: {formatPercent(status.utilization_percent)}
+          </Text>
+
+          <Text style={styles.secondaryText}>
+            Risk: {formatRiskLabel(status.risk_status)}
+          </Text>
+
+          {isActive ? (
+            <>
+              <Text style={styles.secondaryText}>
+                {status.days_remaining}{" "}
+                {status.days_remaining === 1 ? "day" : "days"} remaining
+              </Text>
+
+              <Text style={styles.secondaryText}>
+                Available per remaining day:{" "}
+                {formatAmount(status.daily_spending_allowance, currency)}
+              </Text>
+            </>
+          ) : null}
+
+          {status.projected_spending !== null ? (
+            <>
+              <Text style={styles.secondaryText}>
+                {isEnded ? "Final spend" : "Projected spending"}:{" "}
+                {formatAmount(status.projected_spending, currency)}
+              </Text>
+
+              {status.projected_deficit !== null &&
+              isPositiveAmount(status.projected_deficit) ? (
+                <Text style={styles.exceededText}>
+                  {isEnded
+                    ? "Ended over budget by"
+                    : "Projected to exceed by"}{" "}
+                  {formatAmount(status.projected_deficit, currency)}
+                </Text>
+              ) : status.projected_surplus !== null &&
+                isPositiveAmount(status.projected_surplus) ? (
+                <Text style={styles.secondaryText}>
+                  {isEnded ? "Ended under budget by" : "Projected surplus"}{" "}
+                  {formatAmount(status.projected_surplus, currency)}
+                </Text>
+              ) : null}
+            </>
+          ) : null}
+        </>
+      )}
+    </View>
+  );
 }
 
 export function BudgetsScreen() {
@@ -150,33 +275,23 @@ export function BudgetsScreen() {
                   <Text style={styles.secondaryText}>{categoryLabel}</Text>
 
                   <Text style={styles.secondaryText}>
-                    {formatPeriod(budget.period)} ·{" "}
-                    {formatDateRange(budget.start_date, budget.end_date)}
+                    {formatPeriodLabel(budget.period)} · {budget.currency}
                   </Text>
 
-                  <Text style={styles.amount}>
-                    {budget.limit_amount} {budget.currency}
+                  <Text style={styles.secondaryText}>
+                    Runs: {formatDateRange(budget.start_date, budget.end_date)}
                   </Text>
 
                   {status ? (
-                    <>
-                      <Text style={styles.secondaryText}>
-                        Spent: {status.spent} {budget.currency}
-                      </Text>
-
-                      <Text
-                        style={
-                          status.is_exceeded
-                            ? styles.exceededText
-                            : styles.secondaryText
-                        }
-                      >
-                        {status.is_exceeded
-                          ? `Exceeded by ${status.exceeded_amount} ${budget.currency}`
-                          : `Remaining ${status.remaining} ${budget.currency}`}
-                      </Text>
-                    </>
-                  ) : null}
+                    <BudgetStatusDetails
+                      status={status}
+                      currency={budget.currency}
+                    />
+                  ) : (
+                    <Text style={styles.amount}>
+                      {formatAmount(budget.limit_amount, budget.currency)}
+                    </Text>
+                  )}
 
                   <Link
                     href={{

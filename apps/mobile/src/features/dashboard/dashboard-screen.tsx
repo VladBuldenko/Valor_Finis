@@ -17,20 +17,22 @@ import {
   getGoalProgress,
   getMonthlySummary,
 } from "../analytics/analytics.service";
-import type { GoalProgressItem } from "../analytics/analytics.types";
+import type {
+  BudgetStatusItem,
+  GoalProgressItem,
+} from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
 import { signOut } from "../auth/auth.service";
+import {
+  formatAmount,
+  formatPeriodStateLabel,
+  formatRiskLabel,
+  formatUnresolvedNotice,
+} from "../budgets/budget-status-presentation";
 import { getBudgets } from "../budgets/budget.service";
 import type { Budget } from "../budgets/budget.types";
 import { getGoals } from "../goals/goal.service";
 import { styles } from "./dashboard.styles";
-
-// monthly-summary and category-summary do not return a currency field.
-// The product is currently EUR-first; this local constant makes that
-// assumption explicit instead of repeating a bare "€" at each call site.
-// Budget Status must NOT use this fallback -- its currency comes from the
-// joined Budget entity (see formatBudgetAmount below).
-const DASHBOARD_ANALYTICS_CURRENCY_SYMBOL = "€";
 
 // "1 expenses" reads wrong -- singularize only for exactly one.
 function formatExpenseCount(count: number): string {
@@ -46,7 +48,16 @@ function formatBudgetAmount(
   amount: string,
   currency: string | undefined,
 ): string {
-  return currency ? `${amount} ${currency}` : amount;
+  return currency ? formatAmount(amount, currency) : amount;
+}
+
+// Bolds risk text for the two states that need attention, without relying
+// on color alone (VF-014B6, Section 7) -- a text label is always shown
+// regardless of style.
+function riskTextStyle(riskStatus: BudgetStatusItem["risk_status"]) {
+  return riskStatus === "at_risk" || riskStatus === "exceeded"
+    ? styles.exceededText
+    : styles.secondaryText;
 }
 
 export function DashboardScreen() {
@@ -177,18 +188,28 @@ export function DashboardScreen() {
             <Text style={styles.errorText}>
               Unable to load monthly summary.
             </Text>
-          ) : (
+          ) : monthlySummary ? (
             <>
               <Text style={styles.amount}>
-                {DASHBOARD_ANALYTICS_CURRENCY_SYMBOL}
-                {monthlySummary?.total_spent ?? "0.00"}
+                {formatAmount(
+                  monthlySummary.total_spent,
+                  monthlySummary.base_currency,
+                )}
               </Text>
 
               <Text style={styles.secondaryText}>
-                {formatExpenseCount(monthlySummary?.expenses_count ?? 0)}
+                {formatExpenseCount(monthlySummary.expenses_count)}
               </Text>
+
+              {monthlySummary.unresolved_expenses_count > 0 ? (
+                <Text style={styles.noticeText}>
+                  {formatUnresolvedNotice(
+                    monthlySummary.unresolved_expenses_count,
+                  )}
+                </Text>
+              ) : null}
             </>
-          )}
+          ) : null}
         </View>
 
         <View style={styles.card}>
@@ -219,11 +240,19 @@ export function DashboardScreen() {
                     <Text style={styles.secondaryText}>
                       {formatExpenseCount(category.expenses_count)}
                     </Text>
+
+                    {category.unresolved_expenses_count > 0 ? (
+                      <Text style={styles.noticeText}>
+                        {category.unresolved_expenses_count} unresolved
+                      </Text>
+                    ) : null}
                   </View>
 
                   <Text style={styles.categoryAmount}>
-                    {DASHBOARD_ANALYTICS_CURRENCY_SYMBOL}
-                    {category.total_spent}
+                    {formatAmount(
+                      category.total_spent,
+                      category.base_currency,
+                    )}
                   </Text>
                 </View>
               ))}
@@ -252,6 +281,8 @@ export function DashboardScreen() {
             <View style={styles.categoryList}>
               {budgetStatus.map((budget) => {
                 const currency = budgetsById.get(budget.budget_id)?.currency;
+                const isNotStarted = budget.period_state === "not_started";
+                const isActive = budget.period_state === "active";
 
                 return (
                   <View key={budget.budget_id} style={styles.categoryRow}>
@@ -264,22 +295,69 @@ export function DashboardScreen() {
                         {budget.category_name}
                       </Text>
 
-                      <Text style={styles.secondaryText}>
-                        Spent: {formatBudgetAmount(budget.spent, currency)} /{" "}
-                        {formatBudgetAmount(budget.limit_amount, currency)}
-                      </Text>
+                      {!isActive ? (
+                        <Text style={styles.secondaryText}>
+                          {formatPeriodStateLabel(budget.period_state)}
+                        </Text>
+                      ) : null}
 
-                      <Text style={styles.secondaryText}>
-                        {budget.is_exceeded
-                          ? `Exceeded by ${formatBudgetAmount(
-                              budget.exceeded_amount,
-                              currency,
-                            )}`
-                          : `Remaining ${formatBudgetAmount(
-                              budget.remaining,
-                              currency,
-                            )}`}
-                      </Text>
+                      {isNotStarted ? (
+                        <Text style={styles.secondaryText}>
+                          Limit {formatBudgetAmount(
+                            budget.limit_amount,
+                            currency,
+                          )}
+                        </Text>
+                      ) : (
+                        <>
+                          <Text style={styles.secondaryText}>
+                            Spent: {formatBudgetAmount(budget.spent, currency)}{" "}
+                            / {formatBudgetAmount(budget.limit_amount, currency)}
+                          </Text>
+
+                          <Text
+                            style={
+                              budget.is_exceeded
+                                ? styles.exceededText
+                                : styles.secondaryText
+                            }
+                          >
+                            {budget.is_exceeded
+                              ? `Exceeded by ${formatBudgetAmount(
+                                  budget.exceeded_amount,
+                                  currency,
+                                )}`
+                              : `Remaining ${formatBudgetAmount(
+                                  budget.remaining,
+                                  currency,
+                                )}`}
+                          </Text>
+
+                          <Text style={riskTextStyle(budget.risk_status)}>
+                            Risk: {formatRiskLabel(budget.risk_status)}
+                          </Text>
+
+                          {isActive ? (
+                            <Text style={styles.secondaryText}>
+                              Daily allowance:{" "}
+                              {formatBudgetAmount(
+                                budget.daily_spending_allowance,
+                                currency,
+                              )}
+                            </Text>
+                          ) : null}
+
+                          {budget.projected_spending !== null ? (
+                            <Text style={styles.secondaryText}>
+                              Projected:{" "}
+                              {formatBudgetAmount(
+                                budget.projected_spending,
+                                currency,
+                              )}
+                            </Text>
+                          ) : null}
+                        </>
+                      )}
                     </View>
                   </View>
                 );
