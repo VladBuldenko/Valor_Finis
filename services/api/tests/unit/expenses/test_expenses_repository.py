@@ -11,6 +11,20 @@ from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
 
 
+# Default identity FX snapshot kwargs shared by every create_expense() call
+# in this file. This file tests pure persistence, not FX correctness (that
+# is covered by tests/unit/fx and tests/unit/expenses/test_expenses_service.py),
+# so every fixture here uses a plain EUR identity snapshot.
+def _identity_snapshot_kwargs(amount: Decimal, expense_date: date) -> dict:
+    return {
+        "base_amount": amount,
+        "base_currency": "EUR",
+        "fx_rate": Decimal("1"),
+        "fx_rate_date": expense_date,
+        "fx_source": "identity",
+    }
+
+
 # Tests that the repository creates a new expense in the database.
 # This test exists to verify that expense data and authenticated user id are converted into ExpenseModel and persisted through SQLAlchemy.
 # Parameters:
@@ -38,6 +52,7 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
             db_session=db_session,
             expense_data=expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(expense_data.amount, expense_data.expense_date),
         )
 
         # Assert
@@ -53,6 +68,57 @@ def test_create_expense_creates_new_expense(clean_database: None) -> None:
         assert created_expense.id is not None
         assert created_expense.created_at is not None
         assert created_expense.updated_at is not None
+        assert created_expense.base_amount == Decimal("24.99")
+        assert created_expense.base_currency == "EUR"
+        assert created_expense.fx_rate == Decimal("1.00000000")
+        assert created_expense.fx_rate_date == expense_data.expense_date
+        assert created_expense.fx_source == "identity"
+    finally:
+        db_session.close()
+
+
+# Tests that the repository persists all five FX snapshot fields together,
+# using a non-identity (foreign-currency-shaped) snapshot.
+# This test exists to verify the repository stores exactly what it is
+# given, independent of whether the snapshot happens to be identity.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if all five snapshot fields round-trip exactly.
+def test_create_expense_persists_foreign_currency_snapshot(clean_database: None) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="NYC taxi",
+        amount=Decimal("40.00"),
+        currency="USD",
+        expense_date=date(2026, 5, 7),
+        description=None,
+        source="manual",
+    )
+
+    try:
+        # Act
+        created_expense = expenses_repository.create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+            base_amount=Decimal("34.69"),
+            base_currency="EUR",
+            fx_rate=Decimal("0.86730000"),
+            fx_rate_date=date(2026, 5, 6),
+            fx_source="ecb",
+        )
+
+        # Assert
+        assert created_expense.base_amount == Decimal("34.69")
+        assert created_expense.base_currency == "EUR"
+        assert created_expense.fx_rate == Decimal("0.86730000")
+        assert created_expense.fx_rate_date == date(2026, 5, 6)
+        assert created_expense.fx_source == "ecb"
     finally:
         db_session.close()
 
@@ -94,11 +160,17 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
             db_session=db_session,
             expense_data=user_expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(
+                user_expense_data.amount, user_expense_data.expense_date,
+            ),
         )
         expenses_repository.create_expense(
             db_session=db_session,
             expense_data=other_user_expense_data,
             user_id=other_user_id,
+            **_identity_snapshot_kwargs(
+                other_user_expense_data.amount, other_user_expense_data.expense_date,
+            ),
         )
 
         # Act
@@ -121,9 +193,11 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
         db_session.close()
 
 
-# Tests that the repository updates an existing expense owned by the user.
-# This test exists to verify that only the provided fields are changed and
-# persisted through SQLAlchemy.
+# Tests that the repository updates an existing expense owned by the user,
+# including its FX snapshot fields.
+# This test exists to verify that only the provided original fields are
+# changed and persisted, while the caller-supplied snapshot values are
+# always written (the service layer decides what those should be).
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -148,6 +222,7 @@ def test_update_expense_updates_expense_fields(clean_database: None) -> None:
             db_session=db_session,
             expense_data=expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(expense_data.amount, expense_data.expense_date),
         )
 
         update_data = ExpenseUpdate(
@@ -161,6 +236,11 @@ def test_update_expense_updates_expense_fields(clean_database: None) -> None:
             expense_id=created_expense.id,
             expense_data=update_data,
             user_id=user_id,
+            base_amount=Decimal("31.20"),
+            base_currency="EUR",
+            fx_rate=Decimal("1"),
+            fx_rate_date=expense_data.expense_date,
+            fx_source="identity",
         )
 
         # Assert
@@ -170,6 +250,7 @@ def test_update_expense_updates_expense_fields(clean_database: None) -> None:
         assert updated_expense.currency == expense_data.currency
         assert updated_expense.expense_date == expense_data.expense_date
         assert updated_expense.description == expense_data.description
+        assert updated_expense.base_amount == Decimal("31.20")
     finally:
         db_session.close()
 
@@ -203,6 +284,7 @@ def test_update_expense_raises_not_found_for_other_user_expense(
             db_session=db_session,
             expense_data=expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(expense_data.amount, expense_data.expense_date),
         )
 
         # Act / Assert
@@ -212,6 +294,11 @@ def test_update_expense_raises_not_found_for_other_user_expense(
                 expense_id=created_expense.id,
                 expense_data=ExpenseUpdate(title="Hijacked"),
                 user_id=other_user_id,
+                base_amount=Decimal("24.99"),
+                base_currency="EUR",
+                fx_rate=Decimal("1"),
+                fx_rate_date=expense_data.expense_date,
+                fx_source="identity",
             )
     finally:
         db_session.close()
@@ -243,6 +330,7 @@ def test_delete_expense_deletes_expense(clean_database: None) -> None:
             db_session=db_session,
             expense_data=expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(expense_data.amount, expense_data.expense_date),
         )
 
         # Act
@@ -292,6 +380,7 @@ def test_delete_expense_raises_not_found_for_other_user_expense(
             db_session=db_session,
             expense_data=expense_data,
             user_id=user_id,
+            **_identity_snapshot_kwargs(expense_data.amount, expense_data.expense_date),
         )
 
         # Act / Assert

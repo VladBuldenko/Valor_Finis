@@ -12,6 +12,7 @@ from app.modules.receipts import (
     receipt_storage_service,
 )
 from app.modules.receipts.receipt_errors import ReceiptOcrProcessingError
+from app.modules.fx import fx_ecb_provider
 
 from tests.helpers import (
     auth_headers,
@@ -1288,6 +1289,67 @@ def test_confirm_receipt_endpoint_uses_user_corrections(
     assert created_expense["expense_date"] == "2026-07-31"
     assert created_expense["description"] == "Weekly groceries"
     assert created_expense["source"] == "receipt"
+
+
+# Tests (K) that confirming a receipt with a foreign (non-base) currency
+# produces an expense with a full ECB-resolved FX snapshot, through the
+# same expenses_service.create_expense path every other Expense creation
+# uses.
+# This test exists to verify VF-014B5C's requirement that receipt
+# confirmation automatically inherits FX normalization without any
+# duplicated conversion logic in receipt code.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if the created expense carries a complete,
+#   ECB-sourced FX snapshot.
+def test_confirm_receipt_endpoint_foreign_currency_gets_fx_snapshot(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid.uuid4())
+
+    response_payload = {
+        "dataSets": [{"series": {"0:0:0:0:0": {"observations": {"0": [1.1539, 0, 0, None, None]}}}}],
+        "structure": {"dimensions": {"observation": [{"id": "TIME_PERIOD", "values": [{"id": "2026-07-31"}]}]}},
+    }
+    response_mock = MagicMock()
+    response_mock.status_code = 200
+    response_mock.json.return_value = response_payload
+    monkeypatch.setattr(fx_ecb_provider.httpx, "get", MagicMock(return_value=response_mock))
+
+    receipt = create_receipt(client=client, user_id=user_id)
+
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "NYC DELI",
+            "total_amount_detected": "20.00",
+            "currency_detected": "USD",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+    assert confirm_response.status_code == 200, confirm_response.text
+
+    created_expense = confirm_response.json()["expense"]
+    assert created_expense["currency"] == "USD"
+    assert created_expense["base_currency"] == "EUR"
+    assert created_expense["fx_source"] == "ecb"
+    assert created_expense["base_amount"] is not None
+    assert created_expense["fx_rate"] is not None
+
 
 # Verifies that complete manual confirmation data can replace missing OCR data.
 # This test exists to allow confirmation when OCR parsing is incomplete

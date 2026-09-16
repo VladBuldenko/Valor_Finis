@@ -310,7 +310,8 @@ currency
 
 no
 
-3 characters, default EUR
+3 characters, default EUR. Normalized to uppercase; must be exactly 3
+alphabetic characters.
 
 expense_date
 
@@ -331,6 +332,15 @@ no
 max 30 characters, default manual
 
 If category_id is provided, the category must belong to the authenticated user.
+
+VF-014B5C: the server resolves a base-currency FX snapshot for every
+create/update from amount/currency/expense_date - see "Expense Response"
+below. base_amount, base_currency, fx_rate, fx_rate_date, and fx_source
+are never accepted on create or update; the request schema uses
+extra="forbid", so submitting any of them is rejected with 422. A
+foreign-currency expense (currency different from the user's base
+currency) dated in the future is rejected with 422 - no rate exists for
+a future date.
 
 Update Expense
 
@@ -359,9 +369,51 @@ Expense Response
   "expense_date": "2026-08-09",
   "description": "Weekly shopping",
   "source": "manual",
+  "base_amount": "35.50",
+  "base_currency": "EUR",
+  "fx_rate": "1.00000000",
+  "fx_rate_date": "2026-08-09",
+  "fx_source": "identity",
   "created_at": "<datetime>",
   "updated_at": "<datetime>"
 }
+
+FX snapshot fields (VF-014B5C, all read-only, optional, added by the
+server - never accepted as input):
+
+Field
+
+Notes
+
+base_amount
+
+amount converted to the user's base currency (VF-014B5B), using the
+historical rate for expense_date, quantized to 2 decimal places.
+
+base_currency
+
+the base currency base_amount is denominated in.
+
+fx_rate
+
+units of base_currency per 1 unit of currency:
+base_amount = amount * fx_rate.
+
+fx_rate_date
+
+the actual published rate date used. May be earlier than expense_date
+(weekends/holidays, bounded lookback); never later than it.
+
+fx_source
+
+"identity" (currency already equals the base currency), "ecb", or
+"nbu".
+
+All five fields are null together only for a legacy expense created
+before VF-014B5C whose snapshot has not yet been resolved (resolution
+happens automatically the next time the expense receives a monetary
+update). Every expense created after VF-014B5C always has them
+populated.
 
 7. Budgets
 
