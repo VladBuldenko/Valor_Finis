@@ -1,3 +1,5 @@
+from datetime import date
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -8,13 +10,19 @@ from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
 
 
-# Creates a new expense database record.
+# Creates a new expense database record, together with its FX snapshot.
 # This function exists to isolate PostgreSQL write logic
-# and support service-controlled transactions.
+# and support service-controlled transactions. The FX snapshot fields are
+# separate parameters (not part of expense_data) because they are always
+# backend-resolved - expenses_service.create_expense resolves them via
+# app.modules.fx before this function is ever called, so the original and
+# base-currency truth are persisted together in one INSERT.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - expense_data: validated expense input data from the service layer.
 # - user_id: authenticated user identifier that owns the expense.
+# - base_amount/base_currency/fx_rate/fx_rate_date/fx_source: the resolved
+#   FX snapshot for this expense (VF-014B5C).
 # - commit: whether the repository should commit the transaction immediately.
 # Returns:
 # - ExpenseModel instance saved or flushed in the current transaction.
@@ -22,6 +30,11 @@ def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
     user_id: UUID,
+    base_amount: Decimal,
+    base_currency: str,
+    fx_rate: Decimal,
+    fx_rate_date: date,
+    fx_source: str,
     commit: bool = True,
 ) -> ExpenseModel:
     expense_model = ExpenseModel(
@@ -33,6 +46,11 @@ def create_expense(
         expense_date=expense_data.expense_date,
         description=expense_data.description,
         source=expense_data.source,
+        base_amount=base_amount,
+        base_currency=base_currency,
+        fx_rate=fx_rate,
+        fx_rate_date=fx_rate_date,
+        fx_source=fx_source,
     )
 
     db_session.add(expense_model)
@@ -96,15 +114,28 @@ def get_expense_by_id(
     return expense_model
 
 
-# Updates an existing expense owned by the authenticated user.
-# This function exists to isolate PostgreSQL update logic from business logic.
+# Updates an existing expense owned by the authenticated user, together
+# with its resolved FX snapshot.
+# This function exists to isolate PostgreSQL update logic from business
+# logic. The FX snapshot fields are separate, always-required parameters
+# (not part of expense_data) because expenses_service.update_expense has
+# already decided their final values before calling this function -
+# whether that means reusing the existing snapshot unchanged (a metadata-
+# only or amount-only update) or a freshly resolved one (currency/date
+# changed) - so this function never itself decides whether to call the
+# FX resolver.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - expense_id: expense identifier.
 # - expense_data: validated partial expense update data.
 # - user_id: authenticated user identifier that owns the expense.
+# - base_amount/base_currency/fx_rate/fx_rate_date/fx_source: the final
+#   FX snapshot values to persist (VF-014B5C) - may be None/unchanged
+#   copies of the existing values when no monetary field changed.
+# - commit: whether the repository should commit the transaction immediately.
 # Returns:
-# - Updated ExpenseModel instance.
+# - Updated ExpenseModel instance, flushed or committed in the current
+#   transaction.
 # Raises:
 # - ExpenseNotFoundError: when expense does not exist or does not belong to the user.
 def update_expense(
@@ -112,6 +143,12 @@ def update_expense(
     expense_id: UUID,
     expense_data: ExpenseUpdate,
     user_id: UUID,
+    base_amount: Optional[Decimal],
+    base_currency: Optional[str],
+    fx_rate: Optional[Decimal],
+    fx_rate_date: Optional[date],
+    fx_source: Optional[str],
+    commit: bool = True,
 ) -> ExpenseModel:
     expense_model = get_expense_by_id(
         db_session=db_session,
@@ -124,7 +161,17 @@ def update_expense(
     for field_name, field_value in update_data.items():
         setattr(expense_model, field_name, field_value)
 
-    db_session.commit()
+    expense_model.base_amount = base_amount
+    expense_model.base_currency = base_currency
+    expense_model.fx_rate = fx_rate
+    expense_model.fx_rate_date = fx_rate_date
+    expense_model.fx_source = fx_source
+
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()
+
     db_session.refresh(expense_model)
 
     return expense_model

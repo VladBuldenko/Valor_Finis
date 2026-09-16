@@ -3,7 +3,29 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+# Normalizes and validates a currency code: uppercase, exactly 3
+# alphabetic characters.
+# This function exists so Expense enforces a real (if minimal) currency
+# code shape rather than the plain length check the schema previously
+# relied on - a garbage value like "123" or "X-Y" no longer passes.
+# Provider support (which currencies FX resolution can actually convert)
+# is a separate, later concern - see app/modules/fx - not checked here.
+# Parameters:
+# - value: raw currency code from the client.
+# Returns:
+# - Uppercase, validated 3-letter currency code.
+# Raises:
+# - ValueError: when the code is not exactly 3 alphabetic characters.
+def normalize_and_validate_currency_code(value: str) -> str:
+    normalized = value.strip().upper()
+
+    if len(normalized) != 3 or not normalized.isalpha():
+        raise ValueError("currency must be exactly 3 alphabetic characters.")
+
+    return normalized
 
 
 class ExpenseBase(BaseModel):
@@ -24,6 +46,11 @@ class ExpenseBase(BaseModel):
     expense_date: Date
     description: Optional[str] = None
     source: str = Field(default="manual", max_length=30)
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return normalize_and_validate_currency_code(value)
 
 
 class ExpenseCreate(ExpenseBase):
@@ -97,6 +124,14 @@ class ExpenseUpdate(BaseModel):
         examples=["manual"],
     )
 
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+
+        return normalize_and_validate_currency_code(value)
+
     @model_validator(mode="after")
     def validate_update_payload(self) -> "ExpenseUpdate":
         """
@@ -132,15 +167,59 @@ class ExpenseResponse(ExpenseBase):
     Schema for returning expense data.
 
     What:
-        Defines API response shape.
+        Defines API response shape. amount/currency keep their original
+        meaning: the transaction as it actually happened, never revalued.
+        base_amount/base_currency/fx_rate/fx_rate_date/fx_source (VF-014B5C)
+        are backend-derived read-only fields exposing that same
+        transaction converted to the user's base currency, using the
+        historical rate in effect on expense_date. All five are Optional
+        only to truthfully represent a legacy foreign expense created
+        before VF-014B5C, whose snapshot has not been resolved yet - for
+        every expense created after VF-014B5C, all five are always
+        populated together.
 
     Why:
-        Keeps database model separated from public API contract.
+        Keeps database model separated from public API contract. These
+        fields are never accepted on ExpenseCreate/ExpenseUpdate - the
+        client can only ever submit original transaction truth.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     user_id: UUID
+
+    base_amount: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "amount converted to the user's base currency, using the "
+            "historical rate in effect on expense_date. Null only for an "
+            "unresolved legacy foreign expense."
+        ),
+        examples=["84.73"],
+    )
+    base_currency: Optional[str] = Field(
+        default=None,
+        description="The base currency base_amount is denominated in.",
+        examples=["EUR"],
+    )
+    fx_rate: Optional[Decimal] = Field(
+        default=None,
+        description="Units of base_currency per 1 unit of currency.",
+        examples=["0.84730000"],
+    )
+    fx_rate_date: Optional[Date] = Field(
+        default=None,
+        description=(
+            "The actual published rate date used - may differ from "
+            "expense_date (weekends/holidays), never later than it."
+        ),
+        examples=["2026-09-15"],
+    )
+    fx_source: Optional[str] = Field(
+        default=None,
+        description='"identity", "ecb", or "nbu".',
+        examples=["ecb"],
+    )
     created_at: datetime
     updated_at: datetime
