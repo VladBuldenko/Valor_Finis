@@ -195,6 +195,91 @@ class BudgetStatusItem(BaseModel):
         examples=[False],
     )
 
+    days_in_period: int = Field(
+        ...,
+        description=(
+            "Length of the effective budget window, inclusive. A partial "
+            "first/final period uses the partial length, not the full "
+            "calendar month/week/year."
+        ),
+        examples=[30],
+    )
+
+    days_elapsed: int = Field(
+        ...,
+        description=(
+            "Effective days counted so far. 0 for not_started; equals "
+            "days_in_period for ended."
+        ),
+        examples=[16],
+    )
+
+    days_remaining: int = Field(
+        ...,
+        description=(
+            "Effective spending days left. For an active budget this "
+            "includes today (days_in_period - days_elapsed + 1) - today is "
+            "both an elapsed day and still a day the user may spend on."
+        ),
+        examples=[15],
+    )
+
+    average_daily_spending: Decimal = Field(
+        ...,
+        description="spent divided by the days that produced it.",
+        examples=["15.63"],
+    )
+
+    daily_spending_allowance: Decimal = Field(
+        ...,
+        description=(
+            "Remaining budget divided across remaining spending days. "
+            "0.00 once a budget is exceeded or has ended."
+        ),
+        examples=["10.00"],
+    )
+
+    projected_spending: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "Simple current-period linear pace projection "
+            "(spent / days_elapsed * days_in_period). Never capped at "
+            "limit_amount. Null for not_started (no observed pace yet). "
+            "This is a current-period pace estimate, not a historical "
+            "forecast - see VF-015 for pattern-aware forecasting."
+        ),
+        examples=["580.00"],
+    )
+
+    projected_surplus: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "max(limit_amount - projected_spending, 0). Null exactly when "
+            "projected_spending is null."
+        ),
+        examples=["20.00"],
+    )
+
+    projected_deficit: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "max(projected_spending - limit_amount, 0). Null exactly when "
+            "projected_spending is null."
+        ),
+        examples=["0.00"],
+    )
+
+    risk_status: Literal["healthy", "watch", "at_risk", "exceeded"] = Field(
+        ...,
+        description=(
+            "Deterministic pace-based status: exceeded (spent > limit) "
+            "always wins; otherwise healthy for not_started/ended, and for "
+            "active budgets, projected utilization <=90% is healthy, "
+            ">90-100% is watch, >100% is at_risk."
+        ),
+        examples=["healthy"],
+    )
+
 
 class GoalProgressItem(BaseModel):
     """

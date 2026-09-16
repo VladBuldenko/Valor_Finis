@@ -870,6 +870,207 @@ def test_get_budget_status_currency_mismatch_never_summed(
     assert status.spent == Decimal("20.00")
 
 
+# ---------------------------------------------------------------------------
+# get_budget_status - VF-014B4 smart metrics orchestration
+#
+# Formula correctness itself is covered exhaustively in
+# tests/unit/budgets/test_budget_metrics.py against the pure function
+# directly. These tests verify the wiring: that get_budget_status feeds
+# budget_metrics.calculate_budget_metrics the correctly B1/B2/B3-resolved
+# inputs (window days, resolved version limit, filtered spent), not that
+# the arithmetic itself is right.
+# ---------------------------------------------------------------------------
+
+
+# Tests that B1's resolved window day counts (days_in_period/days_elapsed)
+# feed directly into the response's B4 day fields for an active budget.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the response's day fields match the window
+#   B1 resolved for this as_of.
+def test_get_budget_status_metrics_use_b1_resolved_window_days(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 1, 1))
+    version = make_version(limit_amount=Decimal("600.00"))
+    expenses = [make_expense(Decimal("320.00"), date(2026, 9, 16))]
+    wire_budget_status_deps(monkeypatch, budget, expenses, version)
+
+    # Act - September has 30 days, as_of is the 16th
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 16),
+    )[0]
+
+    # Assert
+    assert status.days_in_period == 30
+    assert status.days_elapsed == 16
+    assert status.days_remaining == 15  # 30 - 16 + 1, today counted in both
+
+
+# Tests that the resolved BudgetVersion's limit_amount, not the live
+# budget's own value, drives the B4 metrics (allowance/projection/risk).
+# This test exists because Section 2 of VF-014B2/B3 already forbids
+# treating the live budget as historical truth - B4's metrics must inherit
+# that same discipline rather than reading the budget directly.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if allowance/projection reflect the version's
+#   limit even though the budget SimpleNamespace has no limit_amount at all.
+def test_get_budget_status_metrics_use_resolved_version_limit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 1, 1))
+    version = make_version(limit_amount=Decimal("300.00"))
+    expenses = [make_expense(Decimal("100.00"), date(2026, 9, 10))]
+    wire_budget_status_deps(monkeypatch, budget, expenses, version)
+
+    # Act - as_of the 10th, 10 elapsed days
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 10),
+    )[0]
+
+    # Assert
+    assert status.limit_amount == Decimal("300.00")
+    # projected = (100/10)*30 = 300.00 -> exactly the version's limit
+    assert status.projected_spending == Decimal("300.00")
+    assert status.risk_status == "watch"
+
+
+# Tests that the same currency/category/period-filtered spent value B3
+# already computes is exactly what feeds average_daily_spending and the
+# projection - not an unfiltered total.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the excluded expenses (wrong category, future-
+#   dated, wrong currency) do not influence average_daily_spending.
+def test_get_budget_status_metrics_use_filtered_spent(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_category_id = uuid4()
+    other_category_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 1, 1), currency="EUR")
+    version = make_version(limit_amount=Decimal("100.00"), category_id=food_category_id)
+    expenses = [
+        make_expense(Decimal("20.00"), date(2026, 9, 10), category_id=food_category_id),  # counts
+        make_expense(Decimal("999.00"), date(2026, 9, 10), category_id=other_category_id),  # wrong category
+        make_expense(Decimal("999.00"), date(2026, 9, 25), category_id=food_category_id),  # future
+        make_expense(Decimal("999.00"), date(2026, 9, 10), category_id=food_category_id, currency="USD"),  # wrong currency
+    ]
+    wire_budget_status_deps(monkeypatch, budget, expenses, version)
+
+    # Act
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 10),
+    )[0]
+
+    # Assert
+    assert status.spent == Decimal("20.00")
+    assert status.average_daily_spending == Decimal("2.00")  # 20.00 / 10 elapsed days
+
+
+# Tests that a partial-period budget's effective day count (not the full
+# calendar month) feeds the B4 metrics.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if days_in_period/projection use the 15-day
+#   partial window, matching the task's own worked example.
+def test_get_budget_status_metrics_partial_period_uses_effective_days(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange - activated Sept 16, effective window Sept 16-30 = 15 days
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 9, 16))
+    version = make_version(limit_amount=Decimal("300.00"))
+    expenses = [make_expense(Decimal("50.00"), date(2026, 9, 18))]
+    wire_budget_status_deps(monkeypatch, budget, expenses, version)
+
+    # Act
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 20),
+    )[0]
+
+    # Assert
+    assert status.days_in_period == 15
+    assert status.days_elapsed == 5
+    assert status.days_remaining == 11
+    assert status.projected_spending == Decimal("150.00")  # (50/5)*15
+
+
+# Tests that a not_started budget's B4 fields flow correctly through the
+# full service call, not only the pure metrics function in isolation.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the response matches the not_started rules.
+def test_get_budget_status_metrics_not_started_via_service(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 12, 1))
+    version = make_version(limit_amount=Decimal("300.00"))
+    wire_budget_status_deps(monkeypatch, budget, [], version)
+
+    # Act
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 16),
+    )[0]
+
+    # Assert
+    assert status.period_state == "not_started"
+    assert status.days_elapsed == 0
+    assert status.projected_spending is None
+    assert status.projected_surplus is None
+    assert status.projected_deficit is None
+    assert status.risk_status == "healthy"
+
+
+# Tests that an ended budget's B4 fields flow correctly through the full
+# service call.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the response matches the ended rules and
+#   uses the final period's spend, not lifetime spend.
+def test_get_budget_status_metrics_ended_via_service(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    budget = make_budget(period="monthly", start_date=date(2026, 1, 1), end_date=date(2026, 3, 10))
+    version = make_version(limit_amount=Decimal("500.00"))
+    expenses = [make_expense(Decimal("40.00"), date(2026, 3, 10))]
+    wire_budget_status_deps(monkeypatch, budget, expenses, version)
+
+    # Act
+    status = analytics_service.get_budget_status(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 16),
+    )[0]
+
+    # Assert
+    assert status.period_state == "ended"
+    assert status.days_remaining == 0
+    assert status.daily_spending_allowance == Decimal("0.00")
+    assert status.projected_spending == Decimal("40.00")
+    assert status.risk_status == "healthy"
+
+
 # Tests that goal progress calculates remaining amount and progress percentage.
 # This test exists to verify financial goal analytics business logic without API or database.
 # Parameters:
