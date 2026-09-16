@@ -1,10 +1,12 @@
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Optional
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.modules.fx import fx_ecb_provider
 from tests.helpers import (
     auth_headers,
     create_budget,
@@ -12,6 +14,28 @@ from tests.helpers import (
     create_expense,
     create_goal,
 )
+
+
+# Mocks the ECB provider HTTP boundary for tests that need a resolved
+# foreign-currency FX snapshot on expense creation.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the module-level httpx client.
+# - rate: ECB's published rate (units of currency per 1 EUR).
+# - actual_date: the observation date ECB reports back.
+# Returns:
+# - The MagicMock installed as fx_ecb_provider.httpx.get, so a test can
+#   assert_not_called()/reset_mock() on it later.
+def _mock_ecb(monkeypatch, rate: float, actual_date: str) -> MagicMock:
+    payload = {
+        "dataSets": [{"series": {"0:0:0:0:0": {"observations": {"0": [rate, 0, 0, None, None]}}}}],
+        "structure": {"dimensions": {"observation": [{"id": "TIME_PERIOD", "values": [{"id": actual_date}]}]}},
+    }
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = payload
+    get_mock = MagicMock(return_value=response)
+    monkeypatch.setattr(fx_ecb_provider.httpx, "get", get_mock)
+    return get_mock
 
 
 # Computes the inclusive [start, end] bounds of the calendar month
@@ -445,6 +469,341 @@ def test_category_summary_endpoint_rejects_partial_date_filter(
         assert response.json()["detail"] == (
             "Year and month must be provided together."
         )
+
+
+# ---------------------------------------------------------------------------
+# VF-014B5D base-currency spending (monthly-summary / category-summary)
+# ---------------------------------------------------------------------------
+
+
+# Tests (A) that monthly summary sums base_amount, not the original mixed-
+# currency amount, for a EUR expense plus a resolved USD-original expense -
+# and (I) that the underlying Expense response still carries both original
+# and base monetary truth unchanged.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if total_spent == 184.73, not 200.
+def test_monthly_summary_endpoint_sums_base_amount_across_currencies(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    _mock_ecb(monkeypatch, rate=1.1803, actual_date="2026-05-07")  # 100 USD -> 84.73 EUR
+
+    create_expense_with(client=client, user_id=user_id, expense_date="2026-05-07", currency="EUR", amount=100)
+    usd_expense = create_expense_with(
+        client=client, user_id=user_id, expense_date="2026-05-07", currency="USD", amount=100,
+    )
+
+    # (I) the underlying Expense response still exposes original + base truth.
+    assert usd_expense["amount"] == "100.00"
+    assert usd_expense["currency"] == "USD"
+    assert usd_expense["base_currency"] == "EUR"
+    assert usd_expense["base_amount"] is not None
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert response.status_code == 200
+    assert Decimal(body["total_spent"]) == Decimal("100.00") + Decimal(usd_expense["base_amount"])
+    assert body["total_spent"] != "200.00"
+    assert body["expenses_count"] == 2
+    assert body["base_currency"] == "EUR"
+    assert body["unresolved_expenses_count"] == 0
+
+
+# Tests (B) that category summary sums base_amount, not the original
+# mixed-currency amount, for expenses of different original currencies in
+# the same category.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if the category's total_spent uses base_amount.
+def test_category_summary_endpoint_sums_base_amount_across_currencies(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    category = create_category(client=client, user_id=user_id, name="Business Trips")
+    _mock_ecb(monkeypatch, rate=1.1803, actual_date="2026-05-07")
+
+    create_expense_with(
+        client=client, user_id=user_id, expense_date="2026-05-07", currency="EUR",
+        amount=100, category_id=category["id"],
+    )
+    usd_expense = create_expense_with(
+        client=client, user_id=user_id, expense_date="2026-05-07", currency="USD",
+        amount=100, category_id=category["id"],
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-summary",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()[0]
+    assert Decimal(body["total_spent"]) == Decimal("100.00") + Decimal(usd_expense["base_amount"])
+    assert body["total_spent"] != "200.00"
+    assert body["expenses_count"] == 2
+    assert body["unresolved_expenses_count"] == 0
+    assert body["base_currency"] == "EUR"
+
+
+# Tests (C) that a legacy unresolved Expense (simulating one created
+# before VF-014B5C) leaves the monetary total unchanged and is exposed
+# through unresolved_expenses_count, never counted as zero-valued.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if total_spent reflects only the resolved
+#   expense and unresolved_expenses_count reflects the legacy one.
+def test_monthly_summary_endpoint_unresolved_legacy_expense_exposed(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    from app.db.database_session import SessionLocal
+    from app.modules.expenses.expenses_models import ExpenseModel
+
+    user_id_uuid = uuid4()
+    user_id = str(user_id_uuid)
+
+    db_session = SessionLocal()
+    legacy_expense = ExpenseModel(
+        user_id=user_id_uuid,
+        category_id=None,
+        title="Legacy USD",
+        amount=Decimal("999.00"),
+        currency="USD",
+        expense_date=date(2026, 5, 7),
+        source="manual",
+    )
+    db_session.add(legacy_expense)
+    db_session.commit()
+    db_session.close()
+
+    create_expense_with(client=client, user_id=user_id, expense_date="2026-05-07", currency="EUR", amount=50)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["total_spent"] == "50.00"
+    assert body["expenses_count"] == 1
+    assert body["unresolved_expenses_count"] == 1
+
+
+# Tests (D) that a category whose only matching expense is a legacy
+# unresolved one is still returned, not silently omitted.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the unresolved-only category appears with
+#   total_spent=0 and unresolved_expenses_count > 0.
+def test_category_summary_endpoint_unresolved_only_category_still_appears(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    from app.db.database_session import SessionLocal
+    from app.modules.expenses.expenses_models import ExpenseModel
+
+    user_id_uuid = uuid4()
+    user_id = str(user_id_uuid)
+    category = create_category(client=client, user_id=user_id, name="Legacy category")
+
+    db_session = SessionLocal()
+    legacy_expense = ExpenseModel(
+        user_id=user_id_uuid,
+        category_id=category["id"],
+        title="Legacy USD",
+        amount=Decimal("999.00"),
+        currency="USD",
+        expense_date=date(2026, 5, 7),
+        source="manual",
+    )
+    db_session.add(legacy_expense)
+    db_session.commit()
+    db_session.close()
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-summary",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["category_id"] == category["id"]
+    assert body[0]["total_spent"] == "0" or body[0]["total_spent"] == "0.00"
+    assert body[0]["expenses_count"] == 0
+    assert body[0]["unresolved_expenses_count"] == 1
+
+
+# Tests (E) that a zero-expense user's monthly summary still returns their
+# correct base_currency (lazily bootstrapped to EUR on first access).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if base_currency is EUR with zero expenses.
+def test_monthly_summary_endpoint_zero_expenses_returns_base_currency(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["total_spent"] in ["0", "0.00"]
+    assert body["expenses_count"] == 0
+    assert body["unresolved_expenses_count"] == 0
+    assert body["base_currency"] == "EUR"
+
+
+# Tests (F, G) that monthly and category summaries are scoped to the
+# authenticated user only - another user's expenses never leak in.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if user B's totals/categories are empty despite
+#   user A's spending.
+def test_summary_endpoints_ownership_isolation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_a = str(uuid4())
+    user_b = str(uuid4())
+    category = create_category(client=client, user_id=user_a, name="Food")
+
+    create_expense_with(
+        client=client, user_id=user_a, expense_date="2026-05-07", amount=500, category_id=category["id"],
+    )
+
+    # Act
+    monthly_response = client.get(
+        "/api/v1/analytics/monthly-summary?year=2026&month=5",
+        headers=auth_headers(user_b),
+    )
+    category_response = client.get(
+        "/api/v1/analytics/category-summary",
+        headers=auth_headers(user_b),
+    )
+
+    # Assert
+    assert monthly_response.json()["total_spent"] in ["0", "0.00"]
+    assert monthly_response.json()["expenses_count"] == 0
+    assert category_response.json() == []
+
+
+# Tests (J) that no FX provider is ever called while serving a monthly-
+# summary or category-summary request, even though a resolved foreign-
+# currency Expense (created earlier, with the provider mocked separately)
+# is included in the totals - analytics only ever reads the already-
+# persisted base_amount, it never resolves FX itself.
+# ECB and NBU providers both call the module-level `httpx.get` - and
+# fx_ecb_provider.httpx / fx_nbu_provider.httpx are the same imported
+# module object - so mocking it once and asserting it is not called again
+# proves neither provider's HTTP path was exercised by the analytics GETs.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if httpx.get is not called during either
+#   analytics GET request.
+def test_summary_endpoints_never_call_fx_providers(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    ecb_mock = _mock_ecb(monkeypatch, rate=1.1803, actual_date="2026-05-07")
+
+    create_expense_with(client=client, user_id=user_id, expense_date="2026-05-07", currency="USD", amount=100)
+    ecb_mock.reset_mock()
+
+    # Act
+    client.get("/api/v1/analytics/monthly-summary?year=2026&month=5", headers=auth_headers(user_id))
+    client.get("/api/v1/analytics/category-summary", headers=auth_headers(user_id))
+
+    # Assert
+    ecb_mock.assert_not_called()
+
+
+# Tests (K) that Budget Status is unaffected by VF-014B5D: it still
+# evaluates using the expense's original currency against the budget's
+# currency, not base_amount, even when a resolved foreign-currency
+# expense (with a real base_amount) exists in the same request context as
+# the analytics endpoints above.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if budget-status excludes the foreign-currency
+#   expense exactly as B3/B4 already required, unaffected by base_amount.
+def test_budget_status_endpoint_unaffected_by_base_currency_analytics(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="EUR budget", limit_amount=100, currency="EUR",
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=20, currency="EUR")
+    # A resolved foreign-currency expense with a real, non-null base_amount -
+    # Budget Status must still ignore it entirely (original-currency rule).
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=999, currency="USD")
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.json()[0]["spent"] == "20.00"
+
 
 # Tests that the budget status endpoint returns exceeded budget information,
 # calculated against the real current calendar month (no public as_of -

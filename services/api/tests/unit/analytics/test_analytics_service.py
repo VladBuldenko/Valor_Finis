@@ -22,127 +22,444 @@ def make_model(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**kwargs)
 
 
-# Tests that monthly summary calculates total spent and expense count.
-# This test exists to verify dashboard summary business logic without API or database.
+# Mocks financial_settings_service.get_base_currency so monthly/category
+# summary tests never touch a real database session.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the service call.
+# - base_currency: the currency value the fake should return.
+# Returns:
+# - None.
+def wire_base_currency(monkeypatch: MonkeyPatch, base_currency: str = "EUR") -> None:
+    monkeypatch.setattr(
+        analytics_service.financial_settings_service,
+        "get_base_currency",
+        lambda db_session, user_id: base_currency,
+    )
+
+
+# Creates a fake Expense with VF-014B5C FX snapshot fields, for monthly/
+# category summary tests.
+# This helper exists to keep those test bodies focused on the resolved/
+# unresolved/incompatible scenario being asserted.
+# Parameters:
+# - amount/currency: original transaction truth.
+# - expense_date: expense date, used for time filtering.
+# - category_id: optional category.
+# - base_amount/base_currency: resolved base-currency snapshot; both None
+#   together represents a legacy unresolved Expense.
+# Returns:
+# - SimpleNamespace imitating an ExpenseModel.
+def make_summary_expense(
+    amount: Decimal,
+    currency: str = "EUR",
+    expense_date: date = date(2026, 5, 7),
+    category_id=None,
+    base_amount: Optional[Decimal] = None,
+    base_currency: Optional[str] = None,
+) -> SimpleNamespace:
+    return make_model(
+        amount=amount,
+        currency=currency,
+        expense_date=expense_date,
+        category_id=category_id,
+        base_amount=base_amount,
+        base_currency=base_currency,
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_monthly_summary (VF-014B5D base-currency spending)
+# ---------------------------------------------------------------------------
+
+
+# Tests (A) zero Expenses and (I) that base_currency is still returned.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository calls.
 # Returns:
-# - None. The test passes if total spending and count are calculated correctly.
-def test_get_monthly_summary_calculates_total_spent_and_count(
+# - None. The test passes if all fields reflect a safe empty state.
+def test_get_monthly_summary_zero_expenses_returns_base_currency(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
     db_session = cast(Session, object())
     user_id = uuid4()
-
-    expenses = [
-        make_model(
-            amount=Decimal("24.99"),
-            expense_date=date(2026, 5, 7),
-        ),
-        make_model(
-            amount=Decimal("10.01"),
-            expense_date=date(2026, 5, 8),
-        ),
-    ]
-
-    def fake_get_expenses(
-        db_session: Session,
-        user_id: UUID,
-    ):
-        return expenses
-
+    wire_base_currency(monkeypatch, "EUR")
     monkeypatch.setattr(
-        analytics_service.expenses_repository,
-        "get_expenses",
-        fake_get_expenses,
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: [],
     )
 
     # Act
     summary = analytics_service.get_monthly_summary(
-        db_session=db_session,
-        user_id=user_id,
-        year=2026,
-        month=5,
+        db_session=db_session, user_id=user_id, year=2026, month=5,
     )
 
     # Assert
-    assert summary.total_spent == Decimal("35.00")
-    assert summary.expenses_count == 2
+    assert summary.total_spent == Decimal("0")
+    assert summary.expenses_count == 0
+    assert summary.unresolved_expenses_count == 0
+    assert summary.base_currency == "EUR"
 
-# Tests that category summary groups expenses by category and resolves category names.
-# This test exists to verify category analytics business logic without API or database.
+
+# Tests (B) a single resolved EUR Expense.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository calls.
 # Returns:
-# - None. The test passes if category totals and names are calculated correctly.
-def test_get_category_summary_groups_expenses_by_category(
+# - None. The test passes if total_spent/expenses_count reflect it.
+def test_get_monthly_summary_one_resolved_eur_expense(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("24.99"), base_amount=Decimal("24.99"), base_currency="EUR",
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+
+    # Act
+    summary = analytics_service.get_monthly_summary(
+        db_session=db_session, user_id=user_id, year=2026, month=5,
+    )
+
+    # Assert
+    assert summary.total_spent == Decimal("24.99")
+    assert summary.expenses_count == 1
+
+
+# Tests (C, D) that a resolved EUR Expense and a resolved USD-original
+# Expense are summed by base_amount, not original amount - the task's own
+# worked example (100 EUR + 100 USD-original/84.73 EUR-base -> 184.73, not
+# 200). This value is deliberately chosen so the test fails if the
+# implementation regresses to summing expense.amount.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes only if total_spent == 184.73.
+def test_get_monthly_summary_sums_base_amount_not_original_amount(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), currency="EUR",
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("100.00"), currency="USD",
+            base_amount=Decimal("84.73"), base_currency="EUR",
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+
+    # Act
+    summary = analytics_service.get_monthly_summary(
+        db_session=db_session, user_id=user_id, year=2026, month=5,
+    )
+
+    # Assert
+    assert summary.total_spent == Decimal("184.73")
+    assert summary.total_spent != Decimal("200.00")
+    assert summary.expenses_count == 2
+
+
+# Tests (E, F, G) that a legacy unresolved Expense (base_amount is None)
+# is excluded from total_spent, counted separately in
+# unresolved_expenses_count, and never counted in expenses_count.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the unresolved row does not affect the total
+#   or the resolved count, but is visible in unresolved_expenses_count.
+def test_get_monthly_summary_excludes_unresolved_legacy_expense(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), currency="USD",
+            base_amount=None, base_currency=None,  # legacy unresolved
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+
+    # Act
+    summary = analytics_service.get_monthly_summary(
+        db_session=db_session, user_id=user_id, year=2026, month=5,
+    )
+
+    # Assert
+    assert summary.total_spent == Decimal("50.00")
+    assert summary.expenses_count == 1
+    assert summary.unresolved_expenses_count == 1
+
+
+# Tests (H) that existing month-filtering behavior is unchanged: an
+# expense outside the selected year/month is excluded regardless of its
+# resolution state.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if only the May expense is counted.
+def test_get_monthly_summary_filters_by_selected_month(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 5, 7),
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 6, 7),
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+
+    # Act
+    summary = analytics_service.get_monthly_summary(
+        db_session=db_session, user_id=user_id, year=2026, month=5,
+    )
+
+    # Assert
+    assert summary.total_spent == Decimal("20.00")
+    assert summary.expenses_count == 1
+
+
+# Tests (J) that a resolved Expense whose persisted base_currency does not
+# match the user's current base_currency is treated safely: excluded from
+# total_spent and counted as unresolved/incompatible, never summed as if
+# it were in the right currency.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the incompatible row is excluded and counted.
+def test_get_monthly_summary_incompatible_base_currency_excluded_and_counted(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            # Resolved, but persisted against a different base_currency
+            # than the user's current one - not reachable today (base
+            # currency mutation is not exposed), but must fail safely.
+            amount=Decimal("999.00"), base_amount=Decimal("900.00"), base_currency="USD",
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+
+    # Act
+    summary = analytics_service.get_monthly_summary(
+        db_session=db_session, user_id=user_id, year=2026, month=5,
+    )
+
+    # Assert
+    assert summary.total_spent == Decimal("50.00")
+    assert summary.expenses_count == 1
+    assert summary.unresolved_expenses_count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_category_summary (VF-014B5D base-currency spending)
+# ---------------------------------------------------------------------------
+
+
+# Tests (A, B, C, F, I) that resolved mixed-original-currency Expenses in
+# the same category (and Uncategorized) are summed by base_amount, with
+# correct resolved counts and base_currency on every item.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if category totals/counts/base_currency match.
+def test_get_category_summary_sums_base_amount_by_category(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
     db_session = cast(Session, object())
     user_id = uuid4()
     food_category_id = uuid4()
-    unknown_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
 
-    categories = [
-        make_model(id=food_category_id, name="Food"),
-    ]
-
+    categories = [make_model(id=food_category_id, name="Food")]
     expenses = [
-        make_model(category_id=food_category_id, amount=Decimal("20.00")),
-        make_model(category_id=food_category_id, amount=Decimal("30.00")),
-        make_model(category_id=None, amount=Decimal("15.00")),
-        make_model(category_id=unknown_category_id, amount=Decimal("5.00")),
+        make_summary_expense(
+            amount=Decimal("20.00"), currency="EUR", category_id=food_category_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("30.00"), currency="USD", category_id=food_category_id,
+            base_amount=Decimal("25.50"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("15.00"), category_id=None,
+            base_amount=Decimal("15.00"), base_currency="EUR",
+        ),
     ]
-
-    def fake_get_expenses(db_session: object, user_id=None):
-        return expenses
-
-    def fake_get_categories(db_session: object, user_id=None):
-        return categories
 
     monkeypatch.setattr(
-        analytics_service.expenses_repository,
-        "get_expenses",
-        fake_get_expenses,
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
     )
     monkeypatch.setattr(
-        analytics_service.categories_repository,
-        "get_categories",
-        fake_get_categories,
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: categories,
     )
 
     # Act
     category_summary = analytics_service.get_category_summary(
-        db_session=db_session,
-        user_id=user_id,
+        db_session=db_session, user_id=user_id,
     )
-    summary_by_category_id = {
-        item.category_id: item for item in category_summary
-    }
+    by_id = {item.category_id: item for item in category_summary}
 
     # Assert
-    assert len(category_summary) == 3
+    assert len(category_summary) == 2
 
-    assert summary_by_category_id[food_category_id].category_name == "Food"
-    assert summary_by_category_id[food_category_id].total_spent == Decimal("50.00")
-    assert summary_by_category_id[food_category_id].expenses_count == 2
+    assert by_id[food_category_id].category_name == "Food"
+    assert by_id[food_category_id].total_spent == Decimal("45.50")
+    assert by_id[food_category_id].total_spent != Decimal("50.00")
+    assert by_id[food_category_id].expenses_count == 2
+    assert by_id[food_category_id].unresolved_expenses_count == 0
+    assert by_id[food_category_id].base_currency == "EUR"
 
-    assert summary_by_category_id[None].category_name == "Uncategorized"
-    assert summary_by_category_id[None].total_spent == Decimal("15.00")
-    assert summary_by_category_id[None].expenses_count == 1
+    # (F) Uncategorized resolved
+    assert by_id[None].category_name == "Uncategorized"
+    assert by_id[None].total_spent == Decimal("15.00")
+    assert by_id[None].expenses_count == 1
+    assert by_id[None].base_currency == "EUR"
 
-    assert summary_by_category_id[unknown_category_id].category_name == "Uncategorized"
-    assert summary_by_category_id[unknown_category_id].total_spent == Decimal("5.00")
-    assert summary_by_category_id[unknown_category_id].expenses_count == 1
 
-# Tests that category summary includes only expenses from the selected month.
-# This test exists to verify monthly filtering for dashboard category analytics.
+# Tests (D, E) that a category containing matching Expenses which are ALL
+# unresolved is still returned (never silently omitted), with
+# total_spent=0, expenses_count=0, and unresolved_expenses_count > 0.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository calls.
 # Returns:
-# - None. The test passes if expenses outside the selected month are excluded.
+# - None. The test passes if the unresolved-only category is present.
+def test_get_category_summary_unresolved_only_category_still_returned(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    legacy_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+
+    categories = [make_model(id=legacy_category_id, name="Legacy")]
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("40.00"), currency="USD", category_id=legacy_category_id,
+            base_amount=None, base_currency=None,
+        ),
+        make_summary_expense(
+            amount=Decimal("10.00"), currency="USD", category_id=legacy_category_id,
+            base_amount=None, base_currency=None,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+    monkeypatch.setattr(
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: categories,
+    )
+
+    # Act
+    category_summary = analytics_service.get_category_summary(
+        db_session=db_session, user_id=user_id,
+    )
+
+    # Assert
+    assert len(category_summary) == 1
+    item = category_summary[0]
+    assert item.category_id == legacy_category_id
+    assert item.category_name == "Legacy"
+    assert item.total_spent == Decimal("0")
+    assert item.expenses_count == 0
+    assert item.unresolved_expenses_count == 2
+
+
+# Tests (G) that an unresolved Uncategorized Expense increments the
+# Uncategorized item's unresolved_expenses_count without affecting its
+# total_spent.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if Uncategorized reflects one resolved and one
+#   unresolved expense correctly.
+def test_get_category_summary_uncategorized_unresolved(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("15.00"), category_id=None,
+            base_amount=Decimal("15.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), currency="USD", category_id=None,
+            base_amount=None, base_currency=None,
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+    monkeypatch.setattr(
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: [],
+    )
+
+    # Act
+    category_summary = analytics_service.get_category_summary(
+        db_session=db_session, user_id=user_id,
+    )
+
+    # Assert
+    assert len(category_summary) == 1
+    item = category_summary[0]
+    assert item.category_id is None
+    assert item.category_name == "Uncategorized"
+    assert item.total_spent == Decimal("15.00")
+    assert item.expenses_count == 1
+    assert item.unresolved_expenses_count == 1
+
+
+# Tests (H) that optional year/month filtering behavior is unchanged.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if only the May expenses are counted.
 def test_get_category_summary_filters_by_selected_month(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -150,58 +467,34 @@ def test_get_category_summary_filters_by_selected_month(
     db_session = cast(Session, object())
     user_id = uuid4()
     food_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
 
-    categories = [
-        make_model(id=food_category_id, name="Food"),
-    ]
-
+    categories = [make_model(id=food_category_id, name="Food")]
     expenses = [
-        make_model(
-            category_id=food_category_id,
-            amount=Decimal("20.00"),
-            expense_date=date(2026, 5, 7),
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 5, 7), category_id=food_category_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
         ),
-        make_model(
-            category_id=food_category_id,
-            amount=Decimal("30.00"),
-            expense_date=date(2026, 5, 20),
+        make_summary_expense(
+            amount=Decimal("30.00"), expense_date=date(2026, 5, 20), category_id=food_category_id,
+            base_amount=Decimal("30.00"), base_currency="EUR",
         ),
-        make_model(
-            category_id=food_category_id,
-            amount=Decimal("70.00"),
-            expense_date=date(2026, 6, 7),
+        make_summary_expense(
+            amount=Decimal("70.00"), expense_date=date(2026, 6, 7), category_id=food_category_id,
+            base_amount=Decimal("70.00"), base_currency="EUR",
         ),
     ]
-
-    def fake_get_expenses(
-        db_session: object,
-        user_id=None,
-    ):
-        return expenses
-
-    def fake_get_categories(
-        db_session: object,
-        user_id=None,
-    ):
-        return categories
 
     monkeypatch.setattr(
-        analytics_service.expenses_repository,
-        "get_expenses",
-        fake_get_expenses,
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
     )
     monkeypatch.setattr(
-        analytics_service.categories_repository,
-        "get_categories",
-        fake_get_categories,
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: categories,
     )
 
     # Act
     category_summary = analytics_service.get_category_summary(
-        db_session=db_session,
-        user_id=user_id,
-        year=2026,
-        month=5,
+        db_session=db_session, user_id=user_id, year=2026, month=5,
     )
 
     # Assert
@@ -210,6 +503,102 @@ def test_get_category_summary_filters_by_selected_month(
     assert category_summary[0].category_name == "Food"
     assert category_summary[0].total_spent == Decimal("50.00")
     assert category_summary[0].expenses_count == 2
+
+
+# Tests (I) that multiple categories are each computed and returned
+# independently.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if both categories have correct independent totals.
+def test_get_category_summary_multiple_categories_independent(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_category_id = uuid4()
+    transport_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+
+    categories = [
+        make_model(id=food_category_id, name="Food"),
+        make_model(id=transport_category_id, name="Transport"),
+    ]
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), category_id=food_category_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("40.00"), category_id=transport_category_id,
+            base_amount=Decimal("40.00"), base_currency="EUR",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+    monkeypatch.setattr(
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: categories,
+    )
+
+    # Act
+    category_summary = analytics_service.get_category_summary(
+        db_session=db_session, user_id=user_id,
+    )
+    by_id = {item.category_id: item for item in category_summary}
+
+    # Assert
+    assert by_id[food_category_id].total_spent == Decimal("20.00")
+    assert by_id[transport_category_id].total_spent == Decimal("40.00")
+
+
+# Tests (K) that a resolved Expense whose persisted base_currency does not
+# match the user's current base_currency is excluded from the category
+# total and counted as unresolved, never silently summed.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if the incompatible row is excluded and counted.
+def test_get_category_summary_incompatible_base_currency_excluded_and_counted(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+
+    categories = [make_model(id=food_category_id, name="Food")]
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), category_id=food_category_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), category_id=food_category_id,
+            base_amount=Decimal("900.00"), base_currency="USD",
+        ),
+    ]
+    monkeypatch.setattr(
+        analytics_service.expenses_repository, "get_expenses", lambda **kwargs: expenses,
+    )
+    monkeypatch.setattr(
+        analytics_service.categories_repository, "get_categories", lambda **kwargs: categories,
+    )
+
+    # Act
+    category_summary = analytics_service.get_category_summary(
+        db_session=db_session, user_id=user_id,
+    )
+
+    # Assert
+    assert len(category_summary) == 1
+    item = category_summary[0]
+    assert item.total_spent == Decimal("20.00")
+    assert item.expenses_count == 1
+    assert item.unresolved_expenses_count == 1
 
 # ---------------------------------------------------------------------------
 # get_budget_status (VF-014B3 calendar-period semantics)
@@ -1136,6 +1525,7 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
     # Arrange
     db_session = cast(Session, object())
     user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
 
     def fake_get_empty_items(db_session: object, user_id=None):
         return []
@@ -1185,6 +1575,8 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
     # Assert
     assert monthly_summary.total_spent == Decimal("0")
     assert monthly_summary.expenses_count == 0
+    assert monthly_summary.unresolved_expenses_count == 0
+    assert monthly_summary.base_currency == "EUR"
     assert category_summary == []
     assert budget_status == []
     assert goal_progress == []
