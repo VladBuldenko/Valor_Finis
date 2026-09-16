@@ -1,6 +1,8 @@
+from datetime import date
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from typing import Optional
 
 from app.db.database_session import get_db_session
 from app.modules.analytics import analytics_service
@@ -108,7 +110,12 @@ def get_category_summary(
 
 # Returns budget status through the API.
 # This function exists to expose remaining budget and exceeded limits
-# to mobile and web clients.
+# to mobile and web clients, calculated against the current calendar
+# period each budget is in, always relative to the server's current date.
+# The service layer supports an explicit as_of internally (deterministic,
+# unit-testable), but that is not exposed publicly here on purpose:
+# arbitrary-date/historical-period browsing is out of scope for VF-014B3
+# and belongs to VF-015's own, deliberately designed API.
 # Parameters:
 # - current_user: authenticated user resolved from request authentication data.
 # - db_session: active SQLAlchemy database session injected by FastAPI.
@@ -126,6 +133,7 @@ def get_budget_status(
     return analytics_service.get_budget_status(
         db_session=db_session,
         user_id=current_user.id,
+        as_of=date.today(),
     )
 
 

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -12,6 +13,14 @@ from app.modules.analytics.analytics_schemas import (
     MonthlySummaryResponse,
 )
 from app.modules.budgets import budget_repository as budgets_repository
+from app.modules.budgets import budget_version_repository
+from app.modules.budgets.budget_period import (
+    PERIOD_ENDED,
+    PERIOD_NOT_STARTED,
+    CurrentWindow,
+    resolve_current_window,
+)
+from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.categories import repository as categories_repository
 from app.modules.expenses import expenses_repository
 from app.modules.goals import goal_repository as goals_repository
@@ -154,16 +163,56 @@ def get_category_summary(
     ]
 
 
-# Calculates budget status for each configured budget of the authenticated user.
-# This function exists to show spent, remaining, and exceeded amounts.
+# Resolves the calendar window a budget's status should be reported against.
+# This function exists because resolve_current_window (budget_period.py)
+# anchors both period_state and the calendar window to the same as_of,
+# which only makes sense while a budget is active. For a not-yet-started or
+# already-ended budget, "the calendar period containing as_of" has no
+# relationship to the budget's actual activation window - so this function
+# re-anchors the window (only) to the date that actually represents the
+# period that matters: the first period for not_started, the final period
+# for ended. period_state itself must still come from the real as_of.
+# Parameters:
+# - budget: the budget to resolve a window for.
+# - lifecycle: resolve_current_window(budget, as_of) - authoritative for
+#   period_state.
+# - as_of: the real reference date.
+# Returns:
+# - CurrentWindow with period/effective bounds appropriate to report status
+#   against; period_state is not meaningful on this return value, use
+#   lifecycle.period_state instead.
+def _resolve_status_window(
+    budget: BudgetModel,
+    lifecycle: CurrentWindow,
+    as_of: date,
+) -> CurrentWindow:
+    if lifecycle.period_state == PERIOD_NOT_STARTED:
+        return resolve_current_window(budget, budget.start_date)
+
+    if lifecycle.period_state == PERIOD_ENDED:
+        return resolve_current_window(budget, budget.end_date)
+
+    return lifecycle
+
+
+# Calculates current-calendar-period budget status for each configured
+# budget of the authenticated user.
+# This function exists to show spent, remaining, and exceeded amounts for
+# the period a budget is actually in right now, resolving historical
+# limit/category configuration from BudgetVersion rather than the budget's
+# current values.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter budgets and expenses.
+# - as_of: reference date the status is calculated as of. The caller (the
+#   router) is responsible for defaulting this to today - this function
+#   stays a pure, deterministic function of its arguments.
 # Returns:
 # - List of BudgetStatusItem objects with spending status by budget.
 def get_budget_status(
     db_session: Session,
     user_id: UUID,
+    as_of: date,
 ) -> list[BudgetStatusItem]:
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
@@ -181,40 +230,77 @@ def get_budget_status(
     budget_status: list[BudgetStatusItem] = []
 
     for budget in budgets:
-        spent = Decimal("0")
+        lifecycle = resolve_current_window(budget, as_of)
+        window = _resolve_status_window(budget, lifecycle, as_of)
 
-        for expense in expenses:
-            if (
-                budget.category_id is not None
-                and expense.category_id != budget.category_id
-            ):
-                continue
+        # Authoritative for limit_amount/category_id: never trust the
+        # budget's current values for a historical/current period once a
+        # version exists for it.
+        version = budget_version_repository.resolve_version_for_period(
+            db_session=db_session,
+            budget_id=budget.id,
+            period_start=window.period_start,
+            period_end=window.period_end,
+        )
 
-            if expense.expense_date < budget.start_date:
-                continue
+        if lifecycle.period_state == PERIOD_NOT_STARTED:
+            spent = Decimal("0")
+        else:
+            expense_cutoff = min(window.effective_end, as_of)
+            spent = Decimal("0")
 
-            if budget.end_date is not None and expense.expense_date > budget.end_date:
-                continue
+            for expense in expenses:
+                # Currency correctness: only same-currency expenses can be
+                # summed against this budget's limit. No FX conversion
+                # exists yet (that is a later slice) and fake-converting
+                # would misrepresent the real amount, so a mismatched
+                # expense is excluded the same way an out-of-category or
+                # out-of-period expense already is.
+                if expense.currency != budget.currency:
+                    continue
 
-            spent += expense.amount
+                if (
+                    version.category_id is not None
+                    and expense.category_id != version.category_id
+                ):
+                    continue
 
-        remaining = max(budget.limit_amount - spent, Decimal("0"))
-        exceeded_amount = max(spent - budget.limit_amount, Decimal("0"))
+                if expense.expense_date < window.effective_start:
+                    continue
+
+                if expense.expense_date > expense_cutoff:
+                    continue
+
+                spent += expense.amount
+
+        remaining = max(version.limit_amount - spent, Decimal("0"))
+        exceeded_amount = max(spent - version.limit_amount, Decimal("0"))
+        utilization_percent = (
+            spent / version.limit_amount * Decimal("100")
+        ).quantize(Decimal("0.01"))
 
         budget_status.append(
             BudgetStatusItem(
                 budget_id=budget.id,
                 budget_name=budget.name,
-                category_id=budget.category_id,
+                category_id=version.category_id,
                 category_name=get_category_name(
-                    category_id=budget.category_id,
+                    category_id=version.category_id,
                     category_name_map=category_name_map,
                 ),
-                limit_amount=budget.limit_amount,
+                period=budget.period,
+                period_start=window.period_start,
+                period_end=window.period_end,
+                effective_start=window.effective_start,
+                effective_end=window.effective_end,
+                period_state=lifecycle.period_state,
+                is_partial_period=window.is_partial_period,
+                limit_amount=version.limit_amount,
                 spent=spent,
                 remaining=remaining,
                 exceeded_amount=exceeded_amount,
-                is_exceeded=spent > budget.limit_amount,
+                utilization_percent=utilization_percent,
+                is_exceeded=spent > version.limit_amount,
             )
         )
 

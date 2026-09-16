@@ -874,6 +874,16 @@ Budget Status
 
 GET /api/v1/analytics/budget-status
 
+Always calculated against the server's current date - there is no public
+as_of parameter. Historical/arbitrary-date period browsing is intentionally
+out of scope for VF-014B3 and belongs to VF-015's own, deliberately
+designed API.
+
+Status is calculated against the budget's current calendar period (VF-014B2/
+B3): limit_amount and category_id are resolved from the BudgetVersion
+applicable to that period, not necessarily the budget's live values, and
+spent only counts same-currency expenses within the effective window.
+
 Response item:
 
 {
@@ -881,10 +891,18 @@ Response item:
   "budget_name": "Monthly groceries",
   "category_id": "<uuid-or-null>",
   "category_name": "Food",
+  "period": "monthly",
+  "period_start": "2026-09-01",
+  "period_end": "2026-09-30",
+  "effective_start": "2026-09-01",
+  "effective_end": "2026-09-30",
+  "period_state": "active",
+  "is_partial_period": false,
   "limit_amount": "400.00",
   "spent": "250.00",
   "remaining": "150.00",
   "exceeded_amount": "0.00",
+  "utilization_percent": "62.50",
   "is_exceeded": false
 }
 
