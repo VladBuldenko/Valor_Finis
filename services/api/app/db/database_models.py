@@ -24,6 +24,7 @@ Best practices:
 def import_database_models() -> None:
     from app.modules.categories.category_models import CategoryModel
     from app.modules.budgets.budgets_models import BudgetModel
+    from app.modules.budgets.budget_version_models import BudgetVersionModel
     from app.modules.expenses.expenses_models import ExpenseModel
     from app.modules.goals.goal_models import GoalModel
     from app.modules.receipts.receipt_models import ReceiptModel
@@ -31,6 +32,7 @@ def import_database_models() -> None:
     _ = (
         CategoryModel,
         BudgetModel,
+        BudgetVersionModel,
         ExpenseModel,
         GoalModel,
         ReceiptModel,

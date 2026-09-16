@@ -5,12 +5,15 @@ from fastapi.responses import JSONResponse
 
 from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
+    BudgetImmutableFieldError,
     BudgetNotFoundError,
+    BudgetRetroactiveDeactivationError,
 )
 from app.modules.categories.errors import (
     CategoryAlreadyExistsError,
     CategoryDefaultDeletionNotAllowedError,
     CategoryDefaultModificationNotAllowedError,
+    CategoryInUseByBudgetError,
     CategoryNotFoundError,
 )
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
@@ -57,6 +60,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_409_CONFLICT,
         "Default category cannot be deleted.",
     ),
+    CategoryInUseByBudgetError: (
+        status.HTTP_409_CONFLICT,
+        "Category is referenced by a budget and cannot be deleted. Hide it instead.",
+    ),
     ExpenseNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Expense not found.",
@@ -71,6 +78,17 @@ DOMAIN_ERROR_RESPONSES: Dict[
     BudgetNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Budget not found.",
+    ),
+    BudgetImmutableFieldError: (
+        status.HTTP_409_CONFLICT,
+        (
+            "Budget currency cannot be changed. Period and start date "
+            "cannot be changed after the first period completes."
+        ),
+    ),
+    BudgetRetroactiveDeactivationError: (
+        status.HTTP_409_CONFLICT,
+        "Budget end date cannot be set to a date before today.",
     ),
     GoalNotFoundError: (
         status.HTTP_404_NOT_FOUND,

@@ -2,11 +2,13 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.budgets import budget_repository
 from app.modules.categories import repository
 from app.modules.categories.errors import (
     CategoryAlreadyExistsError,
     CategoryDefaultDeletionNotAllowedError,
     CategoryDefaultModificationNotAllowedError,
+    CategoryInUseByBudgetError,
 )
 from app.modules.categories.schemas import (
     CategoryCreate,
@@ -181,6 +183,17 @@ def delete_category(
 
     if existing_category.is_default:
         raise CategoryDefaultDeletionNotAllowedError()
+
+    if budget_repository.has_budget_referencing_category(
+        db_session=db_session,
+        category_id=category_id,
+        user_id=user_id,
+    ):
+        # A budget (active or ended) still scopes to this category. Hiding
+        # it (is_visible=False) removes it from pickers without breaking
+        # that reference; deleting it would otherwise silently turn the
+        # budget into an all-expenses budget.
+        raise CategoryInUseByBudgetError()
 
     repository.delete_category(
         db_session=db_session,

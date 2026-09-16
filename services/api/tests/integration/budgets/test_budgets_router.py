@@ -266,7 +266,9 @@ def test_update_budget_endpoint_updates_authenticated_user_budget(
 
     payload = {
         "limit_amount": 550,
-        "end_date": "2026-05-31",
+        # Must stay in the future: VF-014B2 rejects setting end_date to a
+        # date before today (BudgetRetroactiveDeactivationError).
+        "end_date": "2030-05-31",
     }
 
     # Act
@@ -289,7 +291,7 @@ def test_update_budget_endpoint_updates_authenticated_user_budget(
     assert response_data["currency"] == "EUR"
     assert response_data["period"] == "monthly"
     assert response_data["start_date"] == "2026-05-01"
-    assert response_data["end_date"] == "2026-05-31"
+    assert response_data["end_date"] == "2030-05-31"
 
 
 # Tests that the API rejects updating another user's budget.
