@@ -289,6 +289,57 @@ no
 
 Default manual
 
+base_amount
+
+NUMERIC(12,2)
+
+yes
+
+VF-014B5C. amount converted to the user's base currency, using the
+historical rate in effect on expense_date. Backend-derived only, never
+client-supplied. Nullable only for a legacy foreign expense created
+before VF-014B5C, whose snapshot has not been resolved yet - every
+expense created after VF-014B5C always has this populated.
+
+base_currency
+
+VARCHAR(3)
+
+yes
+
+VF-014B5C. The base currency base_amount is denominated in (currently
+always EUR - see VF-014B5B). Nullable together with base_amount.
+
+fx_rate
+
+NUMERIC(18,8)
+
+yes
+
+VF-014B5C. Units of base_currency per 1 unit of currency:
+base_amount = amount * fx_rate. Nullable together with base_amount.
+
+fx_rate_date
+
+DATE
+
+yes
+
+VF-014B5C. The actual published rate date used - may differ from
+expense_date (weekends/holidays, bounded lookback), never later than it.
+Nullable together with base_amount.
+
+fx_source
+
+VARCHAR(30)
+
+yes
+
+VF-014B5C. "identity" (currency == base_currency, no external call),
+"ecb" (European Central Bank reference rate), or "nbu" (National Bank of
+Ukraine reference rate, used only for UAH - ECB does not publish it).
+Nullable together with base_amount.
+
 created_at
 
 TIMESTAMPTZ
@@ -321,7 +372,7 @@ Instead:
 
 category_id = NULL
 
-Constraint
+Constraints
 
 ck_expenses_amount_positive
 
@@ -329,11 +380,46 @@ Rule:
 
 amount > 0
 
+ck_expenses_base_amount_positive (VF-014B5C)
+
+Rule:
+
+base_amount IS NULL OR base_amount > 0
+
+ck_expenses_fx_rate_positive (VF-014B5C)
+
+Rule:
+
+fx_rate IS NULL OR fx_rate > 0
+
+ck_expenses_fx_snapshot_all_or_none (VF-014B5C)
+
+Rule:
+
+The five FX snapshot columns (base_amount, base_currency, fx_rate,
+fx_rate_date, fx_source) are either all NULL or all NOT NULL. A partial
+snapshot (e.g. base_amount present but fx_rate_date missing) can never
+be stored.
+
 Indexes
 
 user_id
 category_id
 expense_date
+
+FX snapshot semantics (VF-014B5C):
+
+amount/currency keep their original meaning - the transaction exactly as
+it happened, never revalued using a later rate. base_amount/fx_rate are
+resolved once, at expense create/update time, from an official source
+(ECB or NBU) and persisted as a historical snapshot; analytics never
+calls a provider and never recomputes these using today's rate. A
+foreign-currency expense dated in the future is rejected outright (no
+rate exists yet for it) rather than estimated. Existing rows already in
+EUR before VF-014B5C were backfilled as identity snapshots
+(fx_rate = 1, fx_source = 'identity'); existing rows in another currency
+were left fully unresolved (all five columns NULL) rather than guessing
+a rate or assuming EUR.
 
 5. Budgets
 

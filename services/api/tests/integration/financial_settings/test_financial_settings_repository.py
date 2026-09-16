@@ -208,6 +208,108 @@ def test_get_or_create_financial_settings_concurrent_first_access_is_race_safe(
         verification_session.close()
 
 
+# VF-014B5C financial-integrity correction: tests that commit=False makes
+# the bootstrap insert visible only within the current transaction (via
+# flush, for the caller's own subsequent SELECT/use), and NOT durable
+# until the caller explicitly commits. This is the exact composability
+# guarantee expenses_service.create_expense/update_expense and receipt
+# confirmation depend on: they call this bootstrap with commit=False so
+# their own later provider failure can still roll back the bootstrap
+# insert together with everything else.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the row never lands in the database after
+#   the caller rolls back / closes without committing.
+def test_get_or_create_financial_settings_commit_false_does_not_persist_without_caller_commit(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        # Act
+        settings_model = financial_settings_repository.get_or_create_financial_settings(
+            db_session=db_session,
+            user_id=user_id,
+            commit=False,
+        )
+
+        # Assert - visible within the same still-open transaction (flush).
+        assert settings_model is not None
+        assert settings_model.base_currency == "EUR"
+
+        # A separate connection/session must not see the uncommitted row.
+        other_session = SessionLocal()
+        try:
+            assert (
+                other_session.query(UserFinancialSettingsModel)
+                .filter(UserFinancialSettingsModel.user_id == user_id)
+                .count()
+                == 0
+            )
+        finally:
+            other_session.close()
+    finally:
+        db_session.rollback()
+        db_session.close()
+
+    # After the caller rolls back and closes without ever committing, the
+    # bootstrap insert never became durable.
+    verification_session = SessionLocal()
+    try:
+        assert (
+            verification_session.query(UserFinancialSettingsModel)
+            .filter(UserFinancialSettingsModel.user_id == user_id)
+            .count()
+            == 0
+        )
+    finally:
+        verification_session.close()
+
+
+# Tests the other half of the same guarantee: when the caller commits its
+# own transaction after calling with commit=False, the bootstrap insert
+# becomes durable together with anything else the caller wrote in that
+# transaction.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the row is durably persisted after the
+#   caller's own explicit commit.
+def test_get_or_create_financial_settings_commit_false_persists_when_caller_commits(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        # Act
+        financial_settings_repository.get_or_create_financial_settings(
+            db_session=db_session,
+            user_id=user_id,
+            commit=False,
+        )
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # Assert
+    verification_session = SessionLocal()
+    try:
+        rows = (
+            verification_session.query(UserFinancialSettingsModel)
+            .filter(UserFinancialSettingsModel.user_id == user_id)
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].base_currency == "EUR"
+    finally:
+        verification_session.close()
+
+
 # Tests that the database primary key itself prevents a duplicate settings
 # row for the same user, independent of the ON CONFLICT DO NOTHING
 # bootstrap logic.

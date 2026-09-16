@@ -26,11 +26,22 @@ class ExpenseModel(Base):
         user_id: Owner of the expense.
         category_id: Optional category connected to the expense.
         title: Short expense name.
-        amount: Expense value stored as Decimal-safe numeric type.
-        currency: Currency code such as EUR or USD.
+        amount: Original transaction amount, in `currency`. Never revalued.
+        currency: Original transaction currency code, e.g. EUR or USD.
         expense_date: Date when the expense happened.
         description: Optional user note.
         source: Origin of the expense, for example manual or receipt.
+        base_amount: `amount` converted to the user's base currency, using
+            the historical rate in effect on expense_date (VF-014B5C).
+            Backend-derived only; never client-supplied. Nullable only to
+            truthfully represent a legacy foreign expense created before
+            VF-014B5C, whose snapshot has not been resolved yet.
+        base_currency: The base currency `base_amount` is denominated in.
+        fx_rate: units of base_currency per 1 unit of `currency`, at
+            fx_rate_date. base_amount = amount * fx_rate.
+        fx_rate_date: the actual published rate date used - may differ
+            from expense_date (weekends/holidays), never later than it.
+        fx_source: 'identity' | 'ecb' | 'nbu'.
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
     """
@@ -39,6 +50,21 @@ class ExpenseModel(Base):
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_expenses_amount_positive"),
+        CheckConstraint(
+            "base_amount IS NULL OR base_amount > 0",
+            name="ck_expenses_base_amount_positive",
+        ),
+        CheckConstraint(
+            "fx_rate IS NULL OR fx_rate > 0",
+            name="ck_expenses_fx_rate_positive",
+        ),
+        CheckConstraint(
+            "(base_amount IS NULL AND base_currency IS NULL AND fx_rate IS NULL "
+            "AND fx_rate_date IS NULL AND fx_source IS NULL) "
+            "OR (base_amount IS NOT NULL AND base_currency IS NOT NULL AND fx_rate IS NOT NULL "
+            "AND fx_rate_date IS NOT NULL AND fx_source IS NOT NULL)",
+            name="ck_expenses_fx_snapshot_all_or_none",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -93,6 +119,31 @@ class ExpenseModel(Base):
         nullable=False,
         default="manual",
         server_default="manual",
+    )
+
+    base_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    base_currency: Mapped[Optional[str]] = mapped_column(
+        String(3),
+        nullable=True,
+    )
+
+    fx_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(18, 8),
+        nullable=True,
+    )
+
+    fx_rate_date: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    fx_source: Mapped[Optional[str]] = mapped_column(
+        String(30),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
