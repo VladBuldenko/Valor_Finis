@@ -26,11 +26,13 @@ class BudgetModel(Base):
         user_id: Owner of the budget.
         category_id: Optional category connected to this budget.
         name: Human-readable budget name.
-        limit_amount: Maximum allowed spending amount.
-        currency: Currency code such as EUR or USD.
-        period: Budget period such as weekly, monthly, or yearly.
-        start_date: Date when the budget period starts.
-        end_date: Optional date when the budget period ends.
+        limit_amount: Recurring limit per period. Historical values are
+            preserved in budget_versions when this changes; this column
+            always holds the value in effect for the current period.
+        currency: Currency code such as EUR or USD. Immutable after creation.
+        period: Recurrence unit: weekly, monthly, or yearly.
+        start_date: Activation date (first date the budget applies).
+        end_date: Optional deactivation date (inclusive).
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
     """
@@ -39,6 +41,10 @@ class BudgetModel(Base):
 
     __table_args__ = (
         CheckConstraint("limit_amount > 0", name="ck_budgets_limit_amount_positive"),
+        CheckConstraint(
+            "period IN ('weekly','monthly','yearly')",
+            name="ck_budgets_period_valid",
+        ),
         UniqueConstraint(
             "user_id",
             "name",
@@ -62,7 +68,11 @@ class BudgetModel(Base):
 
     category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("categories.id", ondelete="SET NULL"),
+        ForeignKey(
+            "categories.id",
+            ondelete="RESTRICT",
+            name="fk_budgets_category_id",
+        ),
         nullable=True,
         index=True,
     )

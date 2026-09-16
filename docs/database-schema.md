@@ -449,9 +449,14 @@ categories.id
 
 Delete behavior:
 
-ON DELETE SET NULL
+ON DELETE RESTRICT
 
-A deleted category does not delete the budget.
+A category still referenced by a budget cannot be deleted (changed from
+SET NULL in VF-014B2 - SET NULL previously allowed a category-scoped
+budget to silently become an all-expenses budget when its category was
+deleted). The service layer also rejects this with a 409
+(CategoryInUseByBudgetError) before the database constraint would fire;
+hiding the category (is_visible = false) is the supported alternative.
 
 Constraints
 
@@ -460,6 +465,12 @@ Positive budget limit:
 ck_budgets_limit_amount_positive
 
 limit_amount > 0
+
+Valid period:
+
+ck_budgets_period_valid
+
+period IN ('weekly', 'monthly', 'yearly')
 
 Duplicate protection:
 
@@ -479,6 +490,121 @@ Indexes
 user_id
 category_id
 start_date
+
+5.1 Budget Versions
+
+Table:
+
+budget_versions
+
+Purpose:
+
+Append-only history of a budget's limit_amount and category_id over
+time (VF-014B2). budgets.limit_amount/category_id changed meaning in
+VF-014 from "the whole budget" to "the current period's recurring
+value" - they are mutable in place, so editing them mid-lifecycle would
+otherwise silently rewrite the meaning of already-completed periods.
+Period windows themselves are not persisted here; they stay dynamically
+resolved by budget_period.py (VF-014B1).
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+budget_id
+
+UUID
+
+no
+
+FK → budgets.id, ON DELETE CASCADE
+
+user_id
+
+UUID
+
+no
+
+Resource owner (denormalized, no FK, matching every other table)
+
+effective_from
+
+DATE
+
+no
+
+First period start this version applies to
+
+effective_until
+
+DATE
+
+yes
+
+NULL = open-ended (every VF-014 write is open-ended)
+
+limit_amount
+
+NUMERIC(12,2)
+
+no
+
+The limit in effect from effective_from
+
+category_id
+
+UUID
+
+yes
+
+FK → categories.id, ON DELETE RESTRICT. The scope in effect from
+effective_from
+
+change_reason
+
+VARCHAR(30)
+
+no
+
+One of: initial, user_edit, category_change
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Tie-break when two versions share effective_from
+
+Constraints
+
+ck_budget_versions_limit_amount_positive: limit_amount > 0
+ck_budget_versions_effective_range: effective_until IS NULL OR effective_until >= effective_from
+ck_budget_versions_change_reason_valid: change_reason IN ('initial', 'user_edit', 'category_change')
+
+Indexes
+
+budget_id
+user_id
+(budget_id, effective_from) - the lookup path for resolving which
+version applied to a given period
+
+Resolution rule: for a period [period_start, period_end], the version
+with the greatest effective_from <= period_start where
+effective_until IS NULL OR effective_until >= period_end applies,
+tie-broken by created_at DESC.
 
 6. Goals
 
@@ -798,6 +924,10 @@ categories
    │
    └──< budgets.category_id
 
+budgets
+   │
+   └──< budget_versions.budget_id
+
 expenses
    │
    └──< receipts.expense_id
@@ -807,13 +937,19 @@ Delete behavior:
 Category deleted
     ↓
 Expense.category_id = NULL
-Budget.category_id  = NULL
+Budget.category_id  = rejected if any budget references the category
+                       (ON DELETE RESTRICT, changed from SET NULL in
+                       VF-014B2)
+
+Budget deleted
+    ↓
+BudgetVersion rows for that budget = deleted (ON DELETE CASCADE)
 
 Expense deleted
     ↓
 Receipt.expense_id = NULL
 
-No dependent financial records are automatically deleted through these relationships.
+No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it.
 
 10. Database-Enforced Invariants
 
@@ -833,6 +969,14 @@ Category names are unique per user case-insensitively
 
 Budget user/name/period/start_date combinations are unique
 
+Budget.period is one of weekly/monthly/yearly
+
+BudgetVersion.limit_amount > 0
+BudgetVersion.effective_until >= effective_from when present
+BudgetVersion.change_reason is valid
+
+A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
+
 These constraints protect data even if an application-layer validation path is bypassed.
 
 11. Application-Enforced Invariants
@@ -844,6 +988,13 @@ Examples:
 Goal.current_amount <= Goal.target_amount
 
 Budget.end_date >= Budget.start_date
+
+Budget.end_date cannot be set to a date before today (VF-014B2)
+
+Budget.currency cannot be changed
+
+Budget.period and Budget.start_date cannot be changed once the budget's
+first period has completed (a short typo-fix window remains open before then)
 
 Receipt has file_url or storage_path
 
@@ -955,8 +1106,13 @@ PostgreSQL
 │
 ├── budgets
 │   ├── PK id
-│   ├── FK category_id → categories
+│   ├── FK category_id → categories (ON DELETE RESTRICT)
 │   └── UNIQUE user_id + name + period + start_date
+│
+├── budget_versions
+│   ├── PK id
+│   ├── FK budget_id → budgets (ON DELETE CASCADE)
+│   └── FK category_id → categories (ON DELETE RESTRICT)
 │
 ├── goals
 │   └── PK id

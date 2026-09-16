@@ -54,3 +54,20 @@ class CategoryDefaultDeletionNotAllowedError(Exception):
     """
 
     pass
+
+
+class CategoryInUseByBudgetError(Exception):
+    """
+    Raised when a category referenced by a budget is deleted.
+
+    What:
+        Represents an attempt to delete a category that at least one budget
+        (active or ended) still references.
+
+    Why:
+        A budget's category_id is used to decide which expenses count
+        against it. Nulling it on delete would silently turn a scoped
+        budget into one matching every expense.
+    """
+
+    pass

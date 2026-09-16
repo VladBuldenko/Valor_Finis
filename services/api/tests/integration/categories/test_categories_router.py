@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
-from tests.helpers import auth_headers, create_category
+from tests.helpers import auth_headers, create_budget, create_category
 from app.db.database_session import SessionLocal
 from app.modules.categories.category_models import CategoryModel
 from app.modules.categories.default_categories import DEFAULT_CATEGORIES
@@ -1090,3 +1090,91 @@ def test_update_category_endpoint_rejects_null_is_visible(
         headers=auth_headers(user_id),
     )
     assert get_response.json()["is_visible"] is True
+
+
+# Tests that a category still referenced by a budget cannot be deleted.
+# This test exists to close the live bug where deleting a category a
+# budget scopes to used to silently turn that budget into an all-expenses
+# budget (ON DELETE SET NULL on budgets.category_id, before VF-014B2).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None. The test passes if the API returns 409 and the budget's category
+#   scope is unchanged.
+def test_delete_category_endpoint_rejects_category_referenced_by_budget(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Hobbies",
+    )
+
+    budget = create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=category["id"],
+        name="Hobbies budget",
+        limit_amount=200,
+    )
+
+    response = client.delete(
+        f"/api/v1/categories/{category['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Category is referenced by a budget and cannot be deleted. Hide it instead.",
+    }
+
+    budget_response = client.get(
+        "/api/v1/budgets",
+        headers=auth_headers(user_id),
+    )
+    assert budget_response.status_code == 200
+    updated_budget = next(b for b in budget_response.json() if b["id"] == budget["id"])
+    assert updated_budget["category_id"] == category["id"]
+
+
+# Tests that hiding (is_visible=False) a category still referenced by a
+# budget succeeds, as the documented alternative to deletion.
+# This test exists to verify the is_visible precedent still works once a
+# budget references the category.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None. The test passes if the category updates to is_visible=False.
+def test_update_category_endpoint_hides_category_referenced_by_budget(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+
+    category = create_category(
+        client=client,
+        user_id=user_id,
+        name="Hobbies",
+    )
+
+    create_budget(
+        client=client,
+        user_id=user_id,
+        category_id=category["id"],
+        name="Hobbies budget",
+        limit_amount=200,
+    )
+
+    response = client.patch(
+        f"/api/v1/categories/{category['id']}",
+        json={"is_visible": False},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["is_visible"] is False
