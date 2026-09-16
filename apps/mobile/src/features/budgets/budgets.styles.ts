@@ -51,6 +51,41 @@ export const styles = StyleSheet.create({
     marginTop: 8,
     fontWeight: "600",
   },
+  // Groups a Budget's full status detail (VF-014B6) visually apart from
+  // its static definition (name/category/period/lifetime range) above.
+  statusSection: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+  },
+  badgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  // Lifecycle-state tag ("Not started" / "Active" / "Ended"). Text-only,
+  // matching Section 7's accessibility requirement that state meaning
+  // never rely solely on color.
+  stateBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  // Subtle secondary tag for is_partial_period -- deliberately not styled
+  // as alarming (unlike exceededText), just informational.
+  partialBadgeText: {
+    fontSize: 12,
+    fontWeight: "600",
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    opacity: 0.7,
+  },
   button: {
     alignItems: "center",
     borderWidth: 1,

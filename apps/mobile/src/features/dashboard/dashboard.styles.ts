@@ -40,6 +40,11 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     marginTop: 12,
   },
+  exceededText: {
+    fontSize: 16,
+    marginTop: 8,
+    fontWeight: "600",
+  },
   noticeText: {
     fontSize: 14,
     marginTop: 12,
