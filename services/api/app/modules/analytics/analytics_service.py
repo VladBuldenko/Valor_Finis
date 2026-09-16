@@ -12,8 +12,8 @@ from app.modules.analytics.analytics_schemas import (
     GoalProgressItem,
     MonthlySummaryResponse,
 )
+from app.modules.budgets import budget_metrics, budget_version_repository
 from app.modules.budgets import budget_repository as budgets_repository
-from app.modules.budgets import budget_version_repository
 from app.modules.budgets.budget_period import (
     PERIOD_ENDED,
     PERIOD_NOT_STARTED,
@@ -279,6 +279,18 @@ def get_budget_status(
             spent / version.limit_amount * Decimal("100")
         ).quantize(Decimal("0.01"))
 
+        # Pure current-period pace/risk metrics (VF-014B4). window.days_elapsed
+        # is only meaningful for an active budget - budget_metrics normalizes
+        # the not_started/ended cases itself per its documented rules rather
+        # than trusting the re-anchored helper window's raw value for those.
+        metrics = budget_metrics.calculate_budget_metrics(
+            limit_amount=version.limit_amount,
+            spent=spent,
+            period_state=lifecycle.period_state,
+            days_in_period=window.days_in_period,
+            days_elapsed=window.days_elapsed,
+        )
+
         budget_status.append(
             BudgetStatusItem(
                 budget_id=budget.id,
@@ -301,6 +313,15 @@ def get_budget_status(
                 exceeded_amount=exceeded_amount,
                 utilization_percent=utilization_percent,
                 is_exceeded=spent > version.limit_amount,
+                days_in_period=metrics.days_in_period,
+                days_elapsed=metrics.days_elapsed,
+                days_remaining=metrics.days_remaining,
+                average_daily_spending=metrics.average_daily_spending,
+                daily_spending_allowance=metrics.daily_spending_allowance,
+                projected_spending=metrics.projected_spending,
+                projected_surplus=metrics.projected_surplus,
+                projected_deficit=metrics.projected_deficit,
+                risk_status=metrics.risk_status,
             )
         )
 

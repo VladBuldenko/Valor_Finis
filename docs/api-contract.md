@@ -884,6 +884,26 @@ B3): limit_amount and category_id are resolved from the BudgetVersion
 applicable to that period, not necessarily the budget's live values, and
 spent only counts same-currency expenses within the effective window.
 
+VF-014B4 adds deterministic current-period pace metrics (days_in_period
+through risk_status below). These are a simple linear projection over the
+CURRENT period only - no previous periods, no moving averages, no
+spending-pattern history. A large recurring expense early in a period can
+make the projection overreact; improving that with historical data is
+deliberately deferred to VF-015 Analytics & Forecasting v2.
+
+- days_remaining includes today for an active budget
+  (days_in_period - days_elapsed + 1) - today is both an elapsed day and
+  still a day the user may spend on.
+- projected_spending = (spent / days_elapsed) * days_in_period for an
+  active budget, never capped at limit_amount; equals spent once a period
+  has ended; null while not yet started (no observed pace exists yet) -
+  projected_surplus/projected_deficit are null exactly when this is null.
+- risk_status: "exceeded" whenever spent > limit_amount, regardless of
+  lifecycle state; otherwise "healthy" for not_started/ended; for an
+  active budget, projected utilization <=90% is "healthy", >90-100% is
+  "watch", and >100% is "at_risk" (a fixed product rule, not a
+  statistical model - 90.00% exactly is healthy, 100.00% exactly is watch).
+
 Response item:
 
 {
@@ -903,7 +923,16 @@ Response item:
   "remaining": "150.00",
   "exceeded_amount": "0.00",
   "utilization_percent": "62.50",
-  "is_exceeded": false
+  "is_exceeded": false,
+  "days_in_period": 30,
+  "days_elapsed": 16,
+  "days_remaining": 15,
+  "average_daily_spending": "15.63",
+  "daily_spending_allowance": "10.00",
+  "projected_spending": "468.75",
+  "projected_surplus": "0.00",
+  "projected_deficit": "68.75",
+  "risk_status": "watch"
 }
 
 Goal Progress

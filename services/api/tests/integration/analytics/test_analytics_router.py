@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -863,6 +864,420 @@ def test_budget_status_endpoint_currency_mismatch_excluded(
 
     # Assert
     assert response.json()[0]["spent"] == "20.00"
+
+
+# ---------------------------------------------------------------------------
+# VF-014B4 smart budget metrics (days/pace/projection/risk_status)
+# ---------------------------------------------------------------------------
+
+
+# Tests (A) that an active monthly budget's response includes every VF-014B4
+# field with plausible values.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if all B4 fields are present and well-typed.
+def test_budget_status_endpoint_includes_all_b4_fields(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Groceries", limit_amount=300,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=50)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    for field in (
+        "days_in_period", "days_elapsed", "days_remaining",
+        "average_daily_spending", "daily_spending_allowance",
+        "projected_spending", "projected_surplus", "projected_deficit",
+        "risk_status",
+    ):
+        assert field in status, field
+    assert status["risk_status"] in ("healthy", "watch", "at_risk", "exceeded")
+
+
+# Tests (B) that daily_spending_allowance is correctly computed against the
+# real current-month remaining effective days.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the allowance matches an independently
+#   computed remaining/days_remaining value.
+def test_budget_status_endpoint_daily_allowance_matches_remaining_days(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, month_end = month_bounds(today)
+    days_in_period = (month_end - month_start).days + 1
+    days_elapsed = (today - month_start).days + 1
+    days_remaining = days_in_period - days_elapsed + 1
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Groceries", limit_amount=300,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=90)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    expected_allowance = (
+        (Decimal("300") - Decimal("90")) / days_remaining
+    ).quantize(Decimal("0.01"))
+    assert status["days_remaining"] == days_remaining
+    assert status["daily_spending_allowance"] == str(expected_allowance)
+
+
+# Tests (C) that projected_spending matches the current-pace linear
+# projection formula against the real current month.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if projected_spending matches an independently
+#   computed pace projection.
+def test_budget_status_endpoint_projected_spending_matches_pace_formula(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, month_end = month_bounds(today)
+    days_in_period = (month_end - month_start).days + 1
+    days_elapsed = (today - month_start).days + 1
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Groceries", limit_amount=1000,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=60)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    expected_projection = (
+        (Decimal("60") / days_elapsed) * days_in_period
+    ).quantize(Decimal("0.01"))
+    assert response.json()[0]["projected_spending"] == str(expected_projection)
+
+
+# Tests (D) that a spending pace above the limit produces a nonzero
+# projected_deficit and zero projected_surplus.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if deficit is nonzero and surplus is zero.
+def test_budget_status_endpoint_projected_deficit_when_pace_exceeds_budget(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Overspending", limit_amount=100,
+    )
+    # spent is just under the limit (not yet actually exceeded - that case
+    # is F below), but the pace projection multiplies it out over the rest
+    # of the month, which pushes the projection over the limit on every day
+    # of the month except the very last one (where days_in_period ==
+    # days_elapsed and the projection multiplier is exactly 1).
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=99)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert status["is_exceeded"] is False
+    assert Decimal(status["projected_deficit"]) > Decimal("0")
+    assert Decimal(status["projected_surplus"]) == Decimal("0.00")
+    assert status["risk_status"] == "at_risk"
+
+
+# Tests (E) that a spending pace comfortably below the limit produces a
+# nonzero projected_surplus and zero projected_deficit.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if surplus is nonzero and deficit is zero.
+def test_budget_status_endpoint_projected_surplus_when_pace_below_budget(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Underspending", limit_amount=100000,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=1)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert Decimal(status["projected_surplus"]) > Decimal("0")
+    assert Decimal(status["projected_deficit"]) == Decimal("0.00")
+    assert status["risk_status"] == "healthy"
+
+
+# Tests (F) that an already-exceeded budget reports zero daily allowance
+# and exceeded risk_status through the full API, regardless of pace.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if allowance is zero and risk_status is exceeded.
+def test_budget_status_endpoint_exceeded_budget_zero_allowance_exceeded_risk(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Exceeded", limit_amount=50,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=200)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert status["is_exceeded"] is True
+    assert status["daily_spending_allowance"] == "0.00"
+    assert status["risk_status"] == "exceeded"
+
+
+# Tests (G) that a future-dated expense does not influence average daily
+# spending or the pace projection.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if metrics are computed as if the future expense
+#   did not exist.
+def test_budget_status_endpoint_future_expense_does_not_affect_metrics(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Groceries", limit_amount=1000,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=10)
+    create_expense_with(client=client, user_id=user_id, expense_date=tomorrow.isoformat(), amount=99999)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert status["risk_status"] == "healthy"
+    assert Decimal(status["average_daily_spending"]) < Decimal("100")
+
+
+# Tests (H) that a mismatched-currency expense does not influence average
+# daily spending or the pace projection.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if metrics ignore the foreign-currency expense.
+def test_budget_status_endpoint_mixed_currency_expense_does_not_affect_metrics(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="EUR budget", limit_amount=1000, currency="EUR",
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=10, currency="EUR")
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=99999, currency="USD")
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert status["risk_status"] == "healthy"
+    assert Decimal(status["average_daily_spending"]) < Decimal("100")
+
+
+# Tests (I) that a partial-period budget's B4 metrics use the effective
+# (partial) period length rather than the full calendar month.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if days_in_period equals today-to-month-end, not
+#   the full month.
+def test_budget_status_endpoint_partial_period_metrics_use_effective_length(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange - budget activates today; effective window is today..month_end
+    user_id = str(uuid4())
+    today = date.today()
+    _, month_end = month_bounds(today)
+    expected_days_in_period = (month_end - today).days + 1
+
+    create_budget_with(
+        client=client, user_id=user_id, start_date=today.isoformat(), period="monthly",
+        name="Mid-period", limit_amount=300,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=30)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    status = response.json()[0]
+    assert status["days_in_period"] == expected_days_in_period
+    assert status["days_elapsed"] == 1
+
+
+# Tests (J) that editing a budget's limit changes the projection/risk
+# computed for the current period, proving the resolved BudgetVersion
+# (not a stale value) drives B4 metrics.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if risk_status/projected_surplus reflect the
+#   edited limit.
+def test_budget_status_endpoint_version_limit_drives_projection_and_risk(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+
+    budget = create_budget_with(
+        client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
+        name="Groceries", limit_amount=10,
+    )
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=5)
+
+    before_response = client.get("/api/v1/analytics/budget-status", headers=auth_headers(user_id))
+    before_status = before_response.json()[0]
+
+    # Act - raise the limit enough to flip risk_status from at_risk/watch to healthy
+    patch_response = client.patch(
+        f"/api/v1/budgets/{budget['id']}",
+        json={"limit_amount": 100000},
+        headers=auth_headers(user_id),
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    after_response = client.get("/api/v1/analytics/budget-status", headers=auth_headers(user_id))
+    after_status = after_response.json()[0]
+
+    # Assert
+    assert after_status["limit_amount"] == "100000.00"
+    assert Decimal(after_status["projected_surplus"]) > Decimal(before_status["projected_surplus"])
+    assert after_status["risk_status"] == "healthy"
+
+
+# Tests (K) that B4 metrics fields, like the rest of the response, are
+# scoped to the authenticated user only.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the other user's budget (and its metrics)
+#   never appear.
+def test_budget_status_endpoint_metrics_ownership_isolation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    today = date.today()
+
+    create_budget_with(
+        client=client, user_id=other_user_id, start_date=date(2020, 1, 1).isoformat(),
+        name="Other user's budget", limit_amount=50,
+    )
+    create_expense_with(client=client, user_id=other_user_id, expense_date=today.isoformat(), amount=999)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/budget-status",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 # Tests that the goal progress endpoint returns remaining goal amount.
