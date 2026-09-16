@@ -17,15 +17,21 @@ from app.modules.financial_settings.financial_settings_schemas import (
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier that owns the settings row.
 #   Always sourced from authenticated identity, never request payload data.
+# - commit: whether the repository should commit the transaction
+#   immediately. Pass False when a caller (e.g. expenses_service) is
+#   composing this bootstrap into a larger transaction it will commit
+#   itself.
 # Returns:
 # - UserFinancialSettingsResponse for the user's settings.
 def get_or_create_financial_settings(
     db_session: Session,
     user_id: UUID,
+    commit: bool = True,
 ) -> UserFinancialSettingsResponse:
     settings_model = financial_settings_repository.get_or_create_financial_settings(
         db_session=db_session,
         user_id=user_id,
+        commit=commit,
     )
 
     return UserFinancialSettingsResponse.model_validate(settings_model)
@@ -39,15 +45,19 @@ def get_or_create_financial_settings(
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier that owns the settings row.
+# - commit: whether the underlying bootstrap should commit immediately.
+#   Pass False when composing into a larger caller-owned transaction.
 # Returns:
 # - The user's base currency code, e.g. "EUR".
 def get_base_currency(
     db_session: Session,
     user_id: UUID,
+    commit: bool = True,
 ) -> str:
     settings = get_or_create_financial_settings(
         db_session=db_session,
         user_id=user_id,
+        commit=commit,
     )
 
     return settings.base_currency

@@ -1351,6 +1351,136 @@ def test_confirm_receipt_endpoint_foreign_currency_gets_fx_snapshot(
     assert created_expense["fx_rate"] is not None
 
 
+# VF-014B5C financial-integrity correction (transaction boundary): proves
+# that confirm_receipt is a single atomic transaction end to end, even
+# though it composes three internally-transactional pieces - the lazy
+# financial-settings bootstrap, expenses_service.create_expense, and the
+# receipt's own status update. Before the fix,
+# financial_settings_repository.get_or_create_financial_settings committed
+# unconditionally, so a settings row (and, depending on ordering, other
+# pending session state) could survive a rollback triggered by a later
+# provider failure in the same confirm_receipt call - a real caller-owned
+# atomicity violation.
+# Part 1 exercises the dangerous case: a brand-new user (no
+# user_financial_settings row yet) confirms a foreign-currency receipt
+# while the ECB provider fails. Part 2 then confirms that a normal,
+# successful confirmation for a brand-new user still commits the
+# settings bootstrap, the receipt update, and the Expense/FX snapshot
+# together.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes only if the failed confirmation leaves no
+#   Expense, no committed settings row, and the receipt un-confirmed,
+#   while the subsequent successful confirmation commits everything.
+def test_confirm_receipt_endpoint_atomic_across_settings_bootstrap_and_fx_failure(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.database_session import SessionLocal
+    from app.modules.financial_settings.financial_settings_models import (
+        UserFinancialSettingsModel,
+    )
+
+    user_id_uuid = uuid.uuid4()
+    user_id = str(user_id_uuid)
+
+    def _settings_row_count() -> int:
+        session = SessionLocal()
+        try:
+            return (
+                session.query(UserFinancialSettingsModel)
+                .filter(UserFinancialSettingsModel.user_id == user_id_uuid)
+                .count()
+            )
+        finally:
+            session.close()
+
+    # Sanity: this user genuinely has no settings row yet.
+    assert _settings_row_count() == 0
+
+    # --- Part 1: dangerous case - provider fails after the settings
+    # bootstrap would have run inside the same transaction. ---
+    response_mock = MagicMock()
+    response_mock.status_code = 404
+    monkeypatch.setattr(fx_ecb_provider.httpx, "get", MagicMock(return_value=response_mock))
+
+    receipt = create_receipt(client=client, user_id=user_id)
+    update_response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={
+            "status": "processed",
+            "merchant_detected": "NYC DELI",
+            "total_amount_detected": "20.00",
+            "currency_detected": "USD",
+            "purchase_date_detected": "2026-07-31",
+        },
+        headers=auth_headers(user_id),
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    failed_confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+
+    # The provider failure must surface as an error, not a partial success.
+    assert failed_confirm_response.status_code == 422, failed_confirm_response.text
+
+    # No Expense was created.
+    expenses_after_failure = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+    assert expenses_after_failure.json() == []
+
+    # The receipt itself was never mutated into "confirmed" - the whole
+    # attempt rolled back together, not just the Expense insert.
+    receipts_after_failure = client.get("/api/v1/receipts", headers=auth_headers(user_id))
+    receipt_after_failure = next(
+        r for r in receipts_after_failure.json() if r["id"] == receipt["id"]
+    )
+    assert receipt_after_failure["status"] == "processed"
+    assert receipt_after_failure["expense_id"] is None
+
+    # The lazy settings bootstrap did not survive as a premature,
+    # independently-committed write - it rolled back with everything else.
+    assert _settings_row_count() == 0
+
+    # --- Part 2: the same brand-new user's next confirmation attempt,
+    # this time with a working provider, must commit the settings
+    # bootstrap, the receipt update, and the Expense/FX snapshot as one
+    # atomic unit. ---
+    ecb_payload = {
+        "dataSets": [{"series": {"0:0:0:0:0": {"observations": {"0": [1.1539, 0, 0, None, None]}}}}],
+        "structure": {"dimensions": {"observation": [{"id": "TIME_PERIOD", "values": [{"id": "2026-07-31"}]}]}},
+    }
+    ecb_response_mock = MagicMock()
+    ecb_response_mock.status_code = 200
+    ecb_response_mock.json.return_value = ecb_payload
+    monkeypatch.setattr(fx_ecb_provider.httpx, "get", MagicMock(return_value=ecb_response_mock))
+
+    success_confirm_response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={},
+        headers=auth_headers(user_id),
+    )
+    assert success_confirm_response.status_code == 200, success_confirm_response.text
+
+    body = success_confirm_response.json()
+    assert body["receipt"]["status"] == "confirmed"
+    assert body["expense"]["base_currency"] == "EUR"
+    assert body["expense"]["fx_source"] == "ecb"
+    assert body["expense"]["base_amount"] is not None
+
+    # The settings row now exists, committed together with the rest.
+    assert _settings_row_count() == 1
+
+    expenses_after_success = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+    assert len(expenses_after_success.json()) == 1
+
+
 # Verifies that complete manual confirmation data can replace missing OCR data.
 # This test exists to allow confirmation when OCR parsing is incomplete
 # but the user supplies every required expense value.

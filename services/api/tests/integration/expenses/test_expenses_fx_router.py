@@ -116,13 +116,16 @@ def test_create_expense_endpoint_usd_produces_ecb_snapshot(
     # Assert
     assert response.status_code == 201, response.text
     body = response.json()
-    # fx_rate is NUMERIC(18,8) - the DB rounds the full-precision computed
-    # rate to 8dp on storage, so the response reflects that stored
-    # precision, not the raw in-memory value.
+    # fx_rate is NUMERIC(18,8). The service normalizes the provider's
+    # full-precision canonical rate to that same 8dp precision *before*
+    # using it for anything (VF-014B5C financial-integrity correction) -
+    # base_amount must be derived from the same value that gets persisted
+    # as fx_rate, not from the wider raw in-memory value, so the two
+    # persisted fields stay reproducible from each other.
     full_precision_rate = Decimal("1") / Decimal("1.1539")
     expected_rate = full_precision_rate.quantize(Decimal("0.00000001"))
     assert Decimal(body["fx_rate"]) == expected_rate
-    assert Decimal(body["base_amount"]) == (Decimal("100") * full_precision_rate).quantize(Decimal("0.01"))
+    assert Decimal(body["base_amount"]) == (Decimal("100") * expected_rate).quantize(Decimal("0.01"))
     assert body["base_currency"] == "EUR"
     assert body["fx_rate_date"] == "2026-05-07"
     assert body["fx_source"] == "ecb"
@@ -153,13 +156,13 @@ def test_create_expense_endpoint_uah_produces_nbu_snapshot(
     # Assert
     assert response.status_code == 201, response.text
     body = response.json()
-    # fx_rate is NUMERIC(18,8) - see the USD test above for why the
-    # response is compared against the 8dp-rounded value while
-    # base_amount uses the full-precision in-memory rate.
+    # fx_rate is NUMERIC(18,8) - see the USD test above for why
+    # base_amount must be derived from the same 8dp-normalized rate that
+    # is persisted as fx_rate, not the wider raw in-memory value.
     full_precision_rate = Decimal("1") / Decimal("51.5231")
     expected_rate = full_precision_rate.quantize(Decimal("0.00000001"))
     assert Decimal(body["fx_rate"]) == expected_rate
-    assert Decimal(body["base_amount"]) == (Decimal("1000") * full_precision_rate).quantize(Decimal("0.01"))
+    assert Decimal(body["base_amount"]) == (Decimal("1000") * expected_rate).quantize(Decimal("0.01"))
     assert body["fx_source"] == "nbu"
 
 
@@ -258,6 +261,154 @@ def test_update_expense_endpoint_amount_only_reuses_snapshot(
     assert body["fx_rate_date"] == created["fx_rate_date"]
     assert body["fx_source"] == created["fx_source"]
     assert Decimal(body["base_amount"]) == (Decimal("200") * Decimal(created["fx_rate"])).quantize(Decimal("0.01"))
+    ecb_mock.assert_not_called()
+
+
+# Tests the VF-014B5C financial-integrity correction end to end: a
+# provider rate with more precision than the persisted fx_rate column
+# (NUMERIC(18,8)) must not silently desynchronize base_amount from the
+# fx_rate that actually gets stored. ECB publishing "6" (units of USD per
+# EUR) makes canonical_rate = 1/6 a repeating decimal
+# (0.1666...6667 at 28 significant digits); its raw value and its
+# 8dp-quantized value diverge in the 9th decimal digit, and multiplying
+# amount=999.99 by each before quantizing to cents lands on two different
+# cents (166.66 vs 166.67) - a value deliberately chosen so this test
+# cannot pass under the old (bugged) implementation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes only if base_amount reflects the 8dp-normalized
+#   rate, and the row read back from PostgreSQL satisfies
+#   base_amount == (amount * fx_rate).quantize(Decimal("0.01")) using the
+#   persisted values alone.
+def test_create_expense_endpoint_base_amount_reproducible_from_persisted_fx_rate(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    _mock_ecb(monkeypatch, rate=6, actual_date="2026-05-07")
+
+    # Act
+    response = _create_expense_with(
+        client=client, user_id=user_id, amount="999.99", currency="USD", expense_date="2026-05-07",
+    )
+
+    # Assert
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    raw_provider_rate = Decimal("1") / Decimal("6")
+    stored_fx_rate = raw_provider_rate.quantize(Decimal("0.00000001"))
+    raw_derived_base_amount = (Decimal("999.99") * raw_provider_rate).quantize(Decimal("0.01"))
+    correct_base_amount = (Decimal("999.99") * stored_fx_rate).quantize(Decimal("0.01"))
+    assert raw_derived_base_amount != correct_base_amount, "fixture must be precision-sensitive"
+
+    # B: fx_rate is persisted at exactly the same precision PostgreSQL's
+    # NUMERIC(18,8) column stores.
+    assert Decimal(body["fx_rate"]) == stored_fx_rate
+
+    # C: base_amount was computed from that normalized/persisted rate,
+    # never from the wider raw provider value.
+    assert Decimal(body["base_amount"]) == correct_base_amount
+    assert Decimal(body["base_amount"]) != raw_derived_base_amount
+
+    # D: reading the Expense back from PostgreSQL (a fresh GET, not the
+    # create response) reproduces base_amount from persisted data alone.
+    # There is no GET-by-id endpoint, so list and find it by id.
+    get_response = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+    persisted = next(e for e in get_response.json() if e["id"] == body["id"])
+    assert Decimal(persisted["base_amount"]) == (
+        Decimal(persisted["amount"]) * Decimal(persisted["fx_rate"])
+    ).quantize(Decimal("0.01"))
+    assert Decimal(persisted["base_amount"]) == correct_base_amount
+
+
+# Tests (E) that an amount-only PATCH with the SAME amount does not drift
+# base_amount, even though the original provider rate (1/6) had far more
+# precision than the persisted fx_rate - the reuse path must recompute
+# strictly from the already-persisted (8dp) fx_rate, not from any wider
+# in-memory value left over from creation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if base_amount/fx_rate are byte-identical
+#   before and after the no-op PATCH.
+def test_update_expense_endpoint_amount_only_same_amount_does_not_drift_base_amount(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    ecb_mock = _mock_ecb(monkeypatch, rate=6, actual_date="2026-05-07")
+    created = _create_expense_with(
+        client=client, user_id=user_id, amount="999.99", currency="USD", expense_date="2026-05-07",
+    ).json()
+    ecb_mock.reset_mock()
+
+    # Act - "amount" is included in the PATCH body but with its existing value.
+    response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"amount": "999.99"},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["fx_rate"] == created["fx_rate"]
+    assert body["base_amount"] == created["base_amount"]
+    ecb_mock.assert_not_called()
+
+
+# Tests (F) that an amount-only PATCH with a NEW amount recomputes
+# base_amount using the persisted (8dp) fx_rate exactly, never a fresh
+# provider call - proven here by never mocking the ECB endpoint for the
+# PATCH itself, so any attempt to call the provider would surface as a
+# real network error.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary
+#   (create only).
+# Returns:
+# - None. The test passes if base_amount == new_amount * persisted_fx_rate
+#   quantized to cents, and fx_rate/fx_rate_date/fx_source are unchanged.
+def test_update_expense_endpoint_amount_only_new_amount_uses_persisted_fx_rate_exactly(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    ecb_mock = _mock_ecb(monkeypatch, rate=6, actual_date="2026-05-07")
+    created = _create_expense_with(
+        client=client, user_id=user_id, amount="999.99", currency="USD", expense_date="2026-05-07",
+    ).json()
+    ecb_mock.reset_mock()
+
+    # Act
+    response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"amount": "1500.00"},
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["fx_rate"] == created["fx_rate"]
+    assert body["fx_rate_date"] == created["fx_rate_date"]
+    assert body["fx_source"] == created["fx_source"]
+    assert Decimal(body["base_amount"]) == (
+        Decimal("1500.00") * Decimal(created["fx_rate"])
+    ).quantize(Decimal("0.01"))
     ecb_mock.assert_not_called()
 
 
@@ -528,3 +679,90 @@ def test_create_expense_endpoint_ownership_isolation(
 
     # Assert
     assert other_user_expenses.json() == []
+
+
+# VF-014B5C financial-integrity correction (transaction boundary, direct
+# case): calls expenses_service.create_expense(commit=False) directly
+# (bypassing the HTTP layer) on a session that already has other,
+# unrelated pending writes - the way receipt confirmation's session looks
+# right before it calls create_expense. Proves the internal
+# financial-settings bootstrap never commits those pending writes on its
+# own; only the caller's own eventual commit (or lack of one) decides
+# what becomes durable.
+# Parameters:
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if nothing (pending category, settings row,
+#   Expense) is visible to another session before the caller commits,
+#   and nothing survives if the caller rolls back instead.
+def test_create_expense_commit_false_does_not_commit_callers_pending_writes(
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    from app.db.database_session import SessionLocal
+    from app.modules.categories.category_models import CategoryModel
+    from app.modules.expenses import expenses_service
+    from app.modules.expenses.expenses_models import ExpenseModel
+    from app.modules.expenses.expenses_schemas import ExpenseCreate
+    from app.modules.financial_settings.financial_settings_models import (
+        UserFinancialSettingsModel,
+    )
+
+    user_id = uuid4()
+    _mock_ecb(monkeypatch, rate=1.1539, actual_date="2026-05-07")
+
+    db_session = SessionLocal()
+    try:
+        # Simulate a caller (e.g. receipt confirmation) that already has
+        # its own unrelated pending write in this same transaction,
+        # flushed but not committed.
+        pending_category = CategoryModel(user_id=user_id, name="Pending Category")
+        db_session.add(pending_category)
+        db_session.flush()
+        pending_category_id = pending_category.id
+
+        expense_data = ExpenseCreate(
+            category_id=None, title="Nested call", amount=Decimal("100"),
+            currency="USD", expense_date=date(2026, 5, 7), description=None, source="manual",
+        )
+
+        expenses_service.create_expense(
+            db_session=db_session, expense_data=expense_data, user_id=user_id, commit=False,
+        )
+
+        # Nothing is durable yet - a separate connection must see none of
+        # it: not the caller's own pending category, not the internal
+        # settings bootstrap, not the Expense.
+        other_session = SessionLocal()
+        try:
+            assert other_session.query(CategoryModel).filter(
+                CategoryModel.id == pending_category_id,
+            ).count() == 0
+            assert other_session.query(UserFinancialSettingsModel).filter(
+                UserFinancialSettingsModel.user_id == user_id,
+            ).count() == 0
+            assert other_session.query(ExpenseModel).filter(
+                ExpenseModel.user_id == user_id,
+            ).count() == 0
+        finally:
+            other_session.close()
+    finally:
+        db_session.rollback()
+        db_session.close()
+
+    # After the caller rolls back, everything rolled back together - the
+    # settings bootstrap did not survive as an independently-committed write.
+    verification_session = SessionLocal()
+    try:
+        assert verification_session.query(CategoryModel).filter(
+            CategoryModel.user_id == user_id,
+        ).count() == 0
+        assert verification_session.query(UserFinancialSettingsModel).filter(
+            UserFinancialSettingsModel.user_id == user_id,
+        ).count() == 0
+        assert verification_session.query(ExpenseModel).filter(
+            ExpenseModel.user_id == user_id,
+        ).count() == 0
+    finally:
+        verification_session.close()

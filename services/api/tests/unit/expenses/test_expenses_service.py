@@ -76,7 +76,7 @@ def test_service_create_expense_returns_expense_response(
 
     create_calls: list[dict] = []
 
-    def fake_get_base_currency(db_session: Session, user_id: UUID) -> str:
+    def fake_get_base_currency(db_session: Session, user_id: UUID, commit: bool = True) -> str:
         return "EUR"
 
     def fake_create_expense(db_session, expense_data, user_id, **kwargs) -> SimpleNamespace:
@@ -155,7 +155,7 @@ def test_service_create_expense_foreign_currency_resolves_snapshot(
     monkeypatch.setattr(
         expenses_service.financial_settings_service,
         "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
@@ -189,6 +189,143 @@ def test_service_create_expense_foreign_currency_resolves_snapshot(
     assert create_calls[0]["fx_source"] == "ecb"
 
 
+# Tests the VF-014B5C financial-integrity correction: base_amount must be
+# derived from the fx_rate at exactly the precision that will be
+# persisted (NUMERIC(18,8)), not from the wider raw provider value. ECB
+# publishing "6" makes canonical_rate = 1/6 a repeating decimal whose raw
+# and 8dp-quantized forms diverge by exactly one cent at amount=999.99 -
+# chosen deliberately so this test cannot pass under the old (bugged)
+# implementation that quantized fx_rate for base_amount computation but
+# then persisted a differently-rounded fx_rate.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/fx behavior.
+# Returns:
+# - None. The test passes only if both the repository call's fx_rate and
+#   its base_amount reflect the same 8dp-normalized rate.
+def test_service_create_expense_normalizes_fx_rate_before_computing_base_amount(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+
+    expense_data = ExpenseCreate(
+        category_id=None,
+        title="Repeating rate",
+        amount=Decimal("999.99"),
+        currency="USD",
+        expense_date=date(2026, 5, 7),
+        description=None,
+        source="manual",
+    )
+
+    create_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        expenses_service.financial_settings_service, "get_base_currency",
+        lambda db_session, user_id, commit=True: "EUR",
+    )
+
+    raw_provider_rate = Decimal("1") / Decimal("6")  # repeating decimal
+
+    def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
+        return FxRateResult(rate=raw_provider_rate, actual_rate_date=date(2026, 5, 7), source="ecb")
+
+    monkeypatch.setattr(expenses_service.fx_service, "resolve_fx_rate", fake_resolve_fx_rate)
+    monkeypatch.setattr(
+        expenses_service.expenses_repository, "create_expense",
+        lambda db_session, expense_data, user_id, **kwargs: create_calls.append(kwargs) or SimpleNamespace(
+            id=uuid4(), user_id=user_id, category_id=None,
+            title=expense_data.title, amount=expense_data.amount,
+            currency=expense_data.currency, expense_date=expense_data.expense_date,
+            description=expense_data.description, source=expense_data.source,
+            created_at=datetime(2026, 5, 7, 10, 30, 0), updated_at=datetime(2026, 5, 7, 10, 30, 0),
+            **kwargs,
+        ),
+    )
+
+    # Act
+    expenses_service.create_expense(db_session=db_session, expense_data=expense_data, user_id=user_id)
+
+    # Assert
+    stored_fx_rate = raw_provider_rate.quantize(expenses_service.FX_RATE_DECIMAL_PLACES)
+    raw_derived_base_amount = (Decimal("999.99") * raw_provider_rate).quantize(Decimal("0.01"))
+    correct_base_amount = (Decimal("999.99") * stored_fx_rate).quantize(Decimal("0.01"))
+    assert raw_derived_base_amount != correct_base_amount, "fixture must be precision-sensitive"
+
+    # A/B: the persisted fx_rate is normalized to exactly 8 decimal places.
+    assert create_calls[0]["fx_rate"] == stored_fx_rate
+    assert create_calls[0]["fx_rate"] != raw_provider_rate
+
+    # C: base_amount was computed from that normalized rate, not the raw one.
+    assert create_calls[0]["base_amount"] == correct_base_amount
+    assert create_calls[0]["base_amount"] != raw_derived_base_amount
+
+
+# Tests the same financial-integrity correction on the update path's
+# re-resolve branch (currency/date change), which independently computes
+# its own base_amount from a freshly resolved fx_result.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/fx behavior.
+# Returns:
+# - None. The test passes only if the persisted fx_rate and base_amount
+#   are derived from the same 8dp-normalized rate.
+def test_service_update_expense_normalizes_fx_rate_before_computing_base_amount(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    existing = _make_existing_expense(
+        currency="EUR", expense_date=date(2026, 5, 7), amount=Decimal("999.99"),
+    )
+
+    monkeypatch.setattr(
+        expenses_service.expenses_repository, "get_expense_by_id",
+        lambda **kwargs: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.financial_settings_service, "get_base_currency",
+        lambda db_session, user_id, commit=True: "EUR",
+    )
+
+    raw_provider_rate = Decimal("1") / Decimal("6")
+
+    def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
+        return FxRateResult(rate=raw_provider_rate, actual_rate_date=date(2026, 5, 7), source="ecb")
+
+    monkeypatch.setattr(expenses_service.fx_service, "resolve_fx_rate", fake_resolve_fx_rate)
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        expenses_service.expenses_repository, "update_expense",
+        lambda db_session, expense_id, expense_data, user_id, **kwargs: update_calls.append(kwargs) or SimpleNamespace(
+            id=existing.id, user_id=user_id, category_id=None,
+            title=existing.title, amount=existing.amount, currency="USD",
+            expense_date=existing.expense_date, description=existing.description,
+            source=existing.source, created_at=existing.created_at, updated_at=existing.updated_at,
+            **kwargs,
+        ),
+    )
+
+    # Act - currency change forces the re-resolve branch.
+    expenses_service.update_expense(
+        db_session=db_session,
+        expense_id=existing.id,
+        expense_data=ExpenseUpdate(currency="USD"),
+        user_id=user_id,
+    )
+
+    # Assert
+    stored_fx_rate = raw_provider_rate.quantize(expenses_service.FX_RATE_DECIMAL_PLACES)
+    correct_base_amount = (Decimal("999.99") * stored_fx_rate).quantize(Decimal("0.01"))
+    raw_derived_base_amount = (Decimal("999.99") * raw_provider_rate).quantize(Decimal("0.01"))
+    assert raw_derived_base_amount != correct_base_amount, "fixture must be precision-sensitive"
+
+    assert update_calls[0]["fx_rate"] == stored_fx_rate
+    assert update_calls[0]["base_amount"] == correct_base_amount
+
+
 # Tests that a provider failure during creation results in no expense
 # being persisted at all.
 # This test exists to verify the "no Expense row created on FX failure"
@@ -213,7 +350,7 @@ def test_service_create_expense_provider_failure_creates_no_expense(
 
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(*args, **kwargs):
@@ -372,7 +509,7 @@ def test_service_update_expense_currency_change_re_resolves(
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
@@ -417,7 +554,7 @@ def test_service_update_expense_date_change_re_resolves(
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
@@ -463,7 +600,7 @@ def test_service_update_expense_currency_and_date_change_resolves_once(
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
@@ -513,7 +650,7 @@ def test_service_update_expense_metadata_only_does_not_resolve(
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: base_currency_calls.append(1),
+        lambda db_session, user_id, commit=True: base_currency_calls.append(1),
     )
     monkeypatch.setattr(
         expenses_service.fx_service, "resolve_fx_rate",
@@ -567,7 +704,7 @@ def test_service_update_expense_legacy_unresolved_monetary_update_resolves(
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: "EUR",
+        lambda db_session, user_id, commit=True: "EUR",
     )
 
     def fake_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
@@ -621,7 +758,7 @@ def test_service_update_expense_legacy_unresolved_metadata_update_stays_unresolv
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
-        lambda db_session, user_id: base_currency_calls.append(1),
+        lambda db_session, user_id, commit=True: base_currency_calls.append(1),
     )
     monkeypatch.setattr(
         expenses_service.fx_service, "resolve_fx_rate",

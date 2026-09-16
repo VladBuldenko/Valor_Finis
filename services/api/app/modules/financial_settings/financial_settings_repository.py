@@ -18,11 +18,21 @@ from app.modules.financial_settings.financial_settings_models import (
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier that owns the settings row.
+# - commit: whether the repository should commit the transaction
+#   immediately. Must be False when this bootstrap runs inside a larger
+#   caller-owned transaction (e.g. expense creation nested inside receipt
+#   confirmation) so it never prematurely commits the caller's other
+#   pending writes - the caller commits everything together instead.
+#   Race safety does not depend on this commit: ON CONFLICT DO NOTHING is
+#   enforced by PostgreSQL against the unique user_id constraint (via row
+#   locking against any concurrent in-flight insert) regardless of when,
+#   or whether, this particular transaction is committed.
 # Returns:
 # - UserFinancialSettingsModel instance, either just-created or pre-existing.
 def get_or_create_financial_settings(
     db_session: Session,
     user_id: UUID,
+    commit: bool = True,
 ) -> UserFinancialSettingsModel:
     # Target-less ON CONFLICT DO NOTHING, matching the same race-safe
     # first-use bootstrap pattern already established for default
@@ -40,7 +50,10 @@ def get_or_create_financial_settings(
         .on_conflict_do_nothing()
     )
 
-    db_session.commit()
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()
 
     return (
         db_session.query(UserFinancialSettingsModel)

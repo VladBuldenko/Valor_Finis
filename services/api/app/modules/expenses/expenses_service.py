@@ -16,6 +16,14 @@ from app.modules.fx import fx_service
 
 BASE_AMOUNT_DECIMAL_PLACES = Decimal("0.01")
 
+# Matches the fx_rate column's NUMERIC(18,8) scale. A provider's canonical
+# rate (e.g. Decimal("1") / published_rate) carries far more than 8 decimal
+# digits; base_amount must be derived from the rate at exactly the
+# precision that gets persisted, not from the wider in-memory value,
+# otherwise a row read back from PostgreSQL would fail its own invariant:
+# base_amount == (amount * fx_rate).quantize(BASE_AMOUNT_DECIMAL_PLACES).
+FX_RATE_DECIMAL_PLACES = Decimal("0.00000001")
+
 
 # Creates a new expense using validated expense data and authenticated user id.
 # This function exists to keep business logic separate
@@ -55,6 +63,7 @@ def create_expense(
     base_currency = financial_settings_service.get_base_currency(
         db_session=db_session,
         user_id=user_id,
+        commit=False,
     )
 
     fx_result = fx_service.resolve_fx_rate(
@@ -64,7 +73,13 @@ def create_expense(
         as_of=date.today(),
     )
 
-    base_amount = (expense_data.amount * fx_result.rate).quantize(
+    # Normalize the canonical rate to exactly the precision that will be
+    # persisted (fx_rate is NUMERIC(18,8)) before it is used for anything,
+    # so the stored fx_rate and the stored base_amount are always
+    # reproducible from each other with no hidden extra precision.
+    stored_fx_rate = fx_result.rate.quantize(FX_RATE_DECIMAL_PLACES)
+
+    base_amount = (expense_data.amount * stored_fx_rate).quantize(
         BASE_AMOUNT_DECIMAL_PLACES,
     )
 
@@ -74,7 +89,7 @@ def create_expense(
         user_id=user_id,
         base_amount=base_amount,
         base_currency=base_currency,
-        fx_rate=fx_result.rate,
+        fx_rate=stored_fx_rate,
         fx_rate_date=fx_result.actual_rate_date,
         fx_source=fx_result.source,
         commit=commit,
@@ -197,6 +212,7 @@ def update_expense(
             resolved_base_currency = financial_settings_service.get_base_currency(
                 db_session=db_session,
                 user_id=user_id,
+                commit=False,
             )
 
             fx_result = fx_service.resolve_fx_rate(
@@ -206,7 +222,9 @@ def update_expense(
                 as_of=date.today(),
             )
 
-            resolved_fx_rate = fx_result.rate
+            # Same persisted-precision normalization as create_expense -
+            # see FX_RATE_DECIMAL_PLACES.
+            resolved_fx_rate = fx_result.rate.quantize(FX_RATE_DECIMAL_PLACES)
             resolved_fx_rate_date = fx_result.actual_rate_date
             resolved_fx_source = fx_result.source
 
