@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -91,7 +91,10 @@ class BudgetStatusItem(BaseModel):
 
     category_id: Optional[UUID] = Field(
         default=None,
-        description="Category identifier connected to this budget.",
+        description=(
+            "Category identifier scoping this budget, resolved from the "
+            "BudgetVersion applicable to the current period."
+        ),
     )
 
     category_name: str = Field(
@@ -100,9 +103,62 @@ class BudgetStatusItem(BaseModel):
         examples=["Food"],
     )
 
+    period: Literal["weekly", "monthly", "yearly"] = Field(
+        ...,
+        description="Recurrence unit this budget resets on.",
+        examples=["monthly"],
+    )
+
+    period_start: date = Field(
+        ...,
+        description="Inclusive start of the calendar period this status covers.",
+        examples=["2026-09-01"],
+    )
+
+    period_end: date = Field(
+        ...,
+        description="Inclusive end of the calendar period this status covers.",
+        examples=["2026-09-30"],
+    )
+
+    effective_start: date = Field(
+        ...,
+        description=(
+            "period_start clamped to the budget's activation date - where "
+            "spending is actually counted from."
+        ),
+        examples=["2026-09-01"],
+    )
+
+    effective_end: date = Field(
+        ...,
+        description=(
+            "period_end clamped to the budget's deactivation date, if any."
+        ),
+        examples=["2026-09-30"],
+    )
+
+    period_state: Literal["not_started", "active", "ended"] = Field(
+        ...,
+        description="Whether the budget's activation window has started/ended.",
+        examples=["active"],
+    )
+
+    is_partial_period: bool = Field(
+        ...,
+        description=(
+            "True when the budget's activation or deactivation date clips "
+            "this calendar period."
+        ),
+        examples=[False],
+    )
+
     limit_amount: Decimal = Field(
         ...,
-        description="Configured budget limit amount.",
+        description=(
+            "Limit in effect for this period, resolved from BudgetVersion "
+            "history rather than the budget's current value."
+        ),
         examples=["400.00"],
     )
 
@@ -122,6 +178,15 @@ class BudgetStatusItem(BaseModel):
         ...,
         description="Amount by which the budget was exceeded.",
         examples=["0.00"],
+    )
+
+    utilization_percent: Decimal = Field(
+        ...,
+        description=(
+            "spent / limit_amount * 100. Not clamped - an exceeded budget "
+            "can read above 100."
+        ),
+        examples=["62.50"],
     )
 
     is_exceeded: bool = Field(
