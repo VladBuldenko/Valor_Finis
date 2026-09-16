@@ -897,6 +897,85 @@ storage_path
 
 is currently enforced by the application schema rather than by a PostgreSQL constraint.
 
+7.1 User Financial Settings
+
+Table:
+
+user_financial_settings
+
+Purpose:
+
+Stores the single authoritative financial-domain setting owned by each
+user: their base currency (VF-014B5B). One row per user. user_id is the
+primary key directly - this is an inherent one-to-one, user-owned row, so
+no surrogate id column exists.
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+user_id
+
+UUID
+
+no
+
+Primary key. No FK - matches the denormalized, Supabase-owned-identity
+pattern used by every other table.
+
+base_currency
+
+VARCHAR(3)
+
+no
+
+Default EUR (both application-level and DB server_default)
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Server timestamp
+
+updated_at
+
+TIMESTAMPTZ
+
+no
+
+Updated automatically
+
+Indexes
+
+None beyond the primary key - all access is by user_id.
+
+Lazy bootstrap:
+
+There is no local users table and no signup hook in this backend
+(Supabase owns identity), so this row does not exist until a user's first
+financial-settings access. `financial_settings_repository.get_or_create_
+financial_settings` creates it on demand using a target-less
+`INSERT ... ON CONFLICT DO NOTHING` followed by a `SELECT`, the same
+race-safe first-use pattern already established for default categories
+(`categories/repository.py:ensure_default_categories`) - two concurrent
+first-access requests cannot raise a duplicate-key error.
+
+Mutation surface:
+
+None yet. VF-014B5B does not expose any public API to read or change
+base_currency. It is an internal domain seam only, consumed directly by
+later VF-014B5 slices (Expense FX conversion). Base currency is therefore
+effectively immutable for now - changing it after financial data exists
+is a deliberately deferred, unresolved product decision (see the VF-014B5
+architecture discovery report), not something this table's shape commits
+to either way.
+
 8. Ownership Model
 
 All main entities contain:
@@ -1117,8 +1196,11 @@ PostgreSQL
 ├── goals
 │   └── PK id
 │
-└── receipts
-    ├── PK id
-    └── FK expense_id → expenses
+├── receipts
+│   ├── PK id
+│   └── FK expense_id → expenses
+│
+└── user_financial_settings
+    └── PK user_id
 
 This document should be updated whenever the persisted schema, constraints, relationships, or migration strategy changes.
