@@ -17,6 +17,11 @@ from app.modules.categories.errors import (
     CategoryNotFoundError,
 )
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
+from app.modules.fx.fx_errors import (
+    FxFutureDatedNotSupportedError,
+    FxProviderUnavailableError,
+    FxRateUnavailableError,
+)
 from app.modules.goals.goal_errors import (
     GoalInvalidAmountError,
     GoalNotFoundError,
@@ -67,6 +72,18 @@ DOMAIN_ERROR_RESPONSES: Dict[
     ExpenseNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Expense not found.",
+    ),
+    FxProviderUnavailableError: (
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Currency conversion is temporarily unavailable. Please try again shortly.",
+    ),
+    FxRateUnavailableError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "This currency cannot be converted for the given date.",
+    ),
+    FxFutureDatedNotSupportedError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "A foreign-currency expense cannot be dated in the future.",
     ),
     BudgetAlreadyExistsError: (
         status.HTTP_409_CONFLICT,
