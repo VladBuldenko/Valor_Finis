@@ -8,6 +8,9 @@ from app.main import app
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.categories.category_models import CategoryModel
 from app.modules.expenses.expenses_models import ExpenseModel
+from app.modules.financial_settings.financial_settings_models import (
+    UserFinancialSettingsModel,
+)
 from app.modules.goals.goal_models import GoalModel
 from app.modules.receipts.receipt_models import ReceiptModel
 
@@ -38,6 +41,7 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(BudgetModel).delete()
         db_session.query(GoalModel).delete()
         db_session.query(CategoryModel).delete()
+        db_session.query(UserFinancialSettingsModel).delete()
         db_session.commit()
 
         yield
@@ -47,6 +51,7 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(BudgetModel).delete()
         db_session.query(GoalModel).delete()
         db_session.query(CategoryModel).delete()
+        db_session.query(UserFinancialSettingsModel).delete()
         db_session.commit()
     finally:
         db_session.close()

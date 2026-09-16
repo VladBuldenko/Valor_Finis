@@ -26,6 +26,9 @@ def import_database_models() -> None:
     from app.modules.budgets.budgets_models import BudgetModel
     from app.modules.budgets.budget_version_models import BudgetVersionModel
     from app.modules.expenses.expenses_models import ExpenseModel
+    from app.modules.financial_settings.financial_settings_models import (
+        UserFinancialSettingsModel,
+    )
     from app.modules.goals.goal_models import GoalModel
     from app.modules.receipts.receipt_models import ReceiptModel
 
@@ -34,6 +37,7 @@ def import_database_models() -> None:
         BudgetModel,
         BudgetVersionModel,
         ExpenseModel,
+        UserFinancialSettingsModel,
         GoalModel,
         ReceiptModel,
     )
