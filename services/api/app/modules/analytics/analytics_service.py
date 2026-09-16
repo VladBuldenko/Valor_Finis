@@ -23,6 +23,7 @@ from app.modules.budgets.budget_period import (
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.categories import repository as categories_repository
 from app.modules.expenses import expenses_repository
+from app.modules.financial_settings import financial_settings_service
 from app.modules.goals import goal_repository as goals_repository
 
 
@@ -70,22 +71,42 @@ def get_category_name(
     return category_name_map.get(category_id, UNCATEGORIZED_CATEGORY_NAME)
 
 
-# Calculates total spending and expense count for the authenticated user
-# within a selected year and month.
+# Calculates total base-currency spending and expense count for the
+# authenticated user within a selected year and month.
 # This function exists to provide a monthly dashboard summary.
+#
+# VF-014B5D: sums each resolved Expense's base_amount (backend-resolved
+# base-currency truth, VF-014B5C), never the original expense.amount -
+# mixed-currency original amounts must never be summed directly (e.g. 100
+# EUR + 100 USD is never reported as 200). A legacy Expense with no FX
+# snapshot yet (base_amount is None) is excluded from total_spent rather
+# than treated as zero, and separately counted in
+# unresolved_expenses_count so incomplete historical data is visible
+# rather than silently hidden. A resolved Expense whose persisted
+# base_currency does not match the user's current base_currency (not
+# reachable today since base_currency mutation is not exposed, but not
+# guaranteed by the schema either) is treated the same way: excluded from
+# the total and counted as unresolved, rather than summed as if it were
+# in the right currency or silently dropped.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter expenses.
 # - year: selected year used to filter expenses.
 # - month: selected month used to filter expenses.
 # Returns:
-# - MonthlySummaryResponse with total spent and expenses count for the selected month.
+# - MonthlySummaryResponse with base-currency total spent, resolved
+#   expenses count, the user's base currency, and the unresolved count.
 def get_monthly_summary(
     db_session: Session,
     user_id: UUID,
     year: int,
     month: int,
 ) -> MonthlySummaryResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
         user_id=user_id,
@@ -98,19 +119,38 @@ def get_monthly_summary(
         and expense.expense_date.month == month
     ]
 
-    total_spent = sum(
-        (expense.amount for expense in monthly_expenses),
-        Decimal("0"),
-    )
+    total_spent = Decimal("0")
+    expenses_count = 0
+    unresolved_expenses_count = 0
+
+    for expense in monthly_expenses:
+        if expense.base_amount is None or expense.base_currency != base_currency:
+            unresolved_expenses_count += 1
+            continue
+
+        total_spent += expense.base_amount
+        expenses_count += 1
 
     return MonthlySummaryResponse(
         total_spent=total_spent,
-        expenses_count=len(monthly_expenses),
+        expenses_count=expenses_count,
+        base_currency=base_currency,
+        unresolved_expenses_count=unresolved_expenses_count,
     )
 
 
-# Calculates spending grouped by category for the authenticated user.
+# Calculates base-currency spending grouped by category for the
+# authenticated user.
 # This function exists to show where the user's money goes.
+#
+# VF-014B5D: sums each resolved Expense's base_amount, never the original
+# expense.amount - see get_monthly_summary's docstring for the full
+# resolved/unresolved/incompatible-currency rationale, which applies
+# identically here, per category. A category whose matching Expenses are
+# all unresolved (or all incompatible-currency) is still returned - never
+# silently omitted - with total_spent=0, expenses_count=0, and
+# unresolved_expenses_count > 0, so incomplete historical data stays
+# visible per category too.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter expenses and categories.
@@ -122,6 +162,11 @@ def get_category_summary(
     year: Optional[int] = None,
     month: Optional[int] = None,
 ) -> list[CategorySummaryItem]:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
     expenses = expenses_repository.get_expenses(
         db_session=db_session,
         user_id=user_id,
@@ -143,11 +188,22 @@ def get_category_summary(
     category_totals: dict[Optional[UUID], Decimal] = defaultdict(
         lambda: Decimal("0")
     )
-    category_counts: dict[Optional[UUID], int] = defaultdict(int)
+    category_resolved_counts: dict[Optional[UUID], int] = defaultdict(int)
+    category_unresolved_counts: dict[Optional[UUID], int] = defaultdict(int)
 
     for expense in expenses:
-        category_totals[expense.category_id] += expense.amount
-        category_counts[expense.category_id] += 1
+        category_id = expense.category_id
+        # Touch category_totals for every matching expense (resolved or
+        # not) so a category is registered - and therefore returned below
+        # - even when none of its expenses are resolved.
+        category_totals.setdefault(category_id, Decimal("0"))
+
+        if expense.base_amount is None or expense.base_currency != base_currency:
+            category_unresolved_counts[category_id] += 1
+            continue
+
+        category_totals[category_id] += expense.base_amount
+        category_resolved_counts[category_id] += 1
 
     return [
         CategorySummaryItem(
@@ -157,7 +213,9 @@ def get_category_summary(
                 category_name_map=category_name_map,
             ),
             total_spent=total_spent,
-            expenses_count=category_counts[category_id],
+            expenses_count=category_resolved_counts[category_id],
+            unresolved_expenses_count=category_unresolved_counts[category_id],
+            base_currency=base_currency,
         )
         for category_id, total_spent in category_totals.items()
     ]
