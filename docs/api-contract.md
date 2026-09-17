@@ -946,6 +946,103 @@ Summary above, applied per category. A category whose matching Expenses
 are all unresolved is still returned (never silently omitted), with
 total_spent 0, expenses_count 0, and unresolved_expenses_count > 0.
 
+Spending Trend
+
+GET /api/v1/analytics/spending-trend?period=month&count=6
+
+VF-015B: a bounded historical base-currency spending time series, distinct
+from Budget Status (per-Budget, original-currency, current-period-only)
+and from Monthly/Category Summary (single period only). Always calculated
+against the server's current date - there is no public as_of parameter.
+
+Query parameters:
+
+Parameter
+
+Required
+
+Validation
+
+period
+
+yes
+
+one of "day", "week", "month"
+
+count
+
+no
+
+integer >= 1; defaults to 30/12/6 for day/week/month when omitted;
+rejected with 422 if it exceeds the per-period maximum: 366 (day), 104
+(week), 24 (month)
+
+Calendar boundaries: day buckets are a single date; week buckets run
+Monday through Sunday; month buckets run the 1st through the last day of
+the month (leap years handled correctly). The returned series always ends
+with the bucket containing today, and always contains exactly `count`
+buckets - a period with no Expenses is still emitted as an explicit zero
+bucket (total_spent "0.00"), never omitted.
+
+Response:
+
+{
+  "base_currency": "EUR",
+  "period": "month",
+  "count": 6,
+  "as_of": "2026-09-17",
+  "buckets": [
+    {
+      "period_start": "2026-04-01",
+      "period_end": "2026-04-30",
+      "effective_end": "2026-04-30",
+      "is_complete": true,
+      "total_spent": "100.00",
+      "expenses_count": 2,
+      "unresolved_expenses_count": 0
+    }
+  ],
+  "period_over_period": {
+    "current_period_start": "2026-08-01",
+    "current_period_end": "2026-08-31",
+    "previous_period_start": "2026-07-01",
+    "previous_period_end": "2026-07-31",
+    "current_total_spent": "150.00",
+    "previous_total_spent": "100.00",
+    "absolute_change": "50.00",
+    "percent_change": "50.00",
+    "direction": "up"
+  }
+}
+
+- total_spent per bucket is BASE-currency spending, summed from each
+  resolved Expense's persisted base_amount (VF-014B5C) - never the
+  original mixed-currency amount, never recomputed from fx_rate. The same
+  resolved/unresolved rule as Monthly/Category Summary applies per
+  bucket: a legacy Expense with no FX snapshot yet, or a resolved Expense
+  whose persisted base_currency no longer matches the user's current
+  base_currency, is excluded from total_spent and counted in
+  unresolved_expenses_count instead - never treated as zero-valued.
+- effective_end = min(period_end, as_of). is_complete = period_end <
+  as_of. The bucket containing today is therefore always incomplete
+  until its calendar period fully elapses; a future-dated Expense can
+  never appear in it.
+- period_over_period compares the two most recent COMPLETE buckets in
+  the returned series - never the current, in-progress bucket against a
+  finished one. It is null when fewer than two complete buckets exist in
+  the requested range (e.g. count=1, or a brand-new range with only the
+  current period so far).
+- percent_change is null when previous_total_spent is 0 - percentage
+  change is mathematically undefined there, never reported as infinity,
+  100, or 0. absolute_change and direction are always populated
+  regardless.
+- direction is "up" when absolute_change > 0, "down" when < 0,
+  "unchanged" when exactly 0. This is a fixed comparison rule, not a
+  "stable" threshold band - period_over_period never buckets a small
+  change into "unchanged" the way a future trend-direction feature might.
+- Never performs an FX/network call - reads only already-persisted
+  base_amount, exactly like Monthly/Category Summary.
+
 Budget Status
 
 GET /api/v1/analytics/budget-status

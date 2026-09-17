@@ -84,6 +84,36 @@ def get_expenses(
     return query.order_by(ExpenseModel.expense_date.desc()).all()
 
 
+# Returns expense database records for one user within an inclusive date
+# range, filtered at the database level.
+# This function exists for analytics reads that only need a bounded window
+# of history (e.g. VF-015B spending trend) - unlike get_expenses above, it
+# never loads a user's entire lifetime of expenses just to filter most of
+# them back out in Python.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses.
+# - start_date: inclusive lower bound on expense_date.
+# - end_date: inclusive upper bound on expense_date.
+# Returns:
+# - List of ExpenseModel instances within the range, scoped to the user.
+def get_expenses_in_date_range(
+    db_session: Session,
+    user_id: UUID,
+    start_date: date,
+    end_date: date,
+) -> list[ExpenseModel]:
+    return (
+        db_session.query(ExpenseModel)
+        .filter(
+            ExpenseModel.user_id == user_id,
+            ExpenseModel.expense_date >= start_date,
+            ExpenseModel.expense_date <= end_date,
+        )
+        .all()
+    )
+
+
 # Returns one expense by expense id and authenticated user id.
 # This function exists to enforce ownership at the database query level.
 # Parameters:

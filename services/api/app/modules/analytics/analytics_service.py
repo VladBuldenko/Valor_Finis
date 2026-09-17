@@ -6,11 +6,15 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core import calendar_period
 from app.modules.analytics.analytics_schemas import (
     BudgetStatusItem,
     CategorySummaryItem,
     GoalProgressItem,
     MonthlySummaryResponse,
+    PeriodOverPeriodComparison,
+    SpendingTrendBucket,
+    SpendingTrendResponse,
 )
 from app.modules.budgets import budget_metrics, budget_version_repository
 from app.modules.budgets import budget_repository as budgets_repository
@@ -25,6 +29,10 @@ from app.modules.categories import repository as categories_repository
 from app.modules.expenses import expenses_repository
 from app.modules.financial_settings import financial_settings_service
 from app.modules.goals import goal_repository as goals_repository
+
+
+BUCKET_AMOUNT_DECIMAL_PLACES = Decimal("0.00")
+PERCENT_CHANGE_DECIMAL_PLACES = Decimal("0.01")
 
 
 UNCATEGORIZED_CATEGORY_NAME = "Uncategorized"
@@ -219,6 +227,168 @@ def get_category_summary(
         )
         for category_id, total_spent in category_totals.items()
     ]
+
+
+# Builds the comparison between the two most recent COMPLETE buckets in a
+# chronologically-ordered spending trend series.
+# This function exists to keep the "never compare an in-progress period
+# against a finished one" rule (VF-015B) in one place, since it's easy to
+# get wrong by comparing the last two buckets positionally instead of the
+# last two that have actually finished.
+# Parameters:
+# - buckets: chronologically ordered (oldest first) SpendingTrendBucket list.
+# Returns:
+# - PeriodOverPeriodComparison, or None when fewer than two complete
+#   buckets exist in the series.
+def _build_period_over_period(
+    buckets: list[SpendingTrendBucket],
+) -> Optional[PeriodOverPeriodComparison]:
+    complete_buckets = [bucket for bucket in buckets if bucket.is_complete]
+
+    if len(complete_buckets) < 2:
+        return None
+
+    previous_bucket, current_bucket = complete_buckets[-2], complete_buckets[-1]
+
+    absolute_change = current_bucket.total_spent - previous_bucket.total_spent
+
+    if previous_bucket.total_spent == 0:
+        # Percentage change is mathematically undefined against a zero
+        # base - never reported as infinity, 100, or 0.
+        percent_change = None
+    else:
+        percent_change = (
+            (current_bucket.total_spent - previous_bucket.total_spent)
+            / previous_bucket.total_spent
+            * Decimal("100")
+        ).quantize(PERCENT_CHANGE_DECIMAL_PLACES)
+
+    if absolute_change > 0:
+        direction = "up"
+    elif absolute_change < 0:
+        direction = "down"
+    else:
+        direction = "unchanged"
+
+    return PeriodOverPeriodComparison(
+        current_period_start=current_bucket.period_start,
+        current_period_end=current_bucket.period_end,
+        previous_period_start=previous_bucket.period_start,
+        previous_period_end=previous_bucket.period_end,
+        current_total_spent=current_bucket.total_spent,
+        previous_total_spent=previous_bucket.total_spent,
+        absolute_change=absolute_change,
+        percent_change=percent_change,
+        direction=direction,
+    )
+
+
+# Calculates a bounded historical base-currency spending time series for the
+# authenticated user (VF-015B).
+# This function exists to answer "how has my spending moved over time,"
+# distinct from Budget Status (per-Budget, original-currency, current-
+# period-only) and from monthly/category summary (single period only).
+#
+# Every requested calendar bucket is emitted, including one with no
+# Expenses at all (total_spent 0.00) - a client must never need to
+# reconstruct missing dates. Each bucket sums resolved Expenses' persisted
+# base_amount (VF-014B5C/B5D) - never the original mixed-currency amount,
+# never recomputed from fx_rate, never re-fetched from a provider. A
+# legacy unresolved Expense (base_amount is None), or a resolved Expense
+# whose persisted base_currency no longer matches the user's current base
+# currency, is excluded from the total and counted separately - identical
+# to the monthly/category summary rule.
+#
+# effective_end = min(period_end, as_of) is used as the inclusive upper
+# bound for every bucket, uniformly - this is what keeps a future-dated
+# Expense from leaking into the current (incomplete) bucket without any
+# special-casing: for a complete bucket effective_end already equals
+# period_end, so the same filter is exactly right for both cases.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses.
+# - period: one of "day", "week", "month".
+# - count: number of buckets to return. Must be >= 1; upper-bound
+#   validation is the router's responsibility (VF-015B keeps this function
+#   a pure, deterministic function of its arguments, matching
+#   get_budget_status's as_of convention).
+# - as_of: reference date the series ends on. The caller (the router) is
+#   responsible for defaulting this to today.
+# Returns:
+# - SpendingTrendResponse with `count` chronologically ordered buckets and
+#   an optional period_over_period comparison.
+def get_spending_trend(
+    db_session: Session,
+    user_id: UUID,
+    period: str,
+    count: int,
+    as_of: date,
+) -> SpendingTrendResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    calendar_periods = calendar_period.resolve_recent_periods(
+        period=period,
+        as_of=as_of,
+        count=count,
+    )
+
+    expenses = expenses_repository.get_expenses_in_date_range(
+        db_session=db_session,
+        user_id=user_id,
+        start_date=calendar_periods[0].period_start,
+        end_date=calendar_periods[-1].period_end,
+    )
+
+    buckets: list[SpendingTrendBucket] = []
+
+    for window in calendar_periods:
+        effective_end = min(window.period_end, as_of)
+        is_complete = window.period_end < as_of
+
+        total_spent = BUCKET_AMOUNT_DECIMAL_PLACES
+        expenses_count = 0
+        unresolved_expenses_count = 0
+
+        for expense in expenses:
+            if expense.expense_date < window.period_start:
+                continue
+
+            if expense.expense_date > effective_end:
+                # Excludes anything after this bucket's completed range,
+                # and - for the current, incomplete bucket, where
+                # effective_end == as_of - excludes future-dated Expenses.
+                continue
+
+            if expense.base_amount is None or expense.base_currency != base_currency:
+                unresolved_expenses_count += 1
+                continue
+
+            total_spent += expense.base_amount
+            expenses_count += 1
+
+        buckets.append(
+            SpendingTrendBucket(
+                period_start=window.period_start,
+                period_end=window.period_end,
+                effective_end=effective_end,
+                is_complete=is_complete,
+                total_spent=total_spent,
+                expenses_count=expenses_count,
+                unresolved_expenses_count=unresolved_expenses_count,
+            )
+        )
+
+    return SpendingTrendResponse(
+        base_currency=base_currency,
+        period=period,
+        count=count,
+        as_of=as_of,
+        buckets=buckets,
+        period_over_period=_build_period_over_period(buckets),
+    )
 
 
 # Resolves the calendar window a budget's status should be reported against.
