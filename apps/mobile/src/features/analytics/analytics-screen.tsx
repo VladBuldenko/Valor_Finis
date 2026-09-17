@@ -185,13 +185,20 @@ export function AnalyticsScreen() {
                 {forecast.days_in_month} days
               </Text>
 
-              {forecast.average_daily_spending !== null &&
-              forecast.projected_spending !== null ? (
+              {/* forecast_status is the authoritative state machine here -
+                  never inferred from whether average_daily_spending/
+                  projected_spending happen to be null. The backend
+                  contract guarantees both are non-null exactly when
+                  forecast_status is "available" (see
+                  SpendingForecastResponse in analytics.types.ts), so the
+                  non-null assertions below only satisfy TypeScript; they
+                  are not the availability decision itself. */}
+              {forecast.forecast_status === "available" ? (
                 <>
                   <Text style={styles.secondaryText}>
                     Average per day:{" "}
                     {formatAmount(
-                      forecast.average_daily_spending,
+                      forecast.average_daily_spending!,
                       forecast.base_currency,
                     )}
                   </Text>
@@ -199,7 +206,7 @@ export function AnalyticsScreen() {
                   <Text style={styles.secondaryText}>
                     Projected month total:{" "}
                     {formatAmount(
-                      forecast.projected_spending,
+                      forecast.projected_spending!,
                       forecast.base_currency,
                     )}
                   </Text>
