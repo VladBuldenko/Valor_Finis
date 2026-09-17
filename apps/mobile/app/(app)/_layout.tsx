@@ -10,6 +10,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="analytics"
+        options={{
+          title: "Analytics",
+        }}
+      />
+      <Stack.Screen
         name="budgets"
         options={{
           title: "Budgets",

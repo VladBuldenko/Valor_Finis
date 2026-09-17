@@ -141,9 +141,13 @@ export function CategoriesScreen() {
       //   amounts move to Uncategorized.
       // - ["analytics", "budget-status", userId]: budget/category
       //   association and label may change.
-      // Deliberately NOT invalidated: "monthly-summary" (expense amounts
-      // and totals are unchanged by a category deletion) and
-      // "goals"/"goal-progress" (Goal has no category_id at all).
+      // - ["analytics", "category-trend", userId] (VF-015C): same
+      //   Uncategorized regrouping as category-summary above.
+      // Deliberately NOT invalidated: "monthly-summary" and
+      // "spending-trend"/"spending-forecast" (VF-015B/D) - expense amounts
+      // and totals are unchanged by a category deletion, only the category
+      // grouping is - and "goals"/"goal-progress" (Goal has no category_id
+      // at all).
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["categories", session?.user.id, "all"],
@@ -162,6 +166,9 @@ export function CategoriesScreen() {
         }),
         queryClient.invalidateQueries({
           queryKey: ["analytics", "budget-status", session?.user.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "category-trend", session?.user.id],
         }),
       ]);
     },

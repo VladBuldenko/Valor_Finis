@@ -48,6 +48,19 @@ function invalidateReceiptConfirmationQueries(
     queryClient.invalidateQueries({
       queryKey: ["analytics", "budget-status", userId],
     }),
+    // VF-015B/C/D: a confirmed receipt creates an Expense, which changes
+    // historical/category trends and the current-month forecast too - the
+    // prefix match here covers every selected-period/count variant already
+    // cached.
+    queryClient.invalidateQueries({
+      queryKey: ["analytics", "spending-trend", userId],
+    }),
+    queryClient.invalidateQueries({
+      queryKey: ["analytics", "category-trend", userId],
+    }),
+    queryClient.invalidateQueries({
+      queryKey: ["analytics", "spending-forecast", userId],
+    }),
   ]);
 }
 

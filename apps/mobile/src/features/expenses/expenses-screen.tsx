@@ -116,6 +116,18 @@ export function ExpensesScreen() {
             session?.user.id,
           ],
         }),
+        // VF-015B/C/D: a new Expense changes historical/category trends
+        // and the current-month forecast too - the prefix match here
+        // covers every selected-period/count variant already cached.
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "spending-trend", session?.user.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "category-trend", session?.user.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", "spending-forecast", session?.user.id],
+        }),
       ]);
     },
 
