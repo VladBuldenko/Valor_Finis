@@ -10,6 +10,8 @@ from app.core import calendar_period
 from app.modules.analytics.analytics_schemas import (
     BudgetStatusItem,
     CategorySummaryItem,
+    CategoryTrendItem,
+    CategoryTrendResponse,
     GoalProgressItem,
     MonthlySummaryResponse,
     PeriodOverPeriodComparison,
@@ -283,21 +285,14 @@ def _build_period_over_period(
     )
 
 
-# Calculates a bounded historical base-currency spending time series for the
-# authenticated user (VF-015B).
-# This function exists to answer "how has my spending moved over time,"
-# distinct from Budget Status (per-Budget, original-currency, current-
-# period-only) and from monthly/category summary (single period only).
-#
-# Every requested calendar bucket is emitted, including one with no
-# Expenses at all (total_spent 0.00) - a client must never need to
-# reconstruct missing dates. Each bucket sums resolved Expenses' persisted
-# base_amount (VF-014B5C/B5D) - never the original mixed-currency amount,
-# never recomputed from fx_rate, never re-fetched from a provider. A
-# legacy unresolved Expense (base_amount is None), or a resolved Expense
-# whose persisted base_currency no longer matches the user's current base
-# currency, is excluded from the total and counted separately - identical
-# to the monthly/category summary rule.
+# Builds one calendar-bucket series (VF-015B/C) from an already-filtered
+# list of Expenses.
+# This function exists as the single place that turns "a set of Expenses"
+# into "a base-currency bucket series" - both get_spending_trend (the
+# user's whole spending) and get_category_trend (one category's spending)
+# need exactly this same per-bucket resolved/unresolved-FX/future-date
+# logic, and previously diverging copies would be a real correctness risk
+# (a fix applied to one and not the other).
 #
 # effective_end = min(period_end, as_of) is used as the inclusive upper
 # bound for every bucket, uniformly - this is what keeps a future-dated
@@ -305,43 +300,21 @@ def _build_period_over_period(
 # special-casing: for a complete bucket effective_end already equals
 # period_end, so the same filter is exactly right for both cases.
 # Parameters:
-# - db_session: active SQLAlchemy database session.
-# - user_id: authenticated user identifier used to filter expenses.
-# - period: one of "day", "week", "month".
-# - count: number of buckets to return. Must be >= 1; upper-bound
-#   validation is the router's responsibility (VF-015B keeps this function
-#   a pure, deterministic function of its arguments, matching
-#   get_budget_status's as_of convention).
-# - as_of: reference date the series ends on. The caller (the router) is
-#   responsible for defaulting this to today.
+# - calendar_periods: chronologically ordered (oldest first) calendar
+#   buckets from calendar_period.resolve_recent_periods.
+# - expenses: Expenses already scoped to whatever this series represents
+#   (all of the user's Expenses in range, or one category's).
+# - base_currency: the user's authoritative base currency.
+# - as_of: reference date the series ends on.
 # Returns:
-# - SpendingTrendResponse with `count` chronologically ordered buckets and
-#   an optional period_over_period comparison.
-def get_spending_trend(
-    db_session: Session,
-    user_id: UUID,
-    period: str,
-    count: int,
+# - list[SpendingTrendBucket], one per calendar_periods entry, in the
+#   same chronological order.
+def _build_spending_trend_buckets(
+    calendar_periods: list[calendar_period.CalendarPeriod],
+    expenses: list,
+    base_currency: str,
     as_of: date,
-) -> SpendingTrendResponse:
-    base_currency = financial_settings_service.get_base_currency(
-        db_session=db_session,
-        user_id=user_id,
-    )
-
-    calendar_periods = calendar_period.resolve_recent_periods(
-        period=period,
-        as_of=as_of,
-        count=count,
-    )
-
-    expenses = expenses_repository.get_expenses_in_date_range(
-        db_session=db_session,
-        user_id=user_id,
-        start_date=calendar_periods[0].period_start,
-        end_date=calendar_periods[-1].period_end,
-    )
-
+) -> list[SpendingTrendBucket]:
     buckets: list[SpendingTrendBucket] = []
 
     for window in calendar_periods:
@@ -381,6 +354,69 @@ def get_spending_trend(
             )
         )
 
+    return buckets
+
+
+# Calculates a bounded historical base-currency spending time series for the
+# authenticated user (VF-015B).
+# This function exists to answer "how has my spending moved over time,"
+# distinct from Budget Status (per-Budget, original-currency, current-
+# period-only) and from monthly/category summary (single period only).
+#
+# Every requested calendar bucket is emitted, including one with no
+# Expenses at all (total_spent 0.00) - a client must never need to
+# reconstruct missing dates. Each bucket sums resolved Expenses' persisted
+# base_amount (VF-014B5C/B5D) - never the original mixed-currency amount,
+# never recomputed from fx_rate, never re-fetched from a provider. A
+# legacy unresolved Expense (base_amount is None), or a resolved Expense
+# whose persisted base_currency no longer matches the user's current base
+# currency, is excluded from the total and counted separately - identical
+# to the monthly/category summary rule.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses.
+# - period: one of "day", "week", "month".
+# - count: number of buckets to return. Must be >= 1; upper-bound
+#   validation is the router's responsibility (VF-015B keeps this function
+#   a pure, deterministic function of its arguments, matching
+#   get_budget_status's as_of convention).
+# - as_of: reference date the series ends on. The caller (the router) is
+#   responsible for defaulting this to today.
+# Returns:
+# - SpendingTrendResponse with `count` chronologically ordered buckets and
+#   an optional period_over_period comparison.
+def get_spending_trend(
+    db_session: Session,
+    user_id: UUID,
+    period: str,
+    count: int,
+    as_of: date,
+) -> SpendingTrendResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    calendar_periods = calendar_period.resolve_recent_periods(
+        period=period,
+        as_of=as_of,
+        count=count,
+    )
+
+    expenses = expenses_repository.get_expenses_in_date_range(
+        db_session=db_session,
+        user_id=user_id,
+        start_date=calendar_periods[0].period_start,
+        end_date=calendar_periods[-1].period_end,
+    )
+
+    buckets = _build_spending_trend_buckets(
+        calendar_periods=calendar_periods,
+        expenses=expenses,
+        base_currency=base_currency,
+        as_of=as_of,
+    )
+
     return SpendingTrendResponse(
         base_currency=base_currency,
         period=period,
@@ -388,6 +424,136 @@ def get_spending_trend(
         as_of=as_of,
         buckets=buckets,
         period_over_period=_build_period_over_period(buckets),
+    )
+
+
+# Calculates bounded historical base-currency spending trends grouped by
+# category for the authenticated user (VF-015C).
+# This function exists to answer "how has spending in each category moved
+# over time," reusing get_spending_trend's bucket-building and comparison
+# logic per category rather than duplicating it.
+#
+# A single bounded Expense query covers the whole requested range (never
+# get_expenses(user_id), never one query per category or per bucket) -
+# Expenses are grouped by category_id once, then each category's buckets
+# are built from its own pre-filtered subset, so total work stays
+# proportional to (buckets x matching Expenses), not
+# (buckets x categories x Expenses).
+#
+# A category appears in the response only when it has at least one
+# matching Expense in the requested range - including when every matching
+# Expense is unresolved/incompatible-currency, so incomplete legacy data
+# is never silently hidden. A category with zero Expenses anywhere in the
+# range is never returned, unless it was explicitly requested via
+# category_id (in which case it is always returned, with all-zero
+# buckets). Expenses whose category was later deleted have
+# category_id NULL (enforced by the FK) and appear under Uncategorized -
+# VF-015C does not attempt to recover a deleted category's historical name.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses/categories.
+# - period: one of "day", "week", "month".
+# - count: number of buckets to return per category. Must be >= 1;
+#   upper-bound validation is the router's responsibility.
+# - as_of: reference date the series ends on. The caller (the router) is
+#   responsible for defaulting this to today.
+# - category_id: optional. When provided, must be owned by user_id (raises
+#   CategoryNotFoundError otherwise, the same convention every other
+#   category-ownership check in this codebase uses - this never reveals
+#   whether a category owned by a different user exists). When provided,
+#   the response contains exactly that one category. Omit for Uncategorized -
+#   there is no separate sentinel value for it.
+# Returns:
+# - CategoryTrendResponse with one CategoryTrendItem per matching category,
+#   ordered by category_name (case-insensitive) then category_id.
+# Raises:
+# - CategoryNotFoundError: category_id is set and not owned by user_id.
+def get_category_trend(
+    db_session: Session,
+    user_id: UUID,
+    period: str,
+    count: int,
+    as_of: date,
+    category_id: Optional[UUID] = None,
+) -> CategoryTrendResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    if category_id is not None:
+        # Ownership/existence check up front - fails before doing any
+        # further work, and never distinguishes "doesn't exist" from
+        # "belongs to someone else."
+        categories_repository.get_category_by_id(
+            db_session=db_session,
+            category_id=category_id,
+            user_id=user_id,
+        )
+
+    calendar_periods = calendar_period.resolve_recent_periods(
+        period=period,
+        as_of=as_of,
+        count=count,
+    )
+
+    expenses = expenses_repository.get_expenses_in_date_range(
+        db_session=db_session,
+        user_id=user_id,
+        start_date=calendar_periods[0].period_start,
+        end_date=calendar_periods[-1].period_end,
+    )
+
+    if category_id is not None:
+        expenses = [expense for expense in expenses if expense.category_id == category_id]
+
+    expenses_by_category_id: dict[Optional[UUID], list] = defaultdict(list)
+    for expense in expenses:
+        expenses_by_category_id[expense.category_id].append(expense)
+
+    if category_id is not None and category_id not in expenses_by_category_id:
+        # A valid, owned category with zero matching Expenses in range is
+        # still returned, with all-zero buckets - never omitted.
+        expenses_by_category_id[category_id] = []
+
+    category_name_map = build_category_name_map(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    ordered_category_ids = sorted(
+        expenses_by_category_id.keys(),
+        key=lambda candidate_id: (
+            get_category_name(candidate_id, category_name_map).casefold(),
+            str(candidate_id) if candidate_id is not None else "",
+        ),
+    )
+
+    categories: list[CategoryTrendItem] = []
+
+    for candidate_id in ordered_category_ids:
+        buckets = _build_spending_trend_buckets(
+            calendar_periods=calendar_periods,
+            expenses=expenses_by_category_id[candidate_id],
+            base_currency=base_currency,
+            as_of=as_of,
+        )
+
+        categories.append(
+            CategoryTrendItem(
+                category_id=candidate_id,
+                category_name=get_category_name(candidate_id, category_name_map),
+                buckets=buckets,
+                period_over_period=_build_period_over_period(buckets),
+            )
+        )
+
+    return CategoryTrendResponse(
+        base_currency=base_currency,
+        period=period,
+        count=count,
+        as_of=as_of,
+        categories=categories,
     )
 
 

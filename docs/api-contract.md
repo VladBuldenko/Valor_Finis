@@ -1043,6 +1043,100 @@ Response:
 - Never performs an FX/network call - reads only already-persisted
   base_amount, exactly like Monthly/Category Summary.
 
+Category Trend
+
+GET /api/v1/analytics/category-trend?period=month&count=6
+
+VF-015C: bounded historical base-currency spending trends broken down by
+category - Spending Trend above, split per category, with each category
+getting its own bucket series and its own period_over_period comparison.
+Always calculated against the server's current date - there is no public
+as_of parameter.
+
+Query parameters:
+
+Parameter
+
+Required
+
+Validation
+
+period
+
+yes
+
+one of "day", "week", "month"
+
+count
+
+no
+
+same defaults/maximums as Spending Trend: 30/12/6 default and 366/104/24
+maximum for day/week/month respectively
+
+category_id
+
+no
+
+must be a category owned by the authenticated user; 404 if it does not
+exist or belongs to another user (the response never distinguishes the
+two cases). Omit to get every category with matching Expenses in range.
+There is no separate sentinel value for Uncategorized - it is included
+automatically whenever a matching Expense has category_id null.
+
+Response:
+
+{
+  "base_currency": "EUR",
+  "period": "month",
+  "count": 6,
+  "as_of": "2026-09-17",
+  "categories": [
+    {
+      "category_id": "<uuid-or-null>",
+      "category_name": "Food",
+      "buckets": [
+        {
+          "period_start": "2026-04-01",
+          "period_end": "2026-04-30",
+          "effective_end": "2026-04-30",
+          "is_complete": true,
+          "total_spent": "100.00",
+          "expenses_count": 2,
+          "unresolved_expenses_count": 0
+        }
+      ],
+      "period_over_period": { "...": "same shape as Spending Trend above" }
+    }
+  ]
+}
+
+- Bucket fields, effective_end/is_complete semantics, the resolved/
+  unresolved-FX rule, and period_over_period semantics are all identical
+  to Spending Trend above, applied per category instead of to the user's
+  overall spending.
+- categories only includes a category when it has at least one matching
+  Expense in the requested range - including when every matching Expense
+  is unresolved/incompatible-currency, so a category is never silently
+  hidden just because none of its data has resolved yet. A category
+  configured by the user but with zero Expenses anywhere in the range is
+  not returned, unless category_id explicitly requested it - in that
+  case it is always returned, with every bucket at "0.00".
+- Uncategorized: any matching Expense with category_id null is grouped
+  under category_id: null, category_name: "Uncategorized" - the same
+  fallback Category Summary already uses.
+- Deleted-category limitation: deleting a Category sets
+  Expense.category_id to NULL (the foreign key is ON DELETE SET NULL).
+  Expenses that belonged to a since-deleted category therefore appear
+  under Uncategorized from that point on - there is no historical record
+  of the deleted category's name, and this endpoint does not attempt to
+  recover or reconstruct one.
+- categories is ordered by category_name case-insensitive ascending, with
+  category_id as a deterministic tie-breaker - never by spending amount.
+  Ranking categories by spend is a separate, not-yet-built concern.
+- Never performs an FX/network call - reads only already-persisted
+  base_amount, exactly like Spending Trend.
+
 Budget Status
 
 GET /api/v1/analytics/budget-status

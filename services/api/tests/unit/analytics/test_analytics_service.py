@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from typing import Optional, cast
+import pytest
 from sqlalchemy.orm import Session
 from pytest import MonkeyPatch
 
@@ -1103,6 +1104,656 @@ def test_get_spending_trend_comparison_null_when_fewer_than_two_complete_buckets
 
     # Assert
     assert trend.period_over_period is None
+
+
+# ---------------------------------------------------------------------------
+# get_category_trend (VF-015C category spending trends)
+# ---------------------------------------------------------------------------
+
+
+# Mocks categories_repository.get_category_by_id (the ownership/existence
+# check) so category-trend tests never touch a real database session.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the repository call.
+# - owned_category_ids: the set of category ids this fake user owns.
+# Returns:
+# - None.
+def wire_category_ownership(
+    monkeypatch: MonkeyPatch, owned_category_ids: set,
+) -> None:
+    from app.modules.categories.errors import CategoryNotFoundError
+
+    def fake_get_category_by_id(db_session, category_id, user_id):
+        if category_id not in owned_category_ids:
+            raise CategoryNotFoundError()
+        return make_model(id=category_id, user_id=user_id)
+
+    monkeypatch.setattr(
+        analytics_service.categories_repository,
+        "get_category_by_id",
+        fake_get_category_by_id,
+    )
+
+
+# Mocks categories_repository.get_categories (used by build_category_name_map)
+# so category-trend tests never touch a real database session.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the repository call.
+# - categories: fake category models to return.
+# Returns:
+# - None.
+def wire_categories(monkeypatch: MonkeyPatch, categories: list) -> None:
+    monkeypatch.setattr(
+        analytics_service.categories_repository,
+        "get_categories",
+        lambda **kwargs: categories,
+    )
+
+
+# Tests (A) that multiple categories are computed independently, (resolved
+# summed directly) that base_amount is summed per category, and (I) that
+# every returned item carries the shared base_currency.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if each category's total reflects only its own
+#   Expenses.
+def test_get_category_trend_multiple_categories_independent(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    transport_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [
+        make_model(id=food_id, name="Food"),
+        make_model(id=transport_id, name="Transport"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 9, 10), category_id=food_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("40.00"), expense_date=date(2026, 9, 10), category_id=transport_id,
+            base_amount=Decimal("40.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    by_id = {c.category_id: c for c in trend.categories}
+    assert len(trend.categories) == 2
+    assert by_id[food_id].category_name == "Food"
+    assert by_id[food_id].buckets[0].total_spent == Decimal("20.00")
+    assert by_id[transport_id].buckets[0].total_spent == Decimal("40.00")
+    assert trend.base_currency == "EUR"
+    assert trend.period == "month"
+    assert trend.count == 1
+    assert trend.as_of == date(2026, 9, 17)
+
+
+# Tests (Uncategorized) that an Expense with category_id None is grouped
+# under Uncategorized.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the None-keyed item reads "Uncategorized".
+def test_get_category_trend_uncategorized(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("15.00"), expense_date=date(2026, 9, 10), category_id=None,
+            base_amount=Decimal("15.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert len(trend.categories) == 1
+    assert trend.categories[0].category_id is None
+    assert trend.categories[0].category_name == "Uncategorized"
+    assert trend.categories[0].buckets[0].total_spent == Decimal("15.00")
+
+
+# Tests that a category whose only matching Expenses are all unresolved
+# still appears, with a zero total and a nonzero unresolved count - never
+# silently dropped.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the category is present with total 0.00.
+def test_get_category_trend_unresolved_only_category_remains_present(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    legacy_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=legacy_id, name="Legacy")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("40.00"), currency="USD", expense_date=date(2026, 9, 10), category_id=legacy_id,
+            base_amount=None, base_currency=None,
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert len(trend.categories) == 1
+    item = trend.categories[0]
+    assert item.category_id == legacy_id
+    assert item.buckets[0].total_spent == Decimal("0.00")
+    assert item.buckets[0].expenses_count == 0
+    assert item.buckets[0].unresolved_expenses_count == 1
+
+
+# Tests that a category whose only matching Expense is resolved but
+# persisted against an incompatible base_currency still appears, excluded
+# from the total and counted as unresolved.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the category is present with total 0.00 and
+#   unresolved_expenses_count == 1.
+def test_get_category_trend_incompatible_currency_category_remains_present(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=food_id,
+            base_amount=Decimal("900.00"), base_currency="USD",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    item = trend.categories[0]
+    assert item.buckets[0].total_spent == Decimal("0.00")
+    assert item.buckets[0].unresolved_expenses_count == 1
+
+
+# Tests (FILTER) that an owned category_id returns exactly one category,
+# scoped only to that category's Expenses even when others exist.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if only the requested category is returned.
+def test_get_category_trend_owned_category_id_returns_exactly_one(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    transport_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_category_ownership(monkeypatch, {food_id})
+    wire_categories(monkeypatch, [
+        make_model(id=food_id, name="Food"),
+        make_model(id=transport_id, name="Transport"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 9, 10), category_id=food_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=transport_id,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17), category_id=food_id,
+    )
+
+    # Assert
+    assert len(trend.categories) == 1
+    assert trend.categories[0].category_id == food_id
+    assert trend.categories[0].buckets[0].total_spent == Decimal("20.00")
+
+
+# Tests (FILTER) that a valid, owned category with zero Expenses in the
+# requested range still returns exactly one category, with all-zero
+# buckets - never omitted.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if one category with zero-value buckets returns.
+def test_get_category_trend_owned_category_id_zero_activity(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_category_ownership(monkeypatch, {food_id})
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17), category_id=food_id,
+    )
+
+    # Assert
+    assert len(trend.categories) == 1
+    item = trend.categories[0]
+    assert item.category_id == food_id
+    assert len(item.buckets) == 3
+    assert all(b.total_spent == Decimal("0.00") for b in item.buckets)
+
+
+# Tests (FILTER) that a category_id not owned by the caller (whether it
+# belongs to another user or does not exist at all) raises the same
+# CategoryNotFoundError every other ownership check in this codebase uses
+# - never distinguishing the two cases.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if CategoryNotFoundError is raised.
+def test_get_category_trend_unowned_category_id_raises_not_found(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.modules.categories.errors import CategoryNotFoundError
+
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    other_users_category_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_category_ownership(monkeypatch, set())  # owns nothing
+
+    # Act / Assert
+    with pytest.raises(CategoryNotFoundError):
+        analytics_service.get_category_trend(
+            db_session=db_session, user_id=user_id, period="month",
+            count=1, as_of=date(2026, 9, 17), category_id=other_users_category_id,
+        )
+
+
+# Tests (BUCKETS) that an empty period inside the requested window is
+# emitted as an explicit zero bucket per category, never omitted.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if all three buckets are present, May is zero.
+def test_get_category_trend_empty_periods_emitted_per_category(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 4, 15), category_id=food_id,
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 6, 15), category_id=food_id,
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act - as_of inside June, so count=3 resolves to exactly April/May/June
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 6, 20),
+    )
+
+    # Assert
+    by_start = {b.period_start: b for b in trend.categories[0].buckets}
+    assert by_start[date(2026, 4, 1)].total_spent == Decimal("100.00")
+    assert by_start[date(2026, 5, 1)].total_spent == Decimal("0.00")
+    assert by_start[date(2026, 5, 1)].expenses_count == 0
+    assert by_start[date(2026, 6, 1)].total_spent == Decimal("50.00")
+
+
+# Tests (BUCKETS) that the current bucket is incomplete with effective_end
+# clamped to as_of, and that a future-dated Expense in that category does
+# not leak into its total.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the current bucket is incomplete and excludes
+#   the future-dated Expense.
+def test_get_category_trend_current_bucket_incomplete_future_excluded(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 25), category_id=food_id,  # future
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    bucket = trend.categories[0].buckets[0]
+    assert bucket.is_complete is False
+    assert bucket.effective_end == date(2026, 9, 17)
+    assert bucket.total_spent == Decimal("0.00")
+
+
+# Tests (COMPARISON) that each category's period_over_period uses that
+# category's own two most recent complete buckets, never the current
+# partial one.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the comparison reflects July -> August only.
+def test_get_category_trend_period_over_period_per_category(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 7, 10), category_id=food_id,
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("150.00"), expense_date=date(2026, 8, 10), category_id=food_id,
+            base_amount=Decimal("150.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=food_id,  # current, incomplete
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    comparison = trend.categories[0].period_over_period
+    assert comparison is not None
+    assert comparison.previous_total_spent == Decimal("100.00")
+    assert comparison.current_total_spent == Decimal("150.00")
+    assert comparison.direction == "up"
+
+
+# Tests (DECIMAL) that a category's total is an exact Decimal sum with no
+# floating point drift.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the sum is exactly Decimal("0.30").
+def test_get_category_trend_decimal_precision(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=food_id, name="Food")])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("0.10"), expense_date=date(2026, 9, i), category_id=food_id,
+            base_amount=Decimal("0.10"), base_currency="EUR",
+        )
+        for i in (10, 11, 12)
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    total = trend.categories[0].buckets[0].total_spent
+    assert total == Decimal("0.30")
+    assert isinstance(total, Decimal)
+
+
+# Tests (ORDERING) that categories are returned in case-insensitive
+# ascending name order, not spending order or insertion order.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the order is alphabetical regardless of totals.
+def test_get_category_trend_deterministic_order(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    zebra_id = uuid4()
+    apple_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [
+        make_model(id=zebra_id, name="zebra"),  # lowercase, spent more
+        make_model(id=apple_id, name="Apple"),  # capitalized, spent less
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=zebra_id,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("1.00"), expense_date=date(2026, 9, 10), category_id=apple_id,
+            base_amount=Decimal("1.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert - "Apple" sorts before "zebra" case-insensitively, despite
+    # zebra having far higher spend and being listed first in categories.
+    assert [c.category_name for c in trend.categories] == ["Apple", "zebra"]
+
+
+# Tests (ORDERING - Uncategorized in context) that Uncategorized
+# participates in the same case-insensitive ordering as named categories,
+# not just when it is the only item returned. "Utilities" is chosen
+# deliberately: both it and "Uncategorized" start with "U", so this only
+# passes if the comparison looks past the shared first character
+# ("Uncategorized"[1] == "n" < "Utilities"[1] == "t").
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes only for the exact order
+#   ["Food", "Uncategorized", "Utilities"].
+def test_get_category_trend_uncategorized_orders_with_named_categories(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    utilities_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    # Listed out of alphabetical order, and Uncategorized (category_id=None)
+    # has by far the highest spend - neither insertion order nor spend
+    # should influence the result.
+    wire_categories(monkeypatch, [
+        make_model(id=utilities_id, name="Utilities"),
+        make_model(id=food_id, name="Food"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 9, 10), category_id=utilities_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=None,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("10.00"), expense_date=date(2026, 9, 10), category_id=food_id,
+            base_amount=Decimal("10.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert [c.category_name for c in trend.categories] == [
+        "Food", "Uncategorized", "Utilities",
+    ]
+    assert [c.category_id for c in trend.categories] == [
+        food_id, None, utilities_id,
+    ]
+
+
+# Tests (ORDERING - category_id tie-breaker) that when two categories'
+# names are identical under casefold() ("Food" vs "food"), the deterministic
+# tie-breaker is str(category_id) ascending - not insertion order, dict
+# order, or spend.
+#
+# Real PostgreSQL enforces case-insensitive category name uniqueness per
+# user (uq_categories_user_id_name_lower - see category_models.py), so two
+# such categories can never coexist through the real repository/database.
+# This test exercises the sort's tie-breaker branch directly at the
+# get_category_trend service boundary instead, which already mocks
+# categories_repository/expenses_repository for every other unit test in
+# this file - no database constraint is touched, exercised, or weakened.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes only if the lower category_id (by string value)
+#   sorts first.
+def test_get_category_trend_category_id_tie_breaker_when_names_collide(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange - fixed UUIDs so their string ordering is known up front:
+    # "...0001" < "...0002" lexicographically.
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    lower_id = UUID("00000000-0000-0000-0000-000000000001")
+    higher_id = UUID("00000000-0000-0000-0000-000000000002")
+    wire_base_currency(monkeypatch, "EUR")
+    # higher_id is listed first and has lower spend - if either insertion
+    # order or spend drove the result, higher_id would come first.
+    wire_categories(monkeypatch, [
+        make_model(id=higher_id, name="Food"),
+        make_model(id=lower_id, name="food"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("10.00"), expense_date=date(2026, 9, 10), category_id=higher_id,
+            base_amount=Decimal("10.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=lower_id,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert - both names casefold to "food"; the lower category_id string
+    # sorts first, despite higher_id being listed first and spending less.
+    assert str(lower_id) < str(higher_id)
+    assert [c.category_id for c in trend.categories] == [lower_id, higher_id]
+
+
+# Tests (ZERO DATA) that no category_id filter and no matching Expenses
+# returns an empty categories list, not a list of every configured
+# category with no activity.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if categories == [].
+def test_get_category_trend_no_expenses_returns_empty_categories(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_categories(monkeypatch, [make_model(id=uuid4(), name="Food")])  # configured, but unused
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.categories == []
 
 
 # ---------------------------------------------------------------------------
