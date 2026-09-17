@@ -1242,6 +1242,514 @@ def test_spending_trend_endpoint_default_counts_applied(
         assert len(body["buckets"]) == expected_count
 
 
+# ---------------------------------------------------------------------------
+# VF-015C category spending trends
+# ---------------------------------------------------------------------------
+
+
+# Tests (CATEGORY GROUPING A) that multiple categories are computed
+# independently, each summing only its own resolved base_amount.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if each category's current-bucket total reflects
+#   only its own Expenses.
+def test_category_trend_endpoint_multiple_categories_independent(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    food = create_category(client=client, user_id=user_id, name="Food")
+    hobbies = create_category(client=client, user_id=user_id, name="Hobbies")
+
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=20, category_id=food["id"],
+    )
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=40, category_id=hobbies["id"],
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_id = {c["category_id"]: c for c in body["categories"]}
+    assert Decimal(by_id[food["id"]]["buckets"][0]["total_spent"]) == Decimal("20.00")
+    assert Decimal(by_id[hobbies["id"]]["buckets"][0]["total_spent"]) == Decimal("40.00")
+    assert body["base_currency"] == "EUR"
+
+
+# Tests (CATEGORY GROUPING - Uncategorized) that an Expense with no
+# category appears under Uncategorized.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if a category_id: null item named "Uncategorized" appears.
+def test_category_trend_endpoint_uncategorized(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=15, category_id=None)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["categories"]) == 1
+    assert body["categories"][0]["category_id"] is None
+    assert body["categories"][0]["category_name"] == "Uncategorized"
+
+
+# Tests (CATEGORY GROUPING) that a category whose only matching Expense is
+# a legacy unresolved row still appears, with a zero total and a nonzero
+# unresolved count.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the category is present with total "0.00".
+def test_category_trend_endpoint_unresolved_only_category_remains_present(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    from app.db.database_session import SessionLocal
+    from app.modules.expenses.expenses_models import ExpenseModel
+
+    user_id_uuid = uuid4()
+    user_id = str(user_id_uuid)
+    today = date.today()
+    category = create_category(client=client, user_id=user_id, name="Legacy category")
+
+    db_session = SessionLocal()
+    legacy_expense = ExpenseModel(
+        user_id=user_id_uuid,
+        category_id=category["id"],
+        title="Legacy USD",
+        amount=Decimal("999.00"),
+        currency="USD",
+        expense_date=today,
+        source="manual",
+    )
+    db_session.add(legacy_expense)
+    db_session.commit()
+    db_session.close()
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["categories"]) == 1
+    item = body["categories"][0]
+    assert item["category_id"] == category["id"]
+    assert item["buckets"][0]["total_spent"] == "0.00"
+    assert item["buckets"][0]["unresolved_expenses_count"] == 1
+
+
+# Tests (FILTER) that an owned category_id returns exactly one category,
+# scoped only to that category, even when other categories have Expenses
+# in the same range.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if only the requested category is returned.
+def test_category_trend_endpoint_owned_category_filter(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    food = create_category(client=client, user_id=user_id, name="Food")
+    hobbies = create_category(client=client, user_id=user_id, name="Hobbies")
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=20, category_id=food["id"],
+    )
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=999, category_id=hobbies["id"],
+    )
+
+    # Act
+    response = client.get(
+        f"/api/v1/analytics/category-trend?period=month&count=1&category_id={food['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["categories"]) == 1
+    assert body["categories"][0]["category_id"] == food["id"]
+    assert Decimal(body["categories"][0]["buckets"][0]["total_spent"]) == Decimal("20.00")
+
+
+# Tests (FILTER) that a valid, owned category with zero Expenses in the
+# requested range still returns exactly one category, with all-zero buckets.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if one category with zero-value buckets returns.
+def test_category_trend_endpoint_owned_category_filter_zero_activity(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    food = create_category(client=client, user_id=user_id, name="Food")
+
+    # Act
+    response = client.get(
+        f"/api/v1/analytics/category-trend?period=month&count=3&category_id={food['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["categories"]) == 1
+    item = body["categories"][0]
+    assert len(item["buckets"]) == 3
+    assert all(b["total_spent"] == "0.00" for b in item["buckets"])
+
+
+# Tests (FILTER) that another user's category cannot be selected - the
+# request is rejected with the same not-found convention as a nonexistent
+# category, never revealing that the category exists for someone else.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 404.
+def test_category_trend_endpoint_other_users_category_rejected(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    other_users_category = create_category(client=client, user_id=other_user_id, name="Private")
+
+    # Act
+    response = client.get(
+        f"/api/v1/analytics/category-trend?period=month&count=1&category_id={other_users_category['id']}",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 404
+
+
+# Tests (FILTER) that a nonexistent category_id is rejected the same way
+# as an unowned one.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 404.
+def test_category_trend_endpoint_nonexistent_category_rejected(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        f"/api/v1/analytics/category-trend?period=month&count=1&category_id={uuid4()}",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    assert response.status_code == 404
+
+
+# Tests (BUCKETS) that empty periods are emitted as zero buckets per
+# category, and that day/week/month granularities all work end to end.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the week bucket for a category runs Monday-Sunday.
+def test_category_trend_endpoint_week_bucket_boundaries(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    week_start, week_end = week_bounds(today)
+    food = create_category(client=client, user_id=user_id, name="Food")
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=15, category_id=food["id"],
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=week&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    bucket = response.json()["categories"][0]["buckets"][-1]
+    assert bucket["period_start"] == week_start.isoformat()
+    assert bucket["period_end"] == week_end.isoformat()
+    assert Decimal(bucket["total_spent"]) == Decimal("15.00")
+
+
+# Tests (BUCKETS) that the current bucket is incomplete and a future-dated
+# Expense in that category does not leak into its total.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if is_complete is false and the future Expense
+#   is excluded.
+def test_category_trend_endpoint_current_bucket_incomplete_future_excluded(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    _, month_end = month_bounds(today)
+    food = create_category(client=client, user_id=user_id, name="Food")
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=20, category_id=food["id"],
+    )
+    if today < month_end:
+        future_date = today + timedelta(days=1)
+        create_expense_with(
+            client=client, user_id=user_id, expense_date=future_date.isoformat(), amount=999,
+            category_id=food["id"],
+        )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    bucket = response.json()["categories"][0]["buckets"][-1]
+    assert bucket["is_complete"] is False
+    assert bucket["effective_end"] == today.isoformat()
+    assert Decimal(bucket["total_spent"]) == Decimal("20.00")
+
+
+# Tests (COMPARISON) that period_over_period uses the two most recent
+# complete buckets for that category, never the current partial one.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the comparison reflects the two completed
+#   months, not the current one.
+def test_category_trend_endpoint_period_over_period(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, _ = month_bounds(today)
+    last_month_end = month_start - timedelta(days=1)
+    last_month_start, _ = month_bounds(last_month_end)
+    two_months_ago_end = last_month_start - timedelta(days=1)
+    food = create_category(client=client, user_id=user_id, name="Food")
+
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=two_months_ago_end.isoformat(), amount=100,
+        category_id=food["id"],
+    )
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=last_month_end.isoformat(), amount=150,
+        category_id=food["id"],
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=3",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    comparison = response.json()["categories"][0]["period_over_period"]
+    assert comparison is not None
+    assert Decimal(comparison["previous_total_spent"]) == Decimal("100.00")
+    assert Decimal(comparison["current_total_spent"]) == Decimal("150.00")
+    assert comparison["direction"] == "up"
+
+
+# Tests (CATEGORY DELETE SEMANTICS) that an Expense whose category was
+# later deleted appears under Uncategorized, never under a recovered
+# historical category name - Expense.category_id is set NULL by the FK,
+# and VF-015C does not attempt to recover the deleted name.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the Expense's total appears under Uncategorized.
+def test_category_trend_endpoint_deleted_category_becomes_uncategorized(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    category = create_category(client=client, user_id=user_id, name="Temporary")
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), amount=30, category_id=category["id"],
+    )
+
+    delete_response = client.delete(
+        f"/api/v1/categories/{category['id']}",
+        headers=auth_headers(user_id),
+    )
+    assert delete_response.status_code == 204, delete_response.text
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["categories"]) == 1
+    assert body["categories"][0]["category_id"] is None
+    assert body["categories"][0]["category_name"] == "Uncategorized"
+    assert Decimal(body["categories"][0]["buckets"][0]["total_spent"]) == Decimal("30.00")
+
+
+# Tests (SECURITY) that category-trend Expenses and category names are
+# scoped to the authenticated user only.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if another user's category/Expenses never appear.
+def test_category_trend_endpoint_ownership_isolation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    today = date.today()
+    other_category = create_category(client=client, user_id=other_user_id, name="Private food")
+    create_expense_with(
+        client=client, user_id=other_user_id, expense_date=today.isoformat(), amount=500,
+        category_id=other_category["id"],
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.json()["categories"] == []
+
+
+# Tests (NETWORK) that no FX provider is ever called while serving a
+# category-trend request.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if httpx.get is not called during the request.
+def test_category_trend_endpoint_never_calls_fx_providers(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    ecb_mock = _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+    food = create_category(client=client, user_id=user_id, name="Food")
+
+    create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), currency="USD", amount=100,
+        category_id=food["id"],
+    )
+    ecb_mock.reset_mock()
+
+    # Act
+    client.get("/api/v1/analytics/category-trend?period=month&count=3", headers=auth_headers(user_id))
+
+    # Assert
+    ecb_mock.assert_not_called()
+
+
+# Tests (ZERO DATA) that no category_id filter and no matching Expenses
+# returns an empty categories list.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if categories == [].
+def test_category_trend_endpoint_zero_data_returns_empty_categories(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json()["categories"] == []
+
+
+# Tests (VALIDATION) that an unsupported period, a count below 1, and a
+# count above the per-period maximum are all rejected, matching
+# spending-trend's exact validation.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if all three cases return 422.
+def test_category_trend_endpoint_validation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    # Act / Assert
+    assert client.get(
+        "/api/v1/analytics/category-trend?period=year&count=3", headers=auth_headers(user_id),
+    ).status_code == 422
+    assert client.get(
+        "/api/v1/analytics/category-trend?period=month&count=0", headers=auth_headers(user_id),
+    ).status_code == 422
+    assert client.get(
+        "/api/v1/analytics/category-trend?period=month&count=25", headers=auth_headers(user_id),
+    ).status_code == 422
+
+
 # Tests that the budget status endpoint returns exceeded budget information,
 # calculated against the real current calendar month (no public as_of -
 # the endpoint always uses the server's today).
