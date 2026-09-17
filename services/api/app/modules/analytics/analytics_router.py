@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from app.modules.analytics.analytics_schemas import (
     CategorySummaryItem,
     GoalProgressItem,
     MonthlySummaryResponse,
+    SpendingTrendResponse,
 )
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
@@ -20,6 +21,13 @@ router = APIRouter(
     prefix="/analytics",
     tags=["Analytics"],
 )
+
+
+# Default bucket counts when `count` is omitted, and the maximum a client
+# may request - bounds the query so a single request can never pull an
+# unbounded amount of history (VF-015B).
+SPENDING_TREND_DEFAULT_COUNTS = {"day": 30, "week": 12, "month": 6}
+SPENDING_TREND_MAXIMUM_COUNTS = {"day": 366, "week": 104, "month": 24}
 
 
 # Returns spending summary for a selected month through the API.
@@ -105,6 +113,68 @@ def get_category_summary(
         user_id=current_user.id,
         year=year,
         month=month,
+    )
+
+
+# Returns a bounded historical base-currency spending time series through
+# the API, plus a comparison between the two most recent complete periods.
+# This function exists to expose VF-015B spending-trend analytics to mobile
+# and web clients - distinct from Budget Status (per-Budget, original-
+# currency) and monthly/category summary (single period only).
+# Parameters:
+# - period: calendar bucket size - "day", "week", or "month".
+# - count: number of buckets to return. Defaults and maximum bounds vary
+#   by period (see SPENDING_TREND_DEFAULT_COUNTS/SPENDING_TREND_MAXIMUM_COUNTS)
+#   so a client can never request an unbounded amount of history.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy database session injected by FastAPI.
+# Returns:
+# - SpendingTrendResponse with `count` buckets ending at the server's
+#   current date, and an optional period_over_period comparison.
+# Raises:
+# - HTTPException 422: when count exceeds the maximum for the requested period.
+@router.get(
+    "/spending-trend",
+    response_model=SpendingTrendResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_spending_trend(
+    period: Literal["day", "week", "month"] = Query(
+        ...,
+        description="Calendar bucket size.",
+        examples=["month"],
+    ),
+    count: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Number of buckets to return. Defaults to 30/12/6 for "
+            "day/week/month when omitted; maximum 366/104/24 respectively."
+        ),
+        examples=[6],
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> SpendingTrendResponse:
+    resolved_count = (
+        count if count is not None else SPENDING_TREND_DEFAULT_COUNTS[period]
+    )
+
+    if resolved_count > SPENDING_TREND_MAXIMUM_COUNTS[period]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"count must not exceed {SPENDING_TREND_MAXIMUM_COUNTS[period]} "
+                f"for period '{period}'."
+            ),
+        )
+
+    return analytics_service.get_spending_trend(
+        db_session=db_session,
+        user_id=current_user.id,
+        period=period,
+        count=resolved_count,
+        as_of=date.today(),
     )
 
 

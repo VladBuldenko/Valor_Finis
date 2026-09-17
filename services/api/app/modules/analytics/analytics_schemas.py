@@ -398,3 +398,174 @@ class GoalProgressItem(BaseModel):
         description="Optional target date for reaching the goal.",
         examples=["2026-12-31"],
     )
+
+
+class SpendingTrendBucket(BaseModel):
+    """
+    Schema for one calendar bucket in a spending trend series (VF-015B).
+
+    What:
+        Base-currency spending totals for one day/week/month bucket.
+
+    Why:
+        Lets a client render a continuous historical series without
+        reconstructing missing dates itself - every requested calendar
+        bucket is always present, including buckets with no Expenses.
+    """
+
+    period_start: date = Field(
+        ...,
+        description="Inclusive calendar start of this bucket.",
+        examples=["2026-09-01"],
+    )
+
+    period_end: date = Field(
+        ...,
+        description=(
+            "Inclusive calendar end of this bucket (full period length, "
+            "regardless of whether the period has completed)."
+        ),
+        examples=["2026-09-30"],
+    )
+
+    effective_end: date = Field(
+        ...,
+        description="min(period_end, as_of) - where spending is actually counted through.",
+        examples=["2026-09-17"],
+    )
+
+    is_complete: bool = Field(
+        ...,
+        description="True when period_end is before as_of - i.e. this bucket's period has fully elapsed.",
+        examples=[False],
+    )
+
+    total_spent: Decimal = Field(
+        ...,
+        description=(
+            "Base-currency total for this bucket, summed from each resolved "
+            "Expense's persisted base_amount (VF-014B5D) - never the "
+            "original mixed-currency amount, never recomputed from fx_rate. "
+            "0.00 for a bucket with no resolved Expenses, including one "
+            "with no Expenses at all."
+        ),
+        examples=["100.00"],
+    )
+
+    expenses_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of resolved Expenses included in total_spent.",
+        examples=[2],
+    )
+
+    unresolved_expenses_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of matching legacy unresolved Expenses (base_amount is "
+            "NULL), or resolved Expenses whose persisted base_currency no "
+            "longer matches the user's current base_currency, excluded from "
+            "total_spent. Never treated as zero-valued."
+        ),
+        examples=[0],
+    )
+
+
+class PeriodOverPeriodComparison(BaseModel):
+    """
+    Schema for a comparison between the two most recent COMPLETE buckets in
+    a spending trend series (VF-015B).
+
+    What:
+        Absolute/percentage change and direction between two fully-elapsed
+        calendar periods.
+
+    Why:
+        Comparing an in-progress (incomplete) current period against a full
+        previous one would always read as "down" purely because the current
+        period hasn't finished yet - this only ever compares two periods
+        that have both fully elapsed.
+    """
+
+    current_period_start: date = Field(..., examples=["2026-08-01"])
+    current_period_end: date = Field(..., examples=["2026-08-31"])
+    previous_period_start: date = Field(..., examples=["2026-07-01"])
+    previous_period_end: date = Field(..., examples=["2026-07-31"])
+
+    current_total_spent: Decimal = Field(..., examples=["150.00"])
+    previous_total_spent: Decimal = Field(..., examples=["100.00"])
+
+    absolute_change: Decimal = Field(
+        ...,
+        description="current_total_spent - previous_total_spent.",
+        examples=["50.00"],
+    )
+
+    percent_change: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "((current - previous) / previous) * 100. Null when "
+            "previous_total_spent is 0 - percentage change is mathematically "
+            "undefined there, never reported as infinity, 100, or 0."
+        ),
+        examples=["50.00"],
+    )
+
+    direction: Literal["up", "down", "unchanged"] = Field(
+        ...,
+        description="up when absolute_change > 0, down when < 0, unchanged when exactly 0.",
+        examples=["up"],
+    )
+
+
+class SpendingTrendResponse(BaseModel):
+    """
+    Schema for a bounded historical spending time series (VF-015B).
+
+    What:
+        A day/week/month series of base-currency spending buckets ending
+        with the period containing as_of, plus a comparison between the two
+        most recent complete buckets.
+
+    Why:
+        Historical spending analytics, distinct from Budget Status
+        (per-Budget, original-currency-matched, current-period-only) and
+        from monthly/category summary (single-period only). Never performs
+        FX/network calls - reads only already-persisted base_amount.
+    """
+
+    base_currency: str = Field(
+        ...,
+        description="The user's authoritative base currency (VF-014B5B), from financial settings.",
+        examples=["EUR"],
+    )
+
+    period: Literal["day", "week", "month"] = Field(
+        ...,
+        description="The calendar bucket size requested.",
+        examples=["month"],
+    )
+
+    count: int = Field(
+        ...,
+        ge=1,
+        description="Number of buckets returned.",
+        examples=[6],
+    )
+
+    as_of: date = Field(
+        ...,
+        description="Server reference date the series was resolved against.",
+        examples=["2026-09-17"],
+    )
+
+    buckets: list[SpendingTrendBucket] = Field(
+        ...,
+        description="Chronologically ordered (oldest first), always exactly `count` buckets.",
+    )
+
+    period_over_period: Optional[PeriodOverPeriodComparison] = Field(
+        default=None,
+        description="Null when fewer than two complete buckets exist in the returned series.",
+    )
