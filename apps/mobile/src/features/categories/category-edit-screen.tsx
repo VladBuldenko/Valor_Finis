@@ -105,12 +105,14 @@ export function CategoryEditScreen() {
         }),
       ];
 
-      // category-summary and budget-status both resolve a category's
-      // display name by category_id through the shared
-      // build_category_name_map() helper (analytics_service.py) -- a rename
-      // must be reflected in both immediately. A color/icon-only edit never
-      // changes a displayed name or any historical financial data, so
-      // analytics is intentionally left uninvalidated for that case.
+      // category-summary, budget-status, and category-trend (VF-015C) all
+      // resolve a category's display name by category_id through the
+      // shared build_category_name_map() helper (analytics_service.py) --
+      // a rename must be reflected in all three immediately. Spending
+      // Trend and the forecast have no category breakdown at all, so a
+      // rename never affects them. A color/icon-only edit never changes a
+      // displayed name or any historical financial data, so analytics is
+      // intentionally left uninvalidated for that case.
       if (changedFieldsSent.name !== undefined) {
         invalidations.push(
           queryClient.invalidateQueries({
@@ -118,6 +120,9 @@ export function CategoryEditScreen() {
           }),
           queryClient.invalidateQueries({
             queryKey: ["analytics", "budget-status", session?.user.id],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["analytics", "category-trend", session?.user.id],
           }),
         );
       }
