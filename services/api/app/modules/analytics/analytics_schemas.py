@@ -569,3 +569,101 @@ class SpendingTrendResponse(BaseModel):
         default=None,
         description="Null when fewer than two complete buckets exist in the returned series.",
     )
+
+
+class CategoryTrendItem(BaseModel):
+    """
+    Schema for one category's historical spending trend (VF-015C).
+
+    What:
+        A day/week/month bucket series and period-over-period comparison,
+        scoped to a single category (or Uncategorized).
+
+    Why:
+        Reuses SpendingTrendBucket and PeriodOverPeriodComparison exactly
+        as-is - a category's trend has identical bucket/comparison
+        semantics to the overall spending trend, just scoped to one
+        category's Expenses.
+    """
+
+    category_id: Optional[UUID] = Field(
+        default=None,
+        description="Category identifier. Null means Uncategorized.",
+    )
+
+    category_name: str = Field(
+        ...,
+        description=(
+            "Human-readable category name, or \"Uncategorized\" when "
+            "category_id is null. A category deleted after an Expense was "
+            "recorded against it - Expense.category_id is set NULL by the "
+            "database - has no recoverable historical name: those "
+            "Expenses appear under Uncategorized from that point on, not "
+            "under the deleted category's former name."
+        ),
+        examples=["Food"],
+    )
+
+    buckets: list[SpendingTrendBucket] = Field(
+        ...,
+        description="Chronologically ordered (oldest first), always exactly `count` buckets.",
+    )
+
+    period_over_period: Optional[PeriodOverPeriodComparison] = Field(
+        default=None,
+        description="Null when fewer than two complete buckets exist for this category.",
+    )
+
+
+class CategoryTrendResponse(BaseModel):
+    """
+    Schema for bounded historical spending trends grouped by category
+    (VF-015C).
+
+    What:
+        A day/week/month series per category, each with its own
+        period-over-period comparison.
+
+    Why:
+        Answers "how has spending in each category moved over time,"
+        distinct from Category Summary (single period only) and Spending
+        Trend (not broken down by category).
+    """
+
+    base_currency: str = Field(
+        ...,
+        description="The user's authoritative base currency (VF-014B5B), from financial settings.",
+        examples=["EUR"],
+    )
+
+    period: Literal["day", "week", "month"] = Field(
+        ...,
+        description="The calendar bucket size requested.",
+        examples=["month"],
+    )
+
+    count: int = Field(
+        ...,
+        ge=1,
+        description="Number of buckets returned per category.",
+        examples=[6],
+    )
+
+    as_of: date = Field(
+        ...,
+        description="Server reference date the series was resolved against.",
+        examples=["2026-09-17"],
+    )
+
+    categories: list[CategoryTrendItem] = Field(
+        ...,
+        description=(
+            "Categories with at least one matching Expense in the "
+            "requested range (present even if every matching Expense is "
+            "unresolved/incompatible-currency), ordered by category_name "
+            "case-insensitive ascending with category_id as a "
+            "deterministic tie-breaker. When category_id was supplied and "
+            "owned by the caller, contains exactly that one category, "
+            "even with zero matching Expenses."
+        ),
+    )

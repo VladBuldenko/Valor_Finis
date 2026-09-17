@@ -1,5 +1,6 @@
 from datetime import date
 from typing import Literal, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from app.modules.analytics import analytics_service
 from app.modules.analytics.analytics_schemas import (
     BudgetStatusItem,
     CategorySummaryItem,
+    CategoryTrendResponse,
     GoalProgressItem,
     MonthlySummaryResponse,
     SpendingTrendResponse,
@@ -25,9 +27,37 @@ router = APIRouter(
 
 # Default bucket counts when `count` is omitted, and the maximum a client
 # may request - bounds the query so a single request can never pull an
-# unbounded amount of history (VF-015B).
+# unbounded amount of history. Shared by spending-trend (VF-015B) and
+# category-trend (VF-015C), which use identical period/count semantics.
 SPENDING_TREND_DEFAULT_COUNTS = {"day": 30, "week": 12, "month": 6}
 SPENDING_TREND_MAXIMUM_COUNTS = {"day": 366, "week": 104, "month": 24}
+
+
+# Resolves the effective bucket count for a trend request, applying the
+# per-period default when omitted and rejecting a count above the
+# per-period maximum.
+# This function exists so spending-trend and category-trend never
+# duplicate this validation, which is identical for both endpoints.
+# Parameters:
+# - period: one of "day", "week", "month".
+# - count: the client-supplied count, or None to use the period's default.
+# Returns:
+# - The resolved count to use.
+# Raises:
+# - HTTPException 422: when the resolved count exceeds the period's maximum.
+def _resolve_trend_count(period: str, count: Optional[int]) -> int:
+    resolved_count = count if count is not None else SPENDING_TREND_DEFAULT_COUNTS[period]
+
+    if resolved_count > SPENDING_TREND_MAXIMUM_COUNTS[period]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"count must not exceed {SPENDING_TREND_MAXIMUM_COUNTS[period]} "
+                f"for period '{period}'."
+            ),
+        )
+
+    return resolved_count
 
 
 # Returns spending summary for a selected month through the API.
@@ -156,18 +186,7 @@ def get_spending_trend(
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> SpendingTrendResponse:
-    resolved_count = (
-        count if count is not None else SPENDING_TREND_DEFAULT_COUNTS[period]
-    )
-
-    if resolved_count > SPENDING_TREND_MAXIMUM_COUNTS[period]:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                f"count must not exceed {SPENDING_TREND_MAXIMUM_COUNTS[period]} "
-                f"for period '{period}'."
-            ),
-        )
+    resolved_count = _resolve_trend_count(period=period, count=count)
 
     return analytics_service.get_spending_trend(
         db_session=db_session,
@@ -175,6 +194,72 @@ def get_spending_trend(
         period=period,
         count=resolved_count,
         as_of=date.today(),
+    )
+
+
+# Returns bounded historical base-currency spending trends grouped by
+# category through the API - each category's own day/week/month bucket
+# series plus its own period-over-period comparison.
+# This function exists to expose VF-015C category-trend analytics to
+# mobile and web clients - distinct from Category Summary (single period
+# only) and Spending Trend (not broken down by category).
+# Parameters:
+# - period: calendar bucket size - "day", "week", or "month".
+# - count: number of buckets to return per category. Same defaults/maximums
+#   as spending-trend (see _resolve_trend_count).
+# - category_id: optional. When provided, must be a category owned by the
+#   authenticated user; the response then contains exactly that one
+#   category (even with zero matching Expenses). Omit for Uncategorized -
+#   there is no separate sentinel value for it in VF-015C.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy database session injected by FastAPI.
+# Returns:
+# - CategoryTrendResponse with one item per matching category.
+# Raises:
+# - HTTPException 422: when count exceeds the maximum for the requested period.
+# - CategoryNotFoundError: category_id is set and not owned by the caller
+#   (mapped centrally to 404 - see app.core.exception_handlers).
+@router.get(
+    "/category-trend",
+    response_model=CategoryTrendResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_category_trend(
+    period: Literal["day", "week", "month"] = Query(
+        ...,
+        description="Calendar bucket size.",
+        examples=["month"],
+    ),
+    count: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Number of buckets to return per category. Defaults to "
+            "30/12/6 for day/week/month when omitted; maximum "
+            "366/104/24 respectively."
+        ),
+        examples=[6],
+    ),
+    category_id: Optional[UUID] = Query(
+        default=None,
+        description=(
+            "Optional category to scope the trend to. Must be owned by "
+            "the authenticated user. Omit for Uncategorized - there is no "
+            "separate sentinel value for it."
+        ),
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> CategoryTrendResponse:
+    resolved_count = _resolve_trend_count(period=period, count=count)
+
+    return analytics_service.get_category_trend(
+        db_session=db_session,
+        user_id=current_user.id,
+        period=period,
+        count=resolved_count,
+        as_of=date.today(),
+        category_id=category_id,
     )
 
 
