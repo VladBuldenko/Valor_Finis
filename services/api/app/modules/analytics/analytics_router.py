@@ -13,6 +13,7 @@ from app.modules.analytics.analytics_schemas import (
     CategoryTrendResponse,
     GoalProgressItem,
     MonthlySummaryResponse,
+    SpendingForecastResponse,
     SpendingTrendResponse,
 )
 from app.modules.auth.auth_dependencies import get_current_user
@@ -260,6 +261,35 @@ def get_category_trend(
         count=resolved_count,
         as_of=date.today(),
         category_id=category_id,
+    )
+
+
+# Returns a deterministic current-month spending pace projection through
+# the API.
+# This function exists to expose VF-015D's spending-forecast analytics to
+# mobile and web clients - CURRENT-MONTH SPENDING PACE PROJECTION only,
+# never a cash-flow/income/savings/net-worth forecast. Always calculated
+# against the server's current date - there is no public as_of parameter,
+# no history-length parameter, and no forecast-model-selection parameter;
+# the current linear_run_rate model is the only one implemented.
+# Parameters:
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy database session injected by FastAPI.
+# Returns:
+# - SpendingForecastResponse for the calendar month containing today.
+@router.get(
+    "/spending-forecast",
+    response_model=SpendingForecastResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_spending_forecast(
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> SpendingForecastResponse:
+    return analytics_service.get_spending_forecast(
+        db_session=db_session,
+        user_id=current_user.id,
+        as_of=date.today(),
     )
 
 

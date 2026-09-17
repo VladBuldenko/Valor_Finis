@@ -1757,6 +1757,346 @@ def test_get_category_trend_no_expenses_returns_empty_categories(
 
 
 # ---------------------------------------------------------------------------
+# get_spending_forecast (VF-015D deterministic current-month pace projection)
+# ---------------------------------------------------------------------------
+
+
+# Tests (CALENDAR) that the current-month window/day counts resolve
+# correctly for a 31-day month, and that the query range is bounded to
+# [period_start, as_of] - never through period_end.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the resolved window/day counts are correct
+#   and the repository was queried with end_date == as_of, not month-end.
+def test_get_spending_forecast_month_window_and_bounded_query(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    range_calls = wire_expenses_in_range(monkeypatch, [])
+
+    # Act - October has 31 days, as_of is the 17th
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 10, 17),
+    )
+
+    # Assert
+    assert forecast.period_start == date(2026, 10, 1)
+    assert forecast.period_end == date(2026, 10, 31)
+    assert forecast.days_in_month == 31
+    assert forecast.days_elapsed == 17
+    assert forecast.as_of == date(2026, 10, 17)
+    assert range_calls == [(date(2026, 10, 1), date(2026, 10, 17))]
+
+
+# Tests (CALENDAR) a 28-day (non-leap) February.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if days_in_month == 28.
+def test_get_spending_forecast_february_non_leap_year(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 2, 10),
+    )
+
+    # Assert
+    assert forecast.days_in_month == 28
+    assert forecast.period_end == date(2026, 2, 28)
+
+
+# Tests (CALENDAR) a 29-day leap-year February.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if days_in_month == 29.
+def test_get_spending_forecast_february_leap_year(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act - 2028 is a leap year
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2028, 2, 10),
+    )
+
+    # Assert
+    assert forecast.days_in_month == 29
+    assert forecast.period_end == date(2028, 2, 29)
+
+
+# Tests (CALENDAR) a 30-day month.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if days_in_month == 30.
+def test_get_spending_forecast_thirty_day_month(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act - September has 30 days
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.days_in_month == 30
+    assert forecast.period_end == date(2026, 9, 30)
+
+
+# Tests (CALENDAR) the December -> January boundary: the window and
+# day-elapsed count for a December as_of never roll into the new year.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if period_start/period_end stay in December.
+def test_get_spending_forecast_december_boundary(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 12, 31),
+    )
+
+    # Assert
+    assert forecast.period_start == date(2026, 12, 1)
+    assert forecast.period_end == date(2026, 12, 31)
+    assert forecast.days_in_month == 31
+    assert forecast.days_elapsed == 31
+
+
+# Tests (DATA) that only current-month Expenses are counted: a previous-
+# month Expense and a future-dated (next-month) Expense are both excluded,
+# while a current-day Expense is included.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if spent_to_date reflects only the in-month,
+#   on-or-before-as_of Expense.
+def test_get_spending_forecast_only_current_month_and_current_day_included(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    # The repository mock ignores the requested range and returns
+    # everything - the service itself must not need to re-filter by date
+    # here (unlike Spending/Category Trend), because the real repository
+    # query is already bounded to [period_start, as_of]. This fixture
+    # intentionally includes out-of-range rows to prove that if the
+    # service DID need to filter and didn't, this test would catch it.
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 9, 17), category_id=None,  # current day
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.spent_to_date == Decimal("50.00")
+    assert forecast.expenses_count == 1
+
+
+# Tests (FX) that a resolved Expense's persisted base_amount is summed
+# directly, never recomputed from fx_rate.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if spent_to_date == the persisted base_amount.
+def test_get_spending_forecast_resolved_summed_directly(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), currency="USD", expense_date=date(2026, 9, 17),
+            base_amount=Decimal("84.73"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.spent_to_date == Decimal("84.73")
+    assert forecast.forecast_status == "available"
+
+
+# Tests (FX) that an unresolved legacy Expense is counted and makes the
+# forecast unavailable, and (incomplete_data) that average/projected are
+# both null in that case.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if forecast_status is "incomplete_data" and
+#   both forecast figures are None.
+def test_get_spending_forecast_unresolved_legacy_expense_makes_incomplete(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), currency="USD", expense_date=date(2026, 9, 12),
+            base_amount=None, base_currency=None,
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.forecast_status == "incomplete_data"
+    assert forecast.spent_to_date == Decimal("50.00")
+    assert forecast.expenses_count == 1
+    assert forecast.unresolved_expenses_count == 1
+    assert forecast.average_daily_spending is None
+    assert forecast.projected_spending is None
+
+
+# Tests (FX) that a resolved Expense persisted against an incompatible
+# base_currency is counted as unresolved and makes the forecast unavailable.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if forecast_status is "incomplete_data".
+def test_get_spending_forecast_incompatible_base_currency_makes_incomplete(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("900.00"), base_currency="USD",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.forecast_status == "incomplete_data"
+    assert forecast.spent_to_date == Decimal("0.00")
+    assert forecast.unresolved_expenses_count == 1
+    assert forecast.average_daily_spending is None
+    assert forecast.projected_spending is None
+
+
+# Tests (ZERO DATA) that a brand-new user with no Expenses still gets a
+# full, valid response: base_currency populated, everything zero,
+# forecast_status "available" (a linear pace model is well-defined at
+# zero spend).
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if every figure reflects the zero-data state.
+def test_get_spending_forecast_zero_data_new_user(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.base_currency == "EUR"
+    assert forecast.forecast_status == "available"
+    assert forecast.spent_to_date == Decimal("0.00")
+    assert forecast.expenses_count == 0
+    assert forecast.unresolved_expenses_count == 0
+    assert forecast.average_daily_spending == Decimal("0.00")
+    assert forecast.projected_spending == Decimal("0.00")
+
+
+# Tests (API) the exact response contract fields, including method being
+# exactly "linear_run_rate" and Decimal fields serializing as strings.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if method/forecast_status/day counts all match.
+def test_get_spending_forecast_response_contract(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("500.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("500.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    forecast = analytics_service.get_spending_forecast(
+        db_session=db_session, user_id=user_id, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert forecast.method == "linear_run_rate"
+    assert forecast.forecast_status == "available"
+    assert isinstance(forecast.spent_to_date, Decimal)
+    assert isinstance(forecast.average_daily_spending, Decimal)
+    assert isinstance(forecast.projected_spending, Decimal)
+    assert forecast.days_in_month == 30
+    assert forecast.days_elapsed == 17
+
+
+# ---------------------------------------------------------------------------
 # get_budget_status (VF-014B3 calendar-period semantics)
 # ---------------------------------------------------------------------------
 

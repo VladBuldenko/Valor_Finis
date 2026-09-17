@@ -1750,6 +1750,313 @@ def test_category_trend_endpoint_validation(
     ).status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# VF-015D deterministic current-month spending forecast
+# ---------------------------------------------------------------------------
+
+
+# Tests (API) that the endpoint requires no query parameters at all - a
+# bare GET with no query string succeeds.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the bare request returns 200.
+def test_spending_forecast_endpoint_accepts_no_query_params(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+
+
+# Tests (API) the full response contract: method/forecast_status literals,
+# current-month window, and Decimal-as-string serialization.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if every contract field matches.
+def test_spending_forecast_endpoint_response_contract(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, month_end = month_bounds(today)
+    days_in_month = (month_end - month_start).days + 1
+    days_elapsed = (today - month_start).days + 1
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=100)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["base_currency"] == "EUR"
+    assert body["method"] == "linear_run_rate"
+    assert body["forecast_status"] == "available"
+    assert body["period_start"] == month_start.isoformat()
+    assert body["period_end"] == month_end.isoformat()
+    assert body["as_of"] == today.isoformat()
+    assert body["days_in_month"] == days_in_month
+    assert body["days_elapsed"] == days_elapsed
+    assert isinstance(body["spent_to_date"], str)
+    assert Decimal(body["spent_to_date"]) == Decimal("100.00")
+    assert body["expenses_count"] == 1
+    assert body["unresolved_expenses_count"] == 0
+    assert isinstance(body["average_daily_spending"], str)
+    assert isinstance(body["projected_spending"], str)
+
+
+# Tests (FX) that base-currency (EUR) and USD-original resolved Expenses
+# are both summed via persisted base_amount - the same worked example as
+# B5D/Spending Trend (100 EUR + 100 USD/84.73 EUR-base -> 184.73).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if spent_to_date == 184.73, not 200.
+def test_spending_forecast_endpoint_sums_base_amount_across_currencies(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), currency="EUR", amount=100)
+    usd_expense = create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), currency="USD", amount=100,
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert Decimal(body["spent_to_date"]) == Decimal("100.00") + Decimal(usd_expense["base_amount"])
+    assert body["spent_to_date"] != "200.00"
+
+
+# Tests (DATA) that a previous-month Expense and a future-dated Expense
+# within the current month are both excluded from spent_to_date, while a
+# current-day Expense is included.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if only the current-day Expense counts.
+def test_spending_forecast_endpoint_excludes_previous_month_and_future(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, month_end = month_bounds(today)
+    previous_month_day = month_start - timedelta(days=1)
+
+    create_expense_with(client=client, user_id=user_id, expense_date=previous_month_day.isoformat(), amount=999)
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=20)
+    if today < month_end:
+        future_date = today + timedelta(days=1)
+        create_expense_with(client=client, user_id=user_id, expense_date=future_date.isoformat(), amount=999)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert Decimal(response.json()["spent_to_date"]) == Decimal("20.00")
+
+
+# Tests (FX) that a legacy unresolved Expense in the current month makes
+# the forecast unavailable, with both forecast figures null.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if forecast_status is "incomplete_data" and both
+#   forecast figures are null.
+def test_spending_forecast_endpoint_unresolved_legacy_expense_makes_incomplete(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    from app.db.database_session import SessionLocal
+    from app.modules.expenses.expenses_models import ExpenseModel
+
+    user_id_uuid = uuid4()
+    user_id = str(user_id_uuid)
+    today = date.today()
+
+    db_session = SessionLocal()
+    legacy_expense = ExpenseModel(
+        user_id=user_id_uuid,
+        category_id=None,
+        title="Legacy USD",
+        amount=Decimal("999.00"),
+        currency="USD",
+        expense_date=today,
+        source="manual",
+    )
+    db_session.add(legacy_expense)
+    db_session.commit()
+    db_session.close()
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=50)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["forecast_status"] == "incomplete_data"
+    assert Decimal(body["spent_to_date"]) == Decimal("50.00")
+    assert body["expenses_count"] == 1
+    assert body["unresolved_expenses_count"] == 1
+    assert body["average_daily_spending"] is None
+    assert body["projected_spending"] is None
+
+
+# Tests (ZERO DATA) that a brand-new user still receives a valid,
+# "available" forecast of zero.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if every figure reflects the zero-data state.
+def test_spending_forecast_endpoint_zero_data_new_user(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["base_currency"] == "EUR"
+    assert body["forecast_status"] == "available"
+    assert body["spent_to_date"] == "0.00"
+    assert body["expenses_count"] == 0
+    assert body["unresolved_expenses_count"] == 0
+    assert body["average_daily_spending"] == "0.00"
+    assert body["projected_spending"] == "0.00"
+
+
+# Tests (SECURITY) that spending-forecast is scoped to the authenticated
+# user only.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if another user's Expense never affects the total.
+def test_spending_forecast_endpoint_ownership_isolation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    today = date.today()
+    create_expense_with(client=client, user_id=other_user_id, expense_date=today.isoformat(), amount=500)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-forecast",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.json()["spent_to_date"] == "0.00"
+
+
+# Tests (NETWORK) that no FX provider is ever called while serving a
+# spending-forecast request.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if httpx.get is not called during the request.
+def test_spending_forecast_endpoint_never_calls_fx_providers(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    ecb_mock = _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), currency="USD", amount=100)
+    ecb_mock.reset_mock()
+
+    # Act
+    client.get("/api/v1/analytics/spending-forecast", headers=auth_headers(user_id))
+
+    # Assert
+    ecb_mock.assert_not_called()
+
+
+# Tests (REGRESSION) that spending-trend, category-trend, monthly-summary,
+# and budget-status all still work unchanged after adding spending-forecast.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if all four endpoints return 200 with a real Expense.
+def test_spending_forecast_addition_does_not_affect_other_analytics_endpoints(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=25)
+
+    # Act / Assert
+    assert client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=1", headers=auth_headers(user_id),
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/analytics/category-trend?period=month&count=1", headers=auth_headers(user_id),
+    ).status_code == 200
+    assert client.get(
+        f"/api/v1/analytics/monthly-summary?year={today.year}&month={today.month}",
+        headers=auth_headers(user_id),
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/analytics/budget-status", headers=auth_headers(user_id),
+    ).status_code == 200
+
+
 # Tests that the budget status endpoint returns exceeded budget information,
 # calculated against the real current calendar month (no public as_of -
 # the endpoint always uses the server's today).

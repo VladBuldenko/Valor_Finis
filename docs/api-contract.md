@@ -1137,6 +1137,82 @@ Response:
 - Never performs an FX/network call - reads only already-persisted
   base_amount, exactly like Spending Trend.
 
+Spending Forecast
+
+GET /api/v1/analytics/spending-forecast
+
+VF-015D: a deterministic projection of the authenticated user's TOTAL
+base-currency spending for the CURRENT calendar month, using a simple
+current-pace model. This is CURRENT-MONTH SPENDING PACE PROJECTION only -
+it is not a cash-flow, income, savings, or net-worth forecast, and it
+does not use previous months, seasonality, or any history at all. Takes
+no query parameters - period is always the calendar month containing
+today; there is no as_of, history-length, or model-selection parameter.
+
+Response (available):
+
+{
+  "base_currency": "EUR",
+  "method": "linear_run_rate",
+  "forecast_status": "available",
+  "period_start": "2026-09-01",
+  "period_end": "2026-09-30",
+  "as_of": "2026-09-17",
+  "days_in_month": 30,
+  "days_elapsed": 17,
+  "spent_to_date": "500.00",
+  "expenses_count": 8,
+  "unresolved_expenses_count": 0,
+  "average_daily_spending": "29.41",
+  "projected_spending": "882.35"
+}
+
+Response (incomplete data):
+
+{
+  ...,
+  "forecast_status": "incomplete_data",
+  "average_daily_spending": null,
+  "projected_spending": null
+}
+
+- method is always "linear_run_rate" today - exposed explicitly so a
+  future model (e.g. a historical-baseline average) can be added later as
+  an additional, separately-named option without implying today's single
+  model is more sophisticated than it is. No historical/rolling-average/
+  seasonal/hybrid model is implemented in VF-015D.
+- Formula: average_daily_spending = spent_to_date / days_elapsed;
+  projected_spending = average_daily_spending * days_in_month. Both use
+  full Decimal precision internally and are quantized to money precision
+  only once, separately, at the end - projected_spending is never
+  computed from the already-rounded average_daily_spending value shown in
+  the response (that would introduce real cent-level drift).
+- days_elapsed is inclusive of today (the current, still-accumulating
+  day) - a day-1-of-the-month projection is intentionally simple and can
+  be volatile (a single early purchase extrapolates across the whole
+  month); this is not dampened or smoothed. On the last day of the month,
+  projected_spending equals spent_to_date exactly, after quantization.
+- Only Expenses from the 1st of the current month through today
+  (inclusive) are counted - a future-dated Expense (possible only for a
+  base-currency expense; a foreign-currency one dated in the future is
+  already rejected at creation) never affects the pace, and a previous
+  month's Expenses are never included.
+- spent_to_date sums each resolved Expense's persisted base_amount
+  (VF-014B5C/B5D) directly - never the original mixed-currency amount,
+  never recomputed from fx_rate. Never performs an FX/network call.
+- forecast_status is "incomplete_data" - with average_daily_spending and
+  projected_spending both null - when at least one matching current-month
+  Expense is unresolved (base_amount is null) or persisted against an
+  incompatible base_currency. A projection is never computed from known-
+  incomplete monetary data, and unresolved rows are never silently
+  ignored while still presenting a number. spent_to_date/expenses_count/
+  unresolved_expenses_count are always populated regardless of
+  forecast_status - they reflect resolved data only.
+- A month with zero Expenses is "available" with spent_to_date, average_
+  daily_spending, and projected_spending all "0.00" - this is a valid,
+  meaningful result for a linear pace model, not an error or missing-data
+  state.
+
 Budget Status
 
 GET /api/v1/analytics/budget-status

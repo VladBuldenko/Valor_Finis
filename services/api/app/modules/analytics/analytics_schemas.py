@@ -667,3 +667,140 @@ class CategoryTrendResponse(BaseModel):
             "even with zero matching Expenses."
         ),
     )
+
+
+class SpendingForecastResponse(BaseModel):
+    """
+    Schema for a deterministic current-month spending pace projection
+    (VF-015D).
+
+    What:
+        A linear-run-rate projection of the authenticated user's total
+        base-currency spending for the calendar month containing today,
+        built only from already-persisted, already-resolved Expense data.
+
+    Why:
+        This is CURRENT-MONTH SPENDING PACE PROJECTION only - it is not a
+        cash-flow, income, savings, or net-worth forecast, and it does not
+        use historical months, seasonality, or any model beyond the single
+        documented linear_run_rate formula. See method below.
+    """
+
+    base_currency: str = Field(
+        ...,
+        description="The user's authoritative base currency (VF-014B5B), from financial settings.",
+        examples=["EUR"],
+    )
+
+    method: Literal["linear_run_rate"] = Field(
+        ...,
+        description=(
+            "The forecast model used. Always \"linear_run_rate\" today - "
+            "spent_to_date / days_elapsed * days_in_month. Exposed "
+            "explicitly so a future model can be added later without "
+            "implying today's model is more sophisticated than it is."
+        ),
+        examples=["linear_run_rate"],
+    )
+
+    forecast_status: Literal["available", "incomplete_data"] = Field(
+        ...,
+        description=(
+            "\"available\" when every matching current-month Expense has "
+            "a resolved base-currency amount - a month with zero Expenses "
+            "is \"available\" with a 0.00 projection, which is valid for "
+            "a linear pace model. \"incomplete_data\" when at least one "
+            "matching Expense is unresolved or persisted against an "
+            "incompatible base_currency - a projection is never computed "
+            "from known-incomplete monetary data; average_daily_spending "
+            "and projected_spending are both null in that case."
+        ),
+        examples=["available"],
+    )
+
+    period_start: date = Field(
+        ...,
+        description="First calendar day of the month containing as_of.",
+        examples=["2026-09-01"],
+    )
+
+    period_end: date = Field(
+        ...,
+        description="Last calendar day of the month containing as_of.",
+        examples=["2026-09-30"],
+    )
+
+    as_of: date = Field(
+        ...,
+        description="Server reference date the forecast was resolved against.",
+        examples=["2026-09-17"],
+    )
+
+    days_in_month: int = Field(
+        ...,
+        ge=1,
+        description="Inclusive total number of calendar days in the month.",
+        examples=[30],
+    )
+
+    days_elapsed: int = Field(
+        ...,
+        ge=1,
+        description="Inclusive day count from period_start through as_of. Always >= 1.",
+        examples=[17],
+    )
+
+    spent_to_date: Decimal = Field(
+        ...,
+        description=(
+            "Base-currency spending from period_start through as_of "
+            "(inclusive), summed from each resolved Expense's persisted "
+            "base_amount (VF-014B5C/B5D) - never the original mixed-"
+            "currency amount, never recomputed from fx_rate. Always "
+            "populated, even when forecast_status is \"incomplete_data\" - "
+            "it reflects resolved spending only in that case."
+        ),
+        examples=["500.00"],
+    )
+
+    expenses_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of resolved Expenses included in spent_to_date.",
+        examples=[8],
+    )
+
+    unresolved_expenses_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of matching current-month Expenses excluded from "
+            "spent_to_date because they are unresolved (base_amount is "
+            "NULL) or persisted against an incompatible base_currency. "
+            "Any value > 0 makes forecast_status \"incomplete_data\"."
+        ),
+        examples=[0],
+    )
+
+    average_daily_spending: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "spent_to_date / days_elapsed, quantized to money precision. "
+            "Null exactly when forecast_status is \"incomplete_data\"."
+        ),
+        examples=["29.41"],
+    )
+
+    projected_spending: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "Linear projection over the full month: computed from the "
+            "full-precision daily rate (never from the already-quantized "
+            "average_daily_spending value above), then quantized once to "
+            "money precision. Never capped, dampened, or smoothed - a "
+            "large expense early in the month can make this volatile by "
+            "design, matching Budget Status's identical linear model. "
+            "Null exactly when forecast_status is \"incomplete_data\"."
+        ),
+        examples=["882.35"],
+    )

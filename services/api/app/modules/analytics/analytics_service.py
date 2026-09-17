@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core import calendar_period
+from app.modules.analytics import analytics_forecast
 from app.modules.analytics.analytics_schemas import (
     BudgetStatusItem,
     CategorySummaryItem,
@@ -15,6 +16,7 @@ from app.modules.analytics.analytics_schemas import (
     GoalProgressItem,
     MonthlySummaryResponse,
     PeriodOverPeriodComparison,
+    SpendingForecastResponse,
     SpendingTrendBucket,
     SpendingTrendResponse,
 )
@@ -554,6 +556,98 @@ def get_category_trend(
         count=count,
         as_of=as_of,
         categories=categories,
+    )
+
+
+# Calculates a deterministic current-month spending pace projection for
+# the authenticated user (VF-015D).
+# This function exists to answer "at my current pace, what will I spend
+# this calendar month" - CURRENT-MONTH SPENDING PACE PROJECTION only, not
+# a cash-flow/income/savings/net-worth forecast. Loads/resolves data here;
+# the actual linear_run_rate formula lives in analytics_forecast.py, kept
+# pure and independently testable (mirroring budget_metrics.py's
+# separation for Budget Status's identical linear model).
+#
+# The Expense query is bounded to [period_start, as_of] - not period_end -
+# so a future-dated Expense within the same calendar month (allowed for a
+# base-currency identity conversion) can never affect the pace; there is
+# no need to additionally filter by date in the aggregation loop below,
+# unlike Spending/Category Trend's per-bucket effective_end clamping.
+#
+# Any unresolved (base_amount is None) or incompatible-base_currency
+# Expense in range makes the whole forecast unavailable
+# (forecast_status="incomplete_data", average_daily_spending and
+# projected_spending both null) rather than silently projecting from
+# known-incomplete monetary data - spent_to_date/expenses_count/
+# unresolved_expenses_count are still always populated regardless.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses.
+# - as_of: reference date the forecast covers the calendar month of. The
+#   caller (the router) is responsible for defaulting this to today - this
+#   function stays a pure, deterministic function of its arguments,
+#   matching get_budget_status's as_of convention.
+# Returns:
+# - SpendingForecastResponse for the calendar month containing as_of.
+def get_spending_forecast(
+    db_session: Session,
+    user_id: UUID,
+    as_of: date,
+) -> SpendingForecastResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    month_window = calendar_period.resolve_period_bounds(
+        period=calendar_period.MONTH,
+        as_of=as_of,
+    )
+    period_start = month_window.period_start
+    period_end = month_window.period_end
+    days_in_month = (period_end - period_start).days + 1
+    days_elapsed = (as_of - period_start).days + 1
+
+    expenses = expenses_repository.get_expenses_in_date_range(
+        db_session=db_session,
+        user_id=user_id,
+        start_date=period_start,
+        end_date=as_of,
+    )
+
+    spent_to_date = BUCKET_AMOUNT_DECIMAL_PLACES
+    expenses_count = 0
+    unresolved_expenses_count = 0
+
+    for expense in expenses:
+        if expense.base_amount is None or expense.base_currency != base_currency:
+            unresolved_expenses_count += 1
+            continue
+
+        spent_to_date += expense.base_amount
+        expenses_count += 1
+
+    forecast = analytics_forecast.calculate_spending_forecast(
+        spent_to_date=spent_to_date,
+        days_elapsed=days_elapsed,
+        days_in_month=days_in_month,
+        data_complete=(unresolved_expenses_count == 0),
+    )
+
+    return SpendingForecastResponse(
+        base_currency=base_currency,
+        method="linear_run_rate",
+        forecast_status=forecast.forecast_status,
+        period_start=period_start,
+        period_end=period_end,
+        as_of=as_of,
+        days_in_month=days_in_month,
+        days_elapsed=days_elapsed,
+        spent_to_date=spent_to_date,
+        expenses_count=expenses_count,
+        unresolved_expenses_count=unresolved_expenses_count,
+        average_daily_spending=forecast.average_daily_spending,
+        projected_spending=forecast.projected_spending,
     )
 
 
