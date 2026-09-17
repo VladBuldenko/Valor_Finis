@@ -1614,6 +1614,121 @@ def test_get_category_trend_deterministic_order(monkeypatch: MonkeyPatch) -> Non
     assert [c.category_name for c in trend.categories] == ["Apple", "zebra"]
 
 
+# Tests (ORDERING - Uncategorized in context) that Uncategorized
+# participates in the same case-insensitive ordering as named categories,
+# not just when it is the only item returned. "Utilities" is chosen
+# deliberately: both it and "Uncategorized" start with "U", so this only
+# passes if the comparison looks past the shared first character
+# ("Uncategorized"[1] == "n" < "Utilities"[1] == "t").
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes only for the exact order
+#   ["Food", "Uncategorized", "Utilities"].
+def test_get_category_trend_uncategorized_orders_with_named_categories(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    food_id = uuid4()
+    utilities_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    # Listed out of alphabetical order, and Uncategorized (category_id=None)
+    # has by far the highest spend - neither insertion order nor spend
+    # should influence the result.
+    wire_categories(monkeypatch, [
+        make_model(id=utilities_id, name="Utilities"),
+        make_model(id=food_id, name="Food"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 9, 10), category_id=utilities_id,
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=None,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("10.00"), expense_date=date(2026, 9, 10), category_id=food_id,
+            base_amount=Decimal("10.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert [c.category_name for c in trend.categories] == [
+        "Food", "Uncategorized", "Utilities",
+    ]
+    assert [c.category_id for c in trend.categories] == [
+        food_id, None, utilities_id,
+    ]
+
+
+# Tests (ORDERING - category_id tie-breaker) that when two categories'
+# names are identical under casefold() ("Food" vs "food"), the deterministic
+# tie-breaker is str(category_id) ascending - not insertion order, dict
+# order, or spend.
+#
+# Real PostgreSQL enforces case-insensitive category name uniqueness per
+# user (uq_categories_user_id_name_lower - see category_models.py), so two
+# such categories can never coexist through the real repository/database.
+# This test exercises the sort's tie-breaker branch directly at the
+# get_category_trend service boundary instead, which already mocks
+# categories_repository/expenses_repository for every other unit test in
+# this file - no database constraint is touched, exercised, or weakened.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes only if the lower category_id (by string value)
+#   sorts first.
+def test_get_category_trend_category_id_tie_breaker_when_names_collide(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange - fixed UUIDs so their string ordering is known up front:
+    # "...0001" < "...0002" lexicographically.
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    lower_id = UUID("00000000-0000-0000-0000-000000000001")
+    higher_id = UUID("00000000-0000-0000-0000-000000000002")
+    wire_base_currency(monkeypatch, "EUR")
+    # higher_id is listed first and has lower spend - if either insertion
+    # order or spend drove the result, higher_id would come first.
+    wire_categories(monkeypatch, [
+        make_model(id=higher_id, name="Food"),
+        make_model(id=lower_id, name="food"),
+    ])
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("10.00"), expense_date=date(2026, 9, 10), category_id=higher_id,
+            base_amount=Decimal("10.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10), category_id=lower_id,
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_category_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert - both names casefold to "food"; the lower category_id string
+    # sorts first, despite higher_id being listed first and spending less.
+    assert str(lower_id) < str(higher_id)
+    assert [c.category_id for c in trend.categories] == [lower_id, higher_id]
+
+
 # Tests (ZERO DATA) that no category_id filter and no matching Expenses
 # returns an empty categories list, not a list of every configured
 # category with no activity.
