@@ -600,6 +600,511 @@ def test_get_category_summary_incompatible_base_currency_excluded_and_counted(
     assert item.expenses_count == 1
     assert item.unresolved_expenses_count == 1
 
+
+# ---------------------------------------------------------------------------
+# get_spending_trend (VF-015B historical spending time series)
+# ---------------------------------------------------------------------------
+
+
+# Mocks expenses_repository.get_expenses_in_date_range so spending-trend
+# tests never touch a real database session.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace the repository call.
+# - expenses: the fake expenses the mock should return regardless of the
+#   requested range - tests control relevance via each expense's own date.
+# Returns:
+# - list capturing every (start_date, end_date) the mock was called with,
+#   so a test can assert the exact range requested.
+def wire_expenses_in_range(monkeypatch: MonkeyPatch, expenses: list) -> list:
+    calls: list = []
+
+    def fake_get_expenses_in_date_range(db_session, user_id, start_date, end_date):
+        calls.append((start_date, end_date))
+        return expenses
+
+    monkeypatch.setattr(
+        analytics_service.expenses_repository,
+        "get_expenses_in_date_range",
+        fake_get_expenses_in_date_range,
+    )
+
+    return calls
+
+
+# Tests that monthly buckets carry correct calendar boundaries and that the
+# repository is queried for exactly the full requested range.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if bucket boundaries and the queried range match.
+def test_get_spending_trend_month_buckets_boundaries(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    range_calls = wire_expenses_in_range(monkeypatch, [])
+
+    # Act - as_of Feb 2026, 4 months back crosses the year boundary
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=4, as_of=date(2026, 2, 10),
+    )
+
+    # Assert
+    assert [b.period_start for b in trend.buckets] == [
+        date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1), date(2026, 2, 1),
+    ]
+    assert trend.buckets[-1].period_end == date(2026, 2, 28)
+    assert range_calls == [(date(2025, 11, 1), date(2026, 2, 28))]
+    assert trend.base_currency == "EUR"
+    assert trend.period == "month"
+    assert trend.count == 4
+    assert trend.as_of == date(2026, 2, 10)
+
+
+# Tests that empty periods are emitted as explicit zero buckets rather than
+# omitted - the task's own worked example (April 100 / May 0 / June 50).
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if all three buckets are present, May is zero.
+def test_get_spending_trend_empty_periods_emitted_as_zero_buckets(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 4, 15),
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 6, 15),
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act - as_of inside June, so count=3 resolves to exactly April/May/June
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 6, 20),
+    )
+
+    # Assert
+    by_start = {b.period_start: b for b in trend.buckets}
+    assert by_start[date(2026, 4, 1)].total_spent == Decimal("100.00")
+    assert by_start[date(2026, 5, 1)].total_spent == Decimal("0.00")
+    assert by_start[date(2026, 5, 1)].expenses_count == 0
+    assert by_start[date(2026, 6, 1)].total_spent == Decimal("50.00")
+
+
+# Tests that the current bucket is marked incomplete with effective_end
+# clamped to as_of, while every earlier bucket is complete.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if only the last bucket is incomplete.
+def test_get_spending_trend_current_bucket_is_incomplete(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act - as_of is mid-September
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=2, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    august_bucket, september_bucket = trend.buckets
+    assert august_bucket.is_complete is True
+    assert august_bucket.effective_end == date(2026, 8, 31)
+    assert september_bucket.is_complete is False
+    assert september_bucket.effective_end == date(2026, 9, 17)
+
+
+# Tests that a future-dated Expense within the current calendar month does
+# not leak into the current (incomplete) bucket's total.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the future-dated expense is excluded.
+def test_get_spending_trend_future_dated_expense_excluded_from_current_bucket(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 25),  # future relative to as_of
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.buckets[0].total_spent == Decimal("0.00")
+    assert trend.buckets[0].expenses_count == 0
+
+
+# Tests that a resolved Expense's persisted base_amount is summed directly,
+# and a legacy unresolved Expense (base_amount is None) is excluded from
+# the total and counted separately.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if totals/counts reflect only the resolved row.
+def test_get_spending_trend_resolved_summed_unresolved_excluded_and_counted(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), currency="USD", expense_date=date(2026, 9, 10),
+            base_amount=None, base_currency=None,
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.buckets[0].total_spent == Decimal("50.00")
+    assert trend.buckets[0].expenses_count == 1
+    assert trend.buckets[0].unresolved_expenses_count == 1
+
+
+# Tests that a resolved Expense whose persisted base_currency no longer
+# matches the user's current base currency is excluded from the total and
+# counted as unresolved, never summed as if it were in the right currency.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the incompatible row is excluded and counted.
+def test_get_spending_trend_incompatible_base_currency_excluded_and_counted(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("20.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("20.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10),
+            base_amount=Decimal("900.00"), base_currency="USD",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.buckets[0].total_spent == Decimal("20.00")
+    assert trend.buckets[0].expenses_count == 1
+    assert trend.buckets[0].unresolved_expenses_count == 1
+
+
+# Tests that a bucket whose only matching Expenses are all unresolved is
+# still present with a zero total, never silently omitted.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the bucket exists with total 0.00 and a
+#   nonzero unresolved count.
+def test_get_spending_trend_unresolved_only_bucket_remains_present(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("40.00"), currency="USD", expense_date=date(2026, 9, 10),
+            base_amount=None, base_currency=None,
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.buckets[0].total_spent == Decimal("0.00")
+    assert trend.buckets[0].expenses_count == 0
+    assert trend.buckets[0].unresolved_expenses_count == 1
+
+
+# Tests that spent is computed as an exact Decimal sum with no floating
+# point drift, using values that fail under float arithmetic.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the sum is exactly Decimal("0.30").
+def test_get_spending_trend_decimal_precision(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("0.10"), expense_date=date(2026, 9, i),
+            base_amount=Decimal("0.10"), base_currency="EUR",
+        )
+        for i in (10, 11, 12)
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.buckets[0].total_spent == Decimal("0.30")
+    assert isinstance(trend.buckets[0].total_spent, Decimal)
+
+
+# ---------------------------------------------------------------------------
+# get_spending_trend - period_over_period comparison
+# ---------------------------------------------------------------------------
+
+
+# Tests that the comparison uses the two most recent COMPLETE buckets, not
+# the current (incomplete) partial bucket.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if the comparison's current period is July, not
+#   September (the incomplete bucket), and skips August entirely as "the
+#   most recent" only by being the complete bucket immediately before July -
+#   this test asserts the exact pair chosen rather than assuming it.
+def test_get_spending_trend_comparison_uses_last_two_complete_buckets(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 7, 10),
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("150.00"), expense_date=date(2026, 8, 10),
+            base_amount=Decimal("150.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("999.00"), expense_date=date(2026, 9, 10),  # current, incomplete
+            base_amount=Decimal("999.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act - as_of mid-September: July/August complete, September incomplete
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    comparison = trend.period_over_period
+    assert comparison is not None
+    assert comparison.previous_period_start == date(2026, 7, 1)
+    assert comparison.current_period_start == date(2026, 8, 1)
+    assert comparison.previous_total_spent == Decimal("100.00")
+    assert comparison.current_total_spent == Decimal("150.00")
+    assert comparison.absolute_change == Decimal("50.00")
+    assert comparison.direction == "up"
+
+
+# Tests direction "down" for a decrease and "unchanged" for an exact match,
+# and that percent_change is computed correctly against a nonzero previous
+# total in both cases.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if direction/percent_change are correct for both cases.
+def test_get_spending_trend_comparison_direction_down_and_unchanged(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+
+    # Down: 200 -> 100
+    down_expenses = [
+        make_summary_expense(
+            amount=Decimal("200.00"), expense_date=date(2026, 7, 10),
+            base_amount=Decimal("200.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 8, 10),
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, down_expenses)
+    down_trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+    assert down_trend.period_over_period.direction == "down"
+    assert down_trend.period_over_period.absolute_change == Decimal("-100.00")
+    assert down_trend.period_over_period.percent_change == Decimal("-50.00")
+
+    # Unchanged: 100 -> 100
+    unchanged_expenses = [
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 7, 10),
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+        make_summary_expense(
+            amount=Decimal("100.00"), expense_date=date(2026, 8, 10),
+            base_amount=Decimal("100.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, unchanged_expenses)
+    unchanged_trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+    assert unchanged_trend.period_over_period.direction == "unchanged"
+    assert unchanged_trend.period_over_period.absolute_change == Decimal("0.00")
+    assert unchanged_trend.period_over_period.percent_change == Decimal("0.00")
+
+
+# Tests that percent_change is null (never infinity/100/0) when the
+# previous complete bucket's total is zero but the current one is not.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if percent_change is None while absolute_change
+#   and direction are still populated normally.
+def test_get_spending_trend_comparison_previous_zero_percent_change_null(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    expenses = [
+        make_summary_expense(
+            amount=Decimal("50.00"), expense_date=date(2026, 8, 10),
+            base_amount=Decimal("50.00"), base_currency="EUR",
+        ),
+    ]
+    wire_expenses_in_range(monkeypatch, expenses)
+
+    # Act - July has no expenses (previous, complete, total 0.00); count=3
+    # so July/August are both complete and September stays the current,
+    # incomplete bucket excluded from the comparison.
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    comparison = trend.period_over_period
+    assert comparison.previous_total_spent == Decimal("0.00")
+    assert comparison.current_total_spent == Decimal("50.00")
+    assert comparison.absolute_change == Decimal("50.00")
+    assert comparison.percent_change is None
+    assert comparison.direction == "up"
+
+
+# Tests that both totals being zero produces absolute_change 0, direction
+# "unchanged", and percent_change null (not 0, which would misleadingly
+# imply a defined 0% change rather than an undefined one).
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if all three fields reflect the zero/zero case.
+def test_get_spending_trend_comparison_both_zero(monkeypatch: MonkeyPatch) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act - count=3 so two complete buckets (July/August) exist alongside
+    # the current, incomplete September bucket.
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=3, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    comparison = trend.period_over_period
+    assert comparison.absolute_change == Decimal("0.00")
+    assert comparison.percent_change is None
+    assert comparison.direction == "unchanged"
+
+
+# Tests that period_over_period is null when fewer than two complete
+# buckets exist in the returned series (e.g. only the current, incomplete
+# bucket was requested).
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository/service calls.
+# Returns:
+# - None. The test passes if period_over_period is None.
+def test_get_spending_trend_comparison_null_when_fewer_than_two_complete_buckets(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Arrange
+    db_session = cast(Session, object())
+    user_id = uuid4()
+    wire_base_currency(monkeypatch, "EUR")
+    wire_expenses_in_range(monkeypatch, [])
+
+    # Act - only 1 bucket requested, which is the current incomplete one
+    trend = analytics_service.get_spending_trend(
+        db_session=db_session, user_id=user_id, period="month",
+        count=1, as_of=date(2026, 9, 17),
+    )
+
+    # Assert
+    assert trend.period_over_period is None
+
+
 # ---------------------------------------------------------------------------
 # get_budget_status (VF-014B3 calendar-period semantics)
 # ---------------------------------------------------------------------------

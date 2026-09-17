@@ -193,6 +193,55 @@ def test_get_expenses_returns_expenses_for_user(clean_database: None) -> None:
         db_session.close()
 
 
+# Tests that get_expenses_in_date_range (VF-015B) includes expenses exactly
+# on the inclusive start/end boundaries, excludes anything outside them, and
+# stays scoped to the requesting user.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if only the in-range, same-user expenses return.
+def test_get_expenses_in_date_range_includes_boundaries_excludes_outside_and_other_user(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    def _create(user, expense_date, title):
+        data = ExpenseCreate(
+            category_id=None, title=title, amount=Decimal("10.00"), currency="EUR",
+            expense_date=expense_date, description=None, source="manual",
+        )
+        expenses_repository.create_expense(
+            db_session=db_session, expense_data=data, user_id=user,
+            **_identity_snapshot_kwargs(data.amount, data.expense_date),
+        )
+
+    try:
+        _create(user_id, date(2026, 8, 31), "Before range")  # excluded
+        _create(user_id, date(2026, 9, 1), "Exact start")  # included
+        _create(user_id, date(2026, 9, 15), "Inside range")  # included
+        _create(user_id, date(2026, 9, 30), "Exact end")  # included
+        _create(user_id, date(2026, 10, 1), "After range")  # excluded
+        _create(other_user_id, date(2026, 9, 15), "Other user in range")  # excluded
+
+        # Act
+        expenses = expenses_repository.get_expenses_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 30),
+        )
+
+        # Assert
+        titles = {expense.title for expense in expenses}
+        assert titles == {"Exact start", "Inside range", "Exact end"}
+        assert all(expense.user_id == user_id for expense in expenses)
+    finally:
+        db_session.close()
+
+
 # Tests that the repository updates an existing expense owned by the user,
 # including its FX snapshot fields.
 # This test exists to verify that only the provided original fields are

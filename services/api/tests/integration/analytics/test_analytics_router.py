@@ -805,6 +805,443 @@ def test_budget_status_endpoint_unaffected_by_base_currency_analytics(
     assert response.json()[0]["spent"] == "20.00"
 
 
+# ---------------------------------------------------------------------------
+# VF-015B spending trend
+# ---------------------------------------------------------------------------
+
+
+# Tests (A) that the current month's bucket sums base_amount across a EUR
+# and a USD-original resolved expense - the same worked example as B5D
+# (100 EUR + 100 USD/84.73 EUR-base -> 184.73, not 200).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if total_spent == 184.73 for the current bucket.
+def test_spending_trend_endpoint_sums_base_amount_across_currencies(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), currency="EUR", amount=100)
+    usd_expense = create_expense_with(
+        client=client, user_id=user_id, expense_date=today.isoformat(), currency="USD", amount=100,
+    )
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["base_currency"] == "EUR"
+    current_bucket = body["buckets"][-1]
+    assert Decimal(current_bucket["total_spent"]) == Decimal("100.00") + Decimal(usd_expense["base_amount"])
+    assert current_bucket["total_spent"] != "200.00"
+    assert current_bucket["expenses_count"] == 2
+    assert current_bucket["unresolved_expenses_count"] == 0
+
+
+# Tests (B) that an empty period inside the requested window is emitted as
+# an explicit zero bucket rather than omitted.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if all requested buckets are present and the
+#   empty one reads exactly "0.00".
+def test_spending_trend_endpoint_emits_zero_buckets_for_empty_periods(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange - two months ago has an expense, one month ago has none, this
+    # month has an expense: three buckets total, middle one empty.
+    user_id = str(uuid4())
+    today = date.today()
+    two_months_ago = date(today.year, today.month, 1)
+    for _ in range(2):
+        two_months_ago = (
+            date(two_months_ago.year - 1, 12, 1)
+            if two_months_ago.month == 1
+            else date(two_months_ago.year, two_months_ago.month - 1, 1)
+        )
+
+    create_expense_with(client=client, user_id=user_id, expense_date=two_months_ago.isoformat(), amount=100)
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=50)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=3",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert len(body["buckets"]) == 3
+    assert Decimal(body["buckets"][0]["total_spent"]) == Decimal("100.00")
+    assert body["buckets"][1]["total_spent"] == "0.00"
+    assert body["buckets"][1]["expenses_count"] == 0
+    assert Decimal(body["buckets"][2]["total_spent"]) == Decimal("50.00")
+
+
+# Tests (C) that the current bucket is marked incomplete and a future-dated
+# expense within it does not leak into the total.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if is_complete is false and the future expense
+#   is excluded from total_spent.
+def test_spending_trend_endpoint_current_bucket_incomplete_future_excluded(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    _, month_end = month_bounds(today)
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=20)
+    if today < month_end:
+        future_date = today + timedelta(days=1)
+        create_expense_with(client=client, user_id=user_id, expense_date=future_date.isoformat(), amount=999)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    current_bucket = body["buckets"][-1]
+    assert current_bucket["is_complete"] is False
+    assert current_bucket["effective_end"] == today.isoformat()
+    assert Decimal(current_bucket["total_spent"]) == Decimal("20.00")
+
+
+# Tests (day/week buckets) that day and week period granularities resolve
+# through the real API with correct calendar boundaries.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if day buckets are single dates and the week
+#   bucket runs Monday-Sunday.
+def test_spending_trend_endpoint_day_and_week_buckets(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    week_start, week_end = week_bounds(today)
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=15)
+
+    # Act - day
+    day_response = client.get(
+        "/api/v1/analytics/spending-trend?period=day&count=1",
+        headers=auth_headers(user_id),
+    )
+    # Act - week
+    week_response = client.get(
+        "/api/v1/analytics/spending-trend?period=week&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    day_bucket = day_response.json()["buckets"][-1]
+    assert day_bucket["period_start"] == day_bucket["period_end"] == today.isoformat()
+    assert Decimal(day_bucket["total_spent"]) == Decimal("15.00")
+
+    week_bucket = week_response.json()["buckets"][-1]
+    assert week_bucket["period_start"] == week_start.isoformat()
+    assert week_bucket["period_end"] == week_end.isoformat()
+    assert Decimal(week_bucket["total_spent"]) == Decimal("15.00")
+
+
+# Tests that period_over_period compares the two most recent complete
+# buckets using real data, never the current partial one.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the comparison reflects the two completed
+#   months, not the current one.
+def test_spending_trend_endpoint_period_over_period_uses_complete_buckets(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    month_start, _ = month_bounds(today)
+    last_month_end = month_start - timedelta(days=1)
+    last_month_start, _ = month_bounds(last_month_end)
+    two_months_ago_end = last_month_start - timedelta(days=1)
+
+    create_expense_with(client=client, user_id=user_id, expense_date=two_months_ago_end.isoformat(), amount=100)
+    create_expense_with(client=client, user_id=user_id, expense_date=last_month_end.isoformat(), amount=150)
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=999)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=3",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    comparison = response.json()["period_over_period"]
+    assert comparison is not None
+    assert Decimal(comparison["previous_total_spent"]) == Decimal("100.00")
+    assert Decimal(comparison["current_total_spent"]) == Decimal("150.00")
+    assert comparison["direction"] == "up"
+
+
+# Tests (FX) that a legacy unresolved expense is excluded from the bucket
+# total and counted separately.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if total_spent excludes the legacy row and
+#   unresolved_expenses_count reflects it.
+def test_spending_trend_endpoint_unresolved_legacy_expense_excluded(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    from app.db.database_session import SessionLocal
+    from app.modules.expenses.expenses_models import ExpenseModel
+
+    user_id_uuid = uuid4()
+    user_id = str(user_id_uuid)
+    today = date.today()
+
+    db_session = SessionLocal()
+    legacy_expense = ExpenseModel(
+        user_id=user_id_uuid,
+        category_id=None,
+        title="Legacy USD",
+        amount=Decimal("999.00"),
+        currency="USD",
+        expense_date=today,
+        source="manual",
+    )
+    db_session.add(legacy_expense)
+    db_session.commit()
+    db_session.close()
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=50)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    current_bucket = response.json()["buckets"][-1]
+    assert Decimal(current_bucket["total_spent"]) == Decimal("50.00")
+    assert current_bucket["unresolved_expenses_count"] == 1
+
+
+# Tests (security) that spending trend is scoped to the authenticated user.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if another user's expenses never appear.
+def test_spending_trend_endpoint_ownership_isolation(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    today = date.today()
+
+    create_expense_with(client=client, user_id=other_user_id, expense_date=today.isoformat(), amount=500)
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=1",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    current_bucket = response.json()["buckets"][-1]
+    assert current_bucket["total_spent"] == "0.00"
+    assert current_bucket["expenses_count"] == 0
+
+
+# Tests (network) that no FX provider is ever called while serving a
+# spending-trend request, even though a resolved foreign-currency expense
+# (created earlier, with the provider mocked separately) is included.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to mock the ECB HTTP boundary.
+# Returns:
+# - None. The test passes if httpx.get is not called during the trend request.
+def test_spending_trend_endpoint_never_calls_fx_providers(
+    client: TestClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    today = date.today()
+    ecb_mock = _mock_ecb(monkeypatch, rate=1.1803, actual_date=today.isoformat())
+
+    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), currency="USD", amount=100)
+    ecb_mock.reset_mock()
+
+    # Act
+    client.get("/api/v1/analytics/spending-trend?period=month&count=3", headers=auth_headers(user_id))
+
+    # Assert
+    ecb_mock.assert_not_called()
+
+
+# Tests (zero data) that a brand-new user still receives the full requested
+# set of zero buckets and their correct authoritative base_currency.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if 3 zero buckets and base_currency "EUR" return.
+def test_spending_trend_endpoint_zero_data_new_user(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=3",
+        headers=auth_headers(user_id),
+    )
+
+    # Assert
+    body = response.json()
+    assert body["base_currency"] == "EUR"
+    assert len(body["buckets"]) == 3
+    for bucket in body["buckets"]:
+        assert bucket["total_spent"] == "0.00"
+        assert bucket["expenses_count"] == 0
+        assert bucket["unresolved_expenses_count"] == 0
+    assert body["period_over_period"] is not None
+    assert body["period_over_period"]["direction"] == "unchanged"
+    assert body["period_over_period"]["percent_change"] is None
+
+
+# Tests (validation) that an unsupported period value is rejected.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 422.
+def test_spending_trend_endpoint_rejects_unsupported_period(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=year&count=3",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests (validation) that count below 1 is rejected.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 422.
+def test_spending_trend_endpoint_rejects_count_below_one(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Act
+    response = client.get(
+        "/api/v1/analytics/spending-trend?period=month&count=0",
+        headers=auth_headers(str(uuid4())),
+    )
+
+    # Assert
+    assert response.status_code == 422
+
+
+# Tests (validation) that count above the per-period maximum is rejected,
+# for all three supported periods.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if each period's over-maximum count is rejected.
+def test_spending_trend_endpoint_rejects_count_above_maximum(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    over_maximum_counts = {"day": 367, "week": 105, "month": 25}
+
+    for period, count in over_maximum_counts.items():
+        # Act
+        response = client.get(
+            f"/api/v1/analytics/spending-trend?period={period}&count={count}",
+            headers=auth_headers(user_id),
+        )
+
+        # Assert
+        assert response.status_code == 422, (period, response.text)
+
+
+# Tests (validation) that the default count is applied per period when
+# count is omitted.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the returned bucket count matches each
+#   period's documented default.
+def test_spending_trend_endpoint_default_counts_applied(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    # Arrange
+    user_id = str(uuid4())
+    expected_defaults = {"day": 30, "week": 12, "month": 6}
+
+    for period, expected_count in expected_defaults.items():
+        # Act
+        response = client.get(
+            f"/api/v1/analytics/spending-trend?period={period}",
+            headers=auth_headers(user_id),
+        )
+
+        # Assert
+        body = response.json()
+        assert body["count"] == expected_count
+        assert len(body["buckets"]) == expected_count
+
+
 # Tests that the budget status endpoint returns exceeded budget information,
 # calculated against the real current calendar month (no public as_of -
 # the endpoint always uses the server's today).
