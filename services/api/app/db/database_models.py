@@ -30,6 +30,7 @@ def import_database_models() -> None:
         UserFinancialSettingsModel,
     )
     from app.modules.goals.goal_models import GoalModel
+    from app.modules.goals.goal_transaction_models import GoalTransactionModel
     from app.modules.receipts.receipt_models import ReceiptModel
 
     _ = (
@@ -39,5 +40,6 @@ def import_database_models() -> None:
         ExpenseModel,
         UserFinancialSettingsModel,
         GoalModel,
+        GoalTransactionModel,
         ReceiptModel,
     )
