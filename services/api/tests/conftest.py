@@ -12,6 +12,7 @@ from app.modules.financial_settings.financial_settings_models import (
     UserFinancialSettingsModel,
 )
 from app.modules.goals.goal_models import GoalModel
+from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from app.modules.receipts.receipt_models import ReceiptModel
 
 # Creates a reusable FastAPI test client.
@@ -39,6 +40,7 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
         db_session.query(BudgetModel).delete()
+        db_session.query(GoalTransactionModel).delete()
         db_session.query(GoalModel).delete()
         db_session.query(CategoryModel).delete()
         db_session.query(UserFinancialSettingsModel).delete()
@@ -49,6 +51,7 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
         db_session.query(BudgetModel).delete()
+        db_session.query(GoalTransactionModel).delete()
         db_session.query(GoalModel).delete()
         db_session.query(CategoryModel).delete()
         db_session.query(UserFinancialSettingsModel).delete()

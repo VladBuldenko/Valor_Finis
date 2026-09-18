@@ -822,6 +822,111 @@ current_amount <= target_amount
 
 is currently enforced by the application/service validation layer rather than by a PostgreSQL check constraint.
 
+6.1 Goal Transactions
+
+Table:
+
+goal_transactions
+
+Purpose:
+
+Append-only ledger of balance-affecting events for a Goal: opening_balance
+(migration-created historical balance), contribution, and withdrawal.
+Introduced in VF-016B as the future authoritative source of truth for a
+Goal's balance. goals.current_amount remains transitional legacy storage
+in this slice - no read/write path is switched over yet; a later slice
+switches writes to the ledger, switches reads/analytics to a
+ledger-derived balance, and removes the legacy column in its own cleanup
+migration.
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+goal_id
+
+UUID
+
+no
+
+FK → goals.id, ON DELETE RESTRICT (not CASCADE - a Goal's financial
+history must not silently disappear if the Goal row is deleted)
+
+user_id
+
+UUID
+
+no
+
+Resource owner (denormalized, no FK, matching every other table)
+
+type
+
+VARCHAR(20)
+
+no
+
+One of: opening_balance, contribution, withdrawal. opening_balance is
+reserved for migration/system backfill; public APIs must never let a
+client create one.
+
+amount
+
+NUMERIC(12,2)
+
+no
+
+Always positive; direction is carried by type, not sign
+
+description
+
+VARCHAR(255)
+
+yes
+
+Optional free-text note
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+For backfilled opening_balance rows, set to the source Goal's own
+created_at, not migration execution time
+
+Constraints
+
+ck_goal_transactions_amount_positive: amount > 0
+ck_goal_transactions_type_valid: type IN ('opening_balance', 'contribution', 'withdrawal')
+
+Indexes
+
+user_id
+(goal_id, created_at) - per-goal transaction history, ordered access, and
+future balance aggregation
+
+Immutability: rows are append-only. No UPDATE/DELETE path exists or is
+planned; corrections are made with compensating entries, never edits.
+
+Opening-balance backfill: every pre-existing Goal with current_amount > 0
+received exactly one opening_balance row (amount = that current_amount,
+created_at = the Goal's own created_at) when this table was introduced.
+Goals with current_amount == 0 received no row - no money is manufactured.
+See alembic/versions/e90a257f987b_add_goal_transactions_and_backfill.py.
+
 7. Receipts
 
 Table:
@@ -1104,6 +1209,10 @@ budgets
    │
    └──< budget_versions.budget_id
 
+goals
+   │
+   └──< goal_transactions.goal_id
+
 expenses
    │
    └──< receipts.expense_id
@@ -1121,11 +1230,16 @@ Budget deleted
     ↓
 BudgetVersion rows for that budget = deleted (ON DELETE CASCADE)
 
+Goal deleted
+    ↓
+Rejected if any goal_transactions reference the goal (ON DELETE RESTRICT,
+VF-016B)
+
 Expense deleted
     ↓
 Receipt.expense_id = NULL
 
-No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it.
+No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it. A Goal with transaction history cannot be deleted at all.
 
 10. Database-Enforced Invariants
 
@@ -1151,7 +1265,12 @@ BudgetVersion.limit_amount > 0
 BudgetVersion.effective_until >= effective_from when present
 BudgetVersion.change_reason is valid
 
+GoalTransaction.amount > 0
+GoalTransaction.type is valid
+
 A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
+
+A goal still referenced by a goal_transactions row cannot be deleted (ON DELETE RESTRICT)
 
 These constraints protect data even if an application-layer validation path is bypassed.
 
