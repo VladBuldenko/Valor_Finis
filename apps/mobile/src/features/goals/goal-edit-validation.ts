@@ -1,9 +1,9 @@
+import { validateGoalDecimalAmount } from "./goal-amount-validation";
 import type { GoalStatus } from "./goal.types";
 
 export type GoalEditFormValues = {
   name: string;
   targetAmount: string;
-  currentAmount: string;
   targetDate: string;
   status: GoalStatus;
 };
@@ -13,12 +13,17 @@ const GOAL_STATUSES: GoalStatus[] = ["active", "completed", "archived"];
 /**
  * Validates goal edit form input.
  * Kept as its own function rather than extending goal-validation.ts's
- * validateGoalForm (Create Goal's validator): Edit Goal validates two
- * fields Create Goal never exposes (current_amount, status) plus a
- * cross-field amount check, so duplicating the shared name/target-amount/
- * target-date rules here is simpler than coupling the two forms' validation
- * together (mirrors how Budget keeps its own validation simple). First-
- * error-wins, returns null when valid.
+ * validateGoalForm (Create Goal's validator): Edit Goal validates a field
+ * Create Goal never exposes (status), so duplicating the shared name/
+ * target-amount/target-date rules here is simpler than coupling the two
+ * forms' validation together (mirrors how Budget keeps its own validation
+ * simple). First-error-wins, returns null when valid.
+ *
+ * current_amount is intentionally NOT part of this form (VF-016F): it is
+ * no longer client-writable, so there is no "saved so far" field to
+ * validate, and no current-vs-target cross-field check either -- lowering
+ * target_amount below the goal's actual (ledger-derived) balance is a
+ * valid, allowed state (overfunding), not an error.
  */
 export function validateGoalEditForm(
   values: GoalEditFormValues,
@@ -33,29 +38,13 @@ export function validateGoalEditForm(
     return "Name must be 150 characters or fewer.";
   }
 
-  const numericTargetAmount = Number(
-    values.targetAmount.trim().replace(",", "."),
+  const targetAmountError = validateGoalDecimalAmount(
+    values.targetAmount,
+    "Target amount",
   );
 
-  if (!Number.isFinite(numericTargetAmount) || numericTargetAmount <= 0) {
-    return "Target amount must be greater than zero.";
-  }
-
-  const numericCurrentAmount = Number(
-    values.currentAmount.trim().replace(",", "."),
-  );
-
-  if (!Number.isFinite(numericCurrentAmount) || numericCurrentAmount < 0) {
-    return "Saved so far must be zero or greater.";
-  }
-
-  // Local pre-check for the backend's cross-field invariant (current_amount
-  // must not exceed target_amount). Checking it here against the form's
-  // final values keeps the backend's 400 GoalInvalidAmountError path rare in
-  // practice -- see goal-edit-screen.tsx's onError for the fallback message
-  // if it still occurs (e.g. a race with a concurrent edit).
-  if (numericCurrentAmount > numericTargetAmount) {
-    return "Saved so far must not exceed the target amount.";
+  if (targetAmountError) {
+    return targetAmountError;
   }
 
   const trimmedTargetDate = values.targetDate.trim();
