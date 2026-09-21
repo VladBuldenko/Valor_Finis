@@ -27,3 +27,40 @@ class GoalInsufficientFundsError(Exception):
     """
 
     pass
+
+
+class GoalCurrencyImmutableError(Exception):
+    """
+    Raised when an actual currency change is attempted on a goal that
+    already has transaction history.
+
+    What:
+        Represents an invalid Goal currency change in the goals module.
+
+    Why:
+        GoalTransaction rows do not store their own currency. Changing a
+        Goal's currency after history exists would silently reinterpret
+        every historical ledger amount in a different currency, which is
+        invalid. A PATCH that resends the same normalized currency is not
+        an actual change and does not raise this error.
+    """
+
+    pass
+
+
+class GoalDeletionNotAllowedError(Exception):
+    """
+    Raised when deletion is attempted on a goal that has transaction
+    history.
+
+    What:
+        Represents a forbidden Goal deletion in the goals module.
+
+    Why:
+        A Goal with any transaction history (including a withdrawal that
+        brought the balance back to 0) must not be hard-deleted, since that
+        would silently destroy real financial history. The user can archive
+        the goal instead via PATCH status="archived".
+    """
+
+    pass

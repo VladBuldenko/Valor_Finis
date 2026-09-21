@@ -678,6 +678,25 @@ removed along with current_amount's client-writability. status is never
 auto-changed based on balance/target comparisons; it remains a manual
 field.
 
+Currency immutability (VF-016E): currency may be freely changed while the
+Goal has no transaction history. As soon as any GoalTransaction exists for
+the Goal - opening_balance, contribution, or withdrawal, regardless of the
+Goal's current ledger balance - an actual currency change is rejected with
+409 Conflict ("Goal currency cannot be changed after transaction history
+exists."). Resending the Goal's current currency (normalized, any casing)
+is not an actual change and is always allowed, even with history. This
+exists because GoalTransaction rows do not store their own currency:
+changing Goal.currency after history exists would reinterpret every
+historical ledger amount in a different currency, which is invalid. All
+other fields - name, target_amount, target_date, status - remain freely
+editable regardless of transaction history.
+
+Every balance-changing and metadata-changing write on a Goal (contribution/
+withdrawal creation, and now currency-affecting PATCH/DELETE) locks the
+owned Goal row with SELECT ... FOR UPDATE before checking transaction
+history, so a currency change or deletion can never race against the
+Goal's first transaction and see a stale "no history" state.
+
 Goal Response
 
 Returns the goal fields plus:
@@ -691,6 +710,30 @@ current_amount is always present in the response (backward compatible),
 computed from the goal_transactions ledger as described above - never
 read from the transitional column. It may exceed target_amount -
 overfunding is a valid, representable state.
+
+Delete Goal
+
+DELETE /api/v1/goals/{goal_id}
+
+Safe deletion (VF-016E): a Goal with no transaction history is hard-
+deleted (204). A Goal with any transaction history - opening_balance,
+contribution, or withdrawal, regardless of the Goal's current ledger
+balance (a fully-withdrawn 0.00-balance Goal still counts) - cannot be
+hard-deleted: the request is rejected with 409 Conflict ("Goal with
+transaction history cannot be deleted. Archive it instead."), and the Goal
+and its full transaction history remain unchanged. There is no separate
+archive endpoint: PATCH /api/v1/goals/{goal_id} with
+{"status": "archived"} is the mechanism for retiring a history-bearing
+Goal a user no longer wants to use, and it continues to work regardless of
+transaction history. Status is never changed automatically by either
+endpoint.
+
+The 409 is a controlled application-level check (the owned Goal row is
+locked and its transaction history checked before any delete is
+attempted), not a caught database error - the existing
+goal_transactions.goal_id foreign key (ON DELETE RESTRICT) remains in
+place underneath purely as defense-in-depth and must never surface to a
+client as a raw error or a 500.
 
 Create Goal Transaction
 

@@ -130,30 +130,25 @@ def get_goal_by_id_for_update(
     return goal_model
 
 
-# Updates an existing financial goal owned by the authenticated user.
-# This function exists to isolate PostgreSQL update operations
-# from business logic and HTTP handling.
+# Applies validated partial update data to an already-locked Goal model
+# and commits.
+# This function exists to isolate PostgreSQL update operations from
+# business logic and HTTP handling. Callers (goal_service.update_goal)
+# must have already obtained the row lock via get_goal_by_id_for_update
+# and performed any business-rule checks (e.g. currency immutability,
+# VF-016E) before calling this - it applies changes unconditionally and
+# never re-checks ownership or business rules itself.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - goal_id: financial goal identifier.
+# - goal_model: the already-locked GoalModel instance to update.
 # - goal_data: validated partial goal update data.
-# - user_id: authenticated user identifier that owns the goal.
 # Returns:
 # - Updated GoalModel instance.
-# Raises:
-# - GoalNotFoundError: when goal does not exist or does not belong to the user.
-def update_goal(
+def apply_goal_update(
     db_session: Session,
-    goal_id: UUID,
+    goal_model: GoalModel,
     goal_data: GoalUpdate,
-    user_id: UUID,
 ) -> GoalModel:
-    goal_model = get_goal_by_id(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
-
     update_data = goal_data.model_dump(exclude_unset=True)
 
     for field_name, field_value in update_data.items():
@@ -169,27 +164,23 @@ def update_goal(
     return goal_model
 
 
-# Deletes an existing financial goal owned by the authenticated user.
-# This function exists to isolate PostgreSQL delete operations
-# from business logic and HTTP handling.
+# Deletes an already-locked Goal model and commits.
+# This function exists to isolate PostgreSQL delete operations from
+# business logic and HTTP handling. Callers (goal_service.delete_goal)
+# must have already obtained the row lock via get_goal_by_id_for_update
+# and confirmed no transaction history exists (VF-016E) before calling
+# this - it deletes unconditionally and never re-checks ownership or
+# transaction history itself. The FK RESTRICT on
+# goal_transactions.goal_id remains as defense-in-depth if that check is
+# ever bypassed.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - goal_id: financial goal identifier.
-# - user_id: authenticated user identifier that owns the goal.
+# - goal_model: the already-locked GoalModel instance to delete.
 # Returns:
 # - None.
-# Raises:
-# - GoalNotFoundError: when goal does not exist or does not belong to the user.
-def delete_goal(
+def delete_locked_goal(
     db_session: Session,
-    goal_id: UUID,
-    user_id: UUID,
+    goal_model: GoalModel,
 ) -> None:
-    goal_model = get_goal_by_id(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
-
     db_session.delete(goal_model)
     db_session.commit()

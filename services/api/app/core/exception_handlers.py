@@ -23,6 +23,8 @@ from app.modules.fx.fx_errors import (
     FxRateUnavailableError,
 )
 from app.modules.goals.goal_errors import (
+    GoalCurrencyImmutableError,
+    GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
     GoalNotFoundError,
 )
@@ -114,6 +116,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalInsufficientFundsError: (
         status.HTTP_409_CONFLICT,
         "Withdrawal exceeds the current goal balance.",
+    ),
+    GoalCurrencyImmutableError: (
+        status.HTTP_409_CONFLICT,
+        "Goal currency cannot be changed after transaction history exists.",
+    ),
+    GoalDeletionNotAllowedError: (
+        status.HTTP_409_CONFLICT,
+        "Goal with transaction history cannot be deleted. Archive it instead.",
     ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
