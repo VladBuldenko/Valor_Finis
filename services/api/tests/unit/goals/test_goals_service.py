@@ -23,7 +23,6 @@ def test_service_create_goal_creates_goal_response(
     goal_data = GoalCreate(
         name="Vacation",
         target_amount=Decimal("2000"),
-        current_amount=Decimal("500"),
         currency="EUR",
         target_date=date(2026, 12, 31),
         status="active",
@@ -42,7 +41,7 @@ def test_service_create_goal_creates_goal_response(
         assert created_goal.user_id == user_id
         assert created_goal.name == goal_data.name
         assert created_goal.target_amount == Decimal("2000")
-        assert created_goal.current_amount == Decimal("500")
+        assert created_goal.current_amount == Decimal("0")
         assert created_goal.currency == goal_data.currency
         assert created_goal.target_date == goal_data.target_date
         assert created_goal.status == goal_data.status
@@ -70,7 +69,6 @@ def test_service_get_goals_returns_user_goal_responses(
     user_goal_data = GoalCreate(
         name="Vacation",
         target_amount=Decimal("2000"),
-        current_amount=Decimal("500"),
         currency="EUR",
         target_date=date(2026, 12, 31),
         status="active",
@@ -79,7 +77,6 @@ def test_service_get_goals_returns_user_goal_responses(
     other_user_goal_data = GoalCreate(
         name="Laptop",
         target_amount=Decimal("1500"),
-        current_amount=Decimal("300"),
         currency="EUR",
         target_date=date(2026, 10, 31),
         status="active",
@@ -109,7 +106,7 @@ def test_service_get_goals_returns_user_goal_responses(
         assert goals[0].user_id == user_id
         assert goals[0].name == user_goal_data.name
         assert goals[0].target_amount == Decimal("2000")
-        assert goals[0].current_amount == Decimal("500")
+        assert goals[0].current_amount == Decimal("0")
         assert goals[0].currency == user_goal_data.currency
         assert goals[0].target_date == user_goal_data.target_date
         assert goals[0].status == user_goal_data.status

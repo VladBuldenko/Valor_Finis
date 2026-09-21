@@ -39,18 +39,29 @@ _BACKFILL_SQL = """
 
 
 def _create_goal(db_session, user_id, current_amount) -> GoalModel:
-    return goal_repository.create_goal(
+    # GoalCreate no longer accepts current_amount (VF-016C) - every Goal is
+    # created at 0. This backfill test needs to simulate a legacy Goal row
+    # that already holds a balance before the ledger existed, so
+    # current_amount is set directly on the ORM model after creation,
+    # bypassing the public schema entirely.
+    goal_model = goal_repository.create_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Emergency fund",
             target_amount=Decimal("1000"),
-            current_amount=current_amount,
             currency="EUR",
             target_date=date(2026, 12, 31),
             status="active",
         ),
         user_id=user_id,
     )
+
+    if current_amount != Decimal("0"):
+        goal_model.current_amount = current_amount
+        db_session.commit()
+        db_session.refresh(goal_model)
+
+    return goal_model
 
 
 def _run_backfill(db_session) -> None:
