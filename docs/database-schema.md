@@ -823,6 +823,12 @@ old "current_amount <= target_amount" rule has been removed: overfunding
 above target_amount is a valid, allowed state, and there is no PostgreSQL
 CHECK constraint relating the two columns.
 
+As of VF-016D, goals.current_amount is transitional compatibility storage
+only: every transaction write still synchronizes it, but no read path
+trusts it any more (see 6.1 below). It remains physically present in this
+table for rollback safety and is not removed by this slice; final removal
+happens in a later cleanup migration.
+
 6.1 Goal Transactions
 
 Table:
@@ -833,15 +839,20 @@ Purpose:
 
 Append-only ledger of balance-affecting events for a Goal: opening_balance
 (migration-created historical balance), contribution, and withdrawal.
-Introduced in VF-016B as the future authoritative source of truth for a
-Goal's balance. VF-016C wires up the write path: POST
+Introduced in VF-016B; VF-016C wired up the write path (POST
 /api/v1/goals/{goal_id}/transactions inserts a contribution/withdrawal row
 and atomically recomputes goals.current_amount from the full ledger in the
-same database transaction. goals.current_amount remains transitional
-compatibility storage - reads (GoalResponse, Goal Progress analytics)
-still come from this column, not a ledger SUM; a later slice (VF-016D)
-switches reads to a ledger-derived balance and removes the legacy column
-in its own cleanup migration.
+same database transaction). VF-016D wires up the read path: this table is
+now authoritative for both writes and reads. Every public Goal balance -
+POST/GET/PATCH /api/v1/goals and GET /api/v1/analytics/goal-progress -
+is computed from this table at read time (opening_balance + contribution -
+withdrawal), never from goals.current_amount. That column still exists and
+is still kept in sync by every transaction write (for rollback safety and
+in case an older deployment still reads it), but no read path in this
+codebase trusts it: a GET request never repairs it either, even when it
+has drifted from the ledger. See goal_service._build_goal_response and
+goal_transaction_repository.get_ledger_balances_for_user. The legacy
+column's removal is deferred to a later cleanup migration.
 
 Concurrency: every balance-changing write locks the owned Goal row with
 SELECT ... FOR UPDATE before calculating the ledger balance, in the same

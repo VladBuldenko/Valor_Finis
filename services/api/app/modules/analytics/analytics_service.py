@@ -33,6 +33,7 @@ from app.modules.categories import repository as categories_repository
 from app.modules.expenses import expenses_repository
 from app.modules.financial_settings import financial_settings_service
 from app.modules.goals import goal_repository as goals_repository
+from app.modules.goals import goal_transaction_repository
 
 
 BUCKET_AMOUNT_DECIMAL_PLACES = Decimal("0.00")
@@ -819,6 +820,11 @@ def get_budget_status(
 # Calculates progress for each financial goal of the authenticated user.
 # This function exists to show how much money is already saved
 # and how much is still needed for each goal.
+# current_amount is ledger-derived (VF-016D), never read from the
+# transitional goals.current_amount column: one bulk grouped query fetches
+# every one of the user's goal balances up front (the same repository call
+# GoalResponse read paths use), so this never issues one balance query per
+# Goal no matter how many goals the user has.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter goals.
@@ -833,21 +839,32 @@ def get_goal_progress(
         user_id=user_id,
     )
 
-    return [
-        GoalProgressItem(
-            goal_id=goal.id,
-            name=goal.name,
-            target_amount=goal.target_amount,
-            current_amount=goal.current_amount,
-            remaining_amount=max(
-                goal.target_amount - goal.current_amount,
-                Decimal("0"),
-            ),
-            progress_percent=(
-                goal.current_amount / goal.target_amount * Decimal("100")
-            ).quantize(Decimal("0.01")),
-            status=goal.status,
-            target_date=goal.target_date,
+    balances = goal_transaction_repository.get_ledger_balances_for_user(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    goal_progress_items = []
+
+    for goal in goals:
+        current_amount = balances.get(goal.id, Decimal("0.00"))
+
+        goal_progress_items.append(
+            GoalProgressItem(
+                goal_id=goal.id,
+                name=goal.name,
+                target_amount=goal.target_amount,
+                current_amount=current_amount,
+                remaining_amount=max(
+                    goal.target_amount - current_amount,
+                    Decimal("0"),
+                ),
+                progress_percent=(
+                    current_amount / goal.target_amount * Decimal("100")
+                ).quantize(Decimal("0.01")),
+                status=goal.status,
+                target_date=goal.target_date,
+            )
         )
-        for goal in goals
-    ]
+
+    return goal_progress_items

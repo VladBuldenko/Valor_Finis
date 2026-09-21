@@ -2,6 +2,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
@@ -119,3 +120,44 @@ def get_transactions_for_goal(
         )
         .all()
     )
+
+
+# Returns every one of a user's goals' ledger balances in a single grouped
+# query.
+# This function exists so a read path that lists multiple Goals at once
+# (GET /goals, Goal Progress analytics) never issues one balance query per
+# Goal (VF-016D). A Goal with no transactions simply has no entry in the
+# returned mapping - callers must default a missing goal_id to
+# Decimal("0.00") themselves, since a goal that was never funded has
+# nothing to aggregate.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier to scope the aggregation to.
+#   Ownership-safe by construction: another user's transactions can never
+#   appear in the result, even for a goal_id that happens to collide only
+#   in theory (goal_id is already unique, but filtering by user_id here
+#   too matches the ownership-defense-in-depth convention used everywhere
+#   else in this module).
+# Returns:
+# - Dict mapping goal_id to its Decimal ledger balance, for goals that
+#   have at least one transaction.
+def get_ledger_balances_for_user(
+    db_session: Session,
+    user_id: UUID,
+) -> dict[UUID, Decimal]:
+    signed_amount = case(
+        (GoalTransactionModel.type == "withdrawal", -GoalTransactionModel.amount),
+        else_=GoalTransactionModel.amount,
+    )
+
+    rows = (
+        db_session.query(
+            GoalTransactionModel.goal_id,
+            func.sum(signed_amount).label("balance"),
+        )
+        .filter(GoalTransactionModel.user_id == user_id)
+        .group_by(GoalTransactionModel.goal_id)
+        .all()
+    )
+
+    return {goal_id: balance for goal_id, balance in rows}
