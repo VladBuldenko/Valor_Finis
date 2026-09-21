@@ -12,18 +12,29 @@ from app.modules.goals.goal_transaction_models import GoalTransactionModel
 
 
 def _create_goal(db_session, user_id, current_amount=Decimal("0")) -> GoalModel:
-    return goal_repository.create_goal(
+    # GoalCreate no longer accepts current_amount (VF-016C) - every Goal is
+    # created at 0. These model-level tests need to simulate a Goal that
+    # already holds a balance (e.g. a legacy row, or one funded through the
+    # ledger), so current_amount is set directly on the ORM model after
+    # creation, bypassing the public schema entirely.
+    goal_model = goal_repository.create_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Emergency fund",
             target_amount=Decimal("1000"),
-            current_amount=current_amount,
             currency="EUR",
             target_date=date(2026, 12, 31),
             status="active",
         ),
         user_id=user_id,
     )
+
+    if current_amount != Decimal("0"):
+        goal_model.current_amount = current_amount
+        db_session.commit()
+        db_session.refresh(goal_model)
+
+    return goal_model
 
 
 # Tests that a transaction with a positive amount and a valid type persists.

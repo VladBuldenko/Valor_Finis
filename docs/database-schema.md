@@ -816,11 +816,12 @@ Indexes
 user_id
 target_date
 
-The rule:
-
-current_amount <= target_amount
-
-is currently enforced by the application/service validation layer rather than by a PostgreSQL check constraint.
+current_amount is application-writable only by the goal_transactions write
+path (VF-016C) - it is no longer accepted on POST/PATCH
+/api/v1/goals(/{goal_id}) request bodies at all (see api-contract.md). The
+old "current_amount <= target_amount" rule has been removed: overfunding
+above target_amount is a valid, allowed state, and there is no PostgreSQL
+CHECK constraint relating the two columns.
 
 6.1 Goal Transactions
 
@@ -833,11 +834,23 @@ Purpose:
 Append-only ledger of balance-affecting events for a Goal: opening_balance
 (migration-created historical balance), contribution, and withdrawal.
 Introduced in VF-016B as the future authoritative source of truth for a
-Goal's balance. goals.current_amount remains transitional legacy storage
-in this slice - no read/write path is switched over yet; a later slice
-switches writes to the ledger, switches reads/analytics to a
-ledger-derived balance, and removes the legacy column in its own cleanup
-migration.
+Goal's balance. VF-016C wires up the write path: POST
+/api/v1/goals/{goal_id}/transactions inserts a contribution/withdrawal row
+and atomically recomputes goals.current_amount from the full ledger in the
+same database transaction. goals.current_amount remains transitional
+compatibility storage - reads (GoalResponse, Goal Progress analytics)
+still come from this column, not a ledger SUM; a later slice (VF-016D)
+switches reads to a ledger-derived balance and removes the legacy column
+in its own cleanup migration.
+
+Concurrency: every balance-changing write locks the owned Goal row with
+SELECT ... FOR UPDATE before calculating the ledger balance, in the same
+database transaction as the ledger insert and the current_amount update.
+This serializes concurrent writes against the same Goal at the PostgreSQL
+level - two simultaneous withdrawal requests can never both validate
+against the same stale balance, so the balance can never go negative even
+under a race. See goal_repository.get_goal_by_id_for_update and
+goal_service.create_goal_transaction.
 
 Column
 
@@ -1280,7 +1293,10 @@ Some rules require business context and are currently enforced by Pydantic/servi
 
 Examples:
 
-Goal.current_amount <= Goal.target_amount
+A GoalTransaction withdrawal cannot exceed the Goal's current
+ledger-derived balance (VF-016C) - Goal.current_amount is allowed to
+exceed Goal.target_amount (overfunding), so there is no longer an amount
+relationship enforced between the two Goal columns themselves.
 
 Budget.end_date >= Budget.start_date
 

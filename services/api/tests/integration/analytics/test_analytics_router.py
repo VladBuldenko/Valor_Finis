@@ -13,6 +13,7 @@ from tests.helpers import (
     create_category,
     create_expense,
     create_goal,
+    create_goal_transaction,
 )
 
 
@@ -2905,12 +2906,17 @@ def test_goal_progress_endpoint_returns_goal_progress(
     # Arrange
     user_id = str(uuid4())
 
-    create_goal(
+    goal = create_goal(
         client=client,
         user_id=user_id,
         name="Vacation",
         target_amount=2000,
-        current_amount=500,
+    )
+    create_goal_transaction(
+        client=client,
+        user_id=user_id,
+        goal_id=goal["id"],
+        amount=500,
     )
 
     # Act

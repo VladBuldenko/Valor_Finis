@@ -21,6 +21,11 @@ class GoalBase(BaseModel):
 
     Why:
         Prevents duplication between create and response schemas.
+        current_amount is deliberately NOT part of this shared base: it is
+        no longer client-writable (VF-016). Funding happens only through a
+        GoalTransaction (see goal_transaction_schemas.py); GoalResponse adds
+        current_amount back itself, since it must keep echoing the
+        transitional balance for backward compatibility.
     """
 
     name: str = Field(
@@ -38,15 +43,6 @@ class GoalBase(BaseModel):
         decimal_places=2,
         description="Target amount required to reach the goal.",
         examples=["2000.00"],
-    )
-
-    current_amount: Decimal = Field(
-        default=Decimal("0"),
-        ge=0,
-        max_digits=12,
-        decimal_places=2,
-        description="Amount already saved for the goal.",
-        examples=["500.00"],
     )
 
     currency: str = Field(
@@ -90,32 +86,6 @@ class GoalBase(BaseModel):
 
         return value.strip().upper()
 
-    @model_validator(mode="after")
-    def validate_goal_amounts(self) -> "GoalBase":
-        """
-        Validates financial goal amount consistency.
-
-        What:
-            Checks that current_amount does not exceed target_amount.
-
-        Why:
-            Prevents logically invalid financial goals.
-
-        Parameters:
-            None.
-
-        Returns:
-            Validated GoalBase object.
-
-        Raises:
-            ValueError: If current_amount is greater than target_amount.
-        """
-
-        if self.current_amount > self.target_amount:
-            raise ValueError("current_amount must be less than or equal to target_amount")
-
-        return self
-
 
 class GoalCreate(GoalBase):
     """
@@ -127,7 +97,9 @@ class GoalCreate(GoalBase):
     Why:
         Keeps invalid client input away from business logic and database logic.
         The user_id is not accepted from the client because it must come
-        from authentication data.
+        from authentication data. current_amount is not accepted either
+        (extra="forbid" rejects it): every new Goal starts at 0 and can only
+        be funded afterward through a contribution GoalTransaction.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -162,15 +134,6 @@ class GoalUpdate(BaseModel):
         decimal_places=2,
         description="Updated target amount required to reach the goal.",
         examples=["2500.00"],
-    )
-
-    current_amount: Optional[Decimal] = Field(
-        default=None,
-        ge=0,
-        max_digits=12,
-        decimal_places=2,
-        description="Updated amount already saved for the goal.",
-        examples=["700.00"],
     )
 
     currency: Optional[str] = Field(
@@ -236,7 +199,6 @@ class GoalUpdate(BaseModel):
         fields_that_cannot_be_null = {
             "name": self.name,
             "target_amount": self.target_amount,
-            "current_amount": self.current_amount,
             "currency": self.currency,
             "status": self.status,
         }
@@ -244,13 +206,6 @@ class GoalUpdate(BaseModel):
         for field_name, field_value in fields_that_cannot_be_null.items():
             if field_name in self.model_fields_set and field_value is None:
                 raise ValueError(f"{field_name} cannot be null.")
-
-        if (
-            self.current_amount is not None
-            and self.target_amount is not None
-            and self.current_amount > self.target_amount
-        ):
-            raise ValueError("current_amount must be less than or equal to target_amount")
 
         return self
 
@@ -264,11 +219,29 @@ class GoalResponse(GoalBase):
 
     Why:
         Keeps the database model separated from the API contract.
+        current_amount is read-only here: it is populated from the
+        transitional goals.current_amount column (kept in sync by the
+        GoalTransaction write path), never accepted as client input.
+        Overfunding is a valid product state (VF-016), so current_amount is
+        allowed to exceed target_amount - only non-negativity is enforced,
+        matching the DB's own CHECK constraint.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     user_id: UUID
+
+    current_amount: Decimal = Field(
+        ge=0,
+        max_digits=12,
+        decimal_places=2,
+        description=(
+            "Amount currently saved for the goal, derived from the "
+            "transitional current_amount column. May exceed target_amount."
+        ),
+        examples=["500.00"],
+    )
+
     created_at: datetime
     updated_at: datetime

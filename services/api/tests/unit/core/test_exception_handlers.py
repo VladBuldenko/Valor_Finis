@@ -21,7 +21,7 @@ from app.modules.categories.errors import (
 )
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.goals.goal_errors import (
-    GoalInvalidAmountError,
+    GoalInsufficientFundsError,
     GoalNotFoundError,
 )
 from app.modules.receipts.receipt_errors import (
@@ -100,9 +100,9 @@ from app.modules.receipts.receipt_errors import (
             "Goal not found.",
         ),
         (
-            GoalInvalidAmountError,
-            status.HTTP_400_BAD_REQUEST,
-            "current_amount must be less than or equal to target_amount.",
+            GoalInsufficientFundsError,
+            status.HTTP_409_CONFLICT,
+            "Withdrawal exceeds the current goal balance.",
         ),
         (
             ReceiptNotFoundError,

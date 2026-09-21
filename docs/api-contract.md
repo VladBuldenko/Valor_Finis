@@ -576,6 +576,32 @@ DELETE
 
 204
 
+POST
+
+/api/v1/goals/{goal_id}/transactions
+
+201
+
+GET
+
+/api/v1/goals/{goal_id}/transactions
+
+200
+
+Funding model (VF-016):
+
+current_amount is READ-ONLY on every Goal endpoint. It is not accepted by
+POST /api/v1/goals or PATCH /api/v1/goals/{goal_id} - sending it is
+rejected (extra fields are forbidden). A Goal always starts at 0 and can
+only be funded or drawn down afterward through
+POST /api/v1/goals/{goal_id}/transactions.
+
+goals.current_amount is transitional compatibility storage: it is kept in
+sync with the goal_transactions ledger on every transaction write, but the
+ledger (not this column) is the authoritative balance history. A later
+slice (VF-016D) will switch reads to a ledger-derived balance and
+eventually remove this column.
+
 Create Goal
 
 POST /api/v1/goals
@@ -585,7 +611,6 @@ Request:
 {
   "name": "Vacation",
   "target_amount": "2000.00",
-  "current_amount": "500.00",
   "currency": "EUR",
   "target_date": "2026-12-31",
   "status": "active"
@@ -611,12 +636,6 @@ yes
 
 greater than 0
 
-current_amount
-
-no
-
-non-negative, default 0
-
 currency
 
 no
@@ -633,11 +652,10 @@ status
 
 no
 
-active, completed, archived; default active
+active, completed, archived; default active; never auto-derived
 
-Business rule:
-
-current_amount <= target_amount
+Every new Goal is created with current_amount = 0.00. Sending
+current_amount in this request is rejected (422).
 
 Update Goal
 
@@ -647,7 +665,14 @@ At least one field is required.
 
 target_date may be set to null.
 
-The final goal state must satisfy the amount rule.
+Sending current_amount in this request is rejected (422).
+
+Overfunding is allowed: target_amount may be lowered below the Goal's
+current ledger-derived balance at any time. There is no amount business
+rule to satisfy - the old "current_amount <= target_amount" rule was
+removed along with current_amount's client-writability. status is never
+auto-changed based on balance/target comparisons; it remains a manual
+field.
 
 Goal Response
 
@@ -657,6 +682,115 @@ id
 user_id
 created_at
 updated_at
+
+current_amount is always present in the response (backward compatible),
+sourced from the transitional column described above. It may exceed
+target_amount - overfunding is a valid, representable state.
+
+Create Goal Transaction
+
+POST /api/v1/goals/{goal_id}/transactions
+
+Request:
+
+{
+  "type": "contribution",
+  "amount": "100.00",
+  "description": "Payday transfer"
+}
+
+Fields:
+
+Field
+
+Required
+
+Notes
+
+type
+
+yes
+
+"contribution" or "withdrawal" only - "opening_balance" is
+system/migration-only and is rejected here (422)
+
+amount
+
+yes
+
+greater than 0, up to 12 digits with 2 decimal places
+
+description
+
+no
+
+optional, max 255 characters
+
+Business rules:
+
+A Goal's balance can never become negative: a withdrawal whose amount
+exceeds the Goal's current ledger-derived balance is rejected with 409
+Conflict ("Withdrawal exceeds the current goal balance.").
+
+Overfunding above target_amount is allowed for contributions - there is no
+upper bound on a Goal's balance.
+
+Every write locks the owned Goal row (SELECT ... FOR UPDATE) before
+calculating the balance from transaction history, so two concurrent
+requests against the same Goal are serialized and can never both validate
+against the same stale balance.
+
+Transactions are append-only: there is no PATCH or DELETE for an existing
+transaction. A correction is represented later by a new, opposite
+transaction (a compensating entry), never by editing history.
+
+Response: 201 with the created transaction (see Goal Transaction Response
+below).
+
+List Goal Transactions
+
+GET /api/v1/goals/{goal_id}/transactions
+
+Returns the Goal's full transaction history, newest first
+(created_at DESC, id DESC). Includes migration-created opening_balance
+entries alongside contribution/withdrawal entries. Another user's Goal
+behaves as not found (404), the same as every other Goal endpoint.
+
+Goal Transaction Response
+
+Field
+
+Notes
+
+id
+
+transaction identifier
+
+goal_id
+
+owning Goal identifier
+
+user_id
+
+owner (denormalized, always the Goal's owner)
+
+type
+
+"opening_balance", "contribution", or "withdrawal" - GET history can
+return opening_balance even though POST can never create one
+
+amount
+
+always positive; direction is carried by type
+
+description
+
+optional, may be null
+
+created_at
+
+for opening_balance entries created by migration backfill, this is the
+original Goal's created_at, not the migration's run time
 
 9. Receipts
 

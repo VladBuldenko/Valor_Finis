@@ -1,9 +1,10 @@
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.modules.goals.goal_errors import GoalInvalidAmountError, GoalNotFoundError
+from app.modules.goals.goal_errors import GoalNotFoundError
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_schemas import GoalCreate, GoalUpdate
 
@@ -22,11 +23,13 @@ def create_goal(
     goal_data: GoalCreate,
     user_id: UUID,
 ) -> GoalModel:
+    # current_amount always starts at 0 (VF-016): a Goal can only be funded
+    # afterward through a contribution GoalTransaction, never at creation.
     goal_model = GoalModel(
         user_id=user_id,
         name=goal_data.name,
         target_amount=goal_data.target_amount,
-        current_amount=goal_data.current_amount,
+        current_amount=Decimal("0"),
         currency=goal_data.currency,
         target_date=goal_data.target_date,
         status=goal_data.status,
@@ -89,6 +92,44 @@ def get_goal_by_id(
     return goal_model
 
 
+# Returns one financial goal by goal id and authenticated user id, locking
+# the row with SELECT ... FOR UPDATE for the duration of the caller's
+# transaction.
+# This function exists so every balance-changing write (contribution/
+# withdrawal) reads the Goal under a row lock before calculating the ledger
+# balance, closing the race where two concurrent withdrawals could both
+# validate against the same stale balance. Callers must not commit or
+# release the session between this call and the balance-changing write it
+# guards.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: financial goal identifier.
+# - user_id: authenticated user identifier that owns the goal.
+# Returns:
+# - GoalModel instance from the database, locked for update.
+# Raises:
+# - GoalNotFoundError: when goal does not exist or does not belong to the user.
+def get_goal_by_id_for_update(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+) -> GoalModel:
+    goal_model = (
+        db_session.query(GoalModel)
+        .filter(
+            GoalModel.id == goal_id,
+            GoalModel.user_id == user_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if goal_model is None:
+        raise GoalNotFoundError()
+
+    return goal_model
+
+
 # Updates an existing financial goal owned by the authenticated user.
 # This function exists to isolate PostgreSQL update operations
 # from business logic and HTTP handling.
@@ -101,7 +142,6 @@ def get_goal_by_id(
 # - Updated GoalModel instance.
 # Raises:
 # - GoalNotFoundError: when goal does not exist or does not belong to the user.
-# - GoalInvalidAmountError: when current_amount becomes greater than target_amount.
 def update_goal(
     db_session: Session,
     goal_id: UUID,
@@ -119,10 +159,10 @@ def update_goal(
     for field_name, field_value in update_data.items():
         setattr(goal_model, field_name, field_value)
 
-    if goal_model.current_amount > goal_model.target_amount:
-        db_session.rollback()
-        raise GoalInvalidAmountError()
-
+    # No current_amount-vs-target_amount check here (VF-016): current_amount
+    # is no longer client-writable and overfunding is an allowed product
+    # state, so changing target_amount below the ledger-derived balance is
+    # always valid.
     db_session.commit()
     db_session.refresh(goal_model)
 

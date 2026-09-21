@@ -114,13 +114,14 @@ def create_budget(
 
 
 # Creates a financial goal through the API for integration tests.
-# This helper exists to avoid repeating goal setup code.
+# This helper exists to avoid repeating goal setup code. current_amount is
+# not a parameter (VF-016): every new Goal starts at 0 - use
+# create_goal_transaction below to fund one.
 # Parameters:
 # - client: FastAPI test client.
 # - user_id: authenticated user identifier.
 # - name: goal name.
 # - target_amount: goal target amount.
-# - current_amount: already saved amount.
 # Returns:
 # - Created goal response body.
 def create_goal(
@@ -128,7 +129,6 @@ def create_goal(
     user_id: str,
     name: str = "Vacation",
     target_amount: int = 2000,
-    current_amount: int = 500,
 ) -> dict[str, Any]:
     response = client.post(
         "/api/v1/goals",
@@ -136,10 +136,43 @@ def create_goal(
         json={
             "name": name,
             "target_amount": target_amount,
-            "current_amount": current_amount,
             "currency": "EUR",
             "target_date": "2026-12-31",
             "status": "active",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    return response.json()
+
+
+# Creates a goal transaction (contribution or withdrawal) through the API
+# for integration tests.
+# This helper exists to avoid repeating transaction setup code, e.g. to
+# fund a goal before exercising a scenario that depends on a non-zero
+# balance.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier.
+# - goal_id: financial goal identifier to transact against.
+# - amount: transaction amount.
+# - type: "contribution" or "withdrawal".
+# Returns:
+# - Created goal transaction response body.
+def create_goal_transaction(
+    client: TestClient,
+    user_id: str,
+    goal_id: str,
+    amount: int = 500,
+    type: str = "contribution",
+) -> dict[str, Any]:
+    response = client.post(
+        f"/api/v1/goals/{goal_id}/transactions",
+        headers=auth_headers(user_id),
+        json={
+            "type": type,
+            "amount": amount,
         },
     )
 
