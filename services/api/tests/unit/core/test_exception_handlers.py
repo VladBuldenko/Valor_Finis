@@ -21,6 +21,8 @@ from app.modules.categories.errors import (
 )
 from app.modules.expenses.expenses_errors import ExpenseNotFoundError
 from app.modules.goals.goal_errors import (
+    GoalCurrencyImmutableError,
+    GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
     GoalNotFoundError,
 )
@@ -103,6 +105,16 @@ from app.modules.receipts.receipt_errors import (
             GoalInsufficientFundsError,
             status.HTTP_409_CONFLICT,
             "Withdrawal exceeds the current goal balance.",
+        ),
+        (
+            GoalCurrencyImmutableError,
+            status.HTTP_409_CONFLICT,
+            "Goal currency cannot be changed after transaction history exists.",
+        ),
+        (
+            GoalDeletionNotAllowedError,
+            status.HTTP_409_CONFLICT,
+            "Goal with transaction history cannot be deleted. Archive it instead.",
         ),
         (
             ReceiptNotFoundError,
