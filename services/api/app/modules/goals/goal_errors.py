@@ -13,16 +13,17 @@ class GoalNotFoundError(Exception):
     pass
 
 
-class GoalInvalidAmountError(Exception):
+class GoalInsufficientFundsError(Exception):
     """
-    Raised when current_amount is greater than target_amount.
+    Raised when a withdrawal amount exceeds the goal's current ledger balance.
 
     What:
-        Represents an invalid financial goal amount state.
+        Represents an invalid withdrawal request in the goals module.
 
     Why:
-        Prevents saving a goal where the already saved amount is greater
-        than the target amount.
+        A Goal's balance must never become negative. Overfunding above
+        target_amount is allowed, but a withdrawal can never remove more
+        than the goal actually holds.
     """
 
     pass
