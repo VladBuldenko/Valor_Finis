@@ -5,13 +5,16 @@ from uuid import UUID, uuid4
 
 from typing import Optional, cast
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 from pytest import MonkeyPatch
 
-from app.db.database_session import SessionLocal
+from app.db.database_session import SessionLocal, engine
 from app.modules.analytics import analytics_service
 from app.modules.budgets import budget_service
 from app.modules.budgets.budget_schemas import BudgetCreate, BudgetUpdate
+from app.modules.goals import goal_repository, goal_transaction_repository
+from app.modules.goals.goal_schemas import GoalCreate
 
 # Creates a simple object with dynamic attributes.
 # This helper exists to imitate SQLAlchemy models without using the database.
@@ -2956,12 +2959,19 @@ def test_get_budget_status_metrics_ended_via_service(
     assert status.risk_status == "healthy"
 
 
-# Tests that goal progress calculates remaining amount and progress percentage.
-# This test exists to verify financial goal analytics business logic without API or database.
+# Tests that goal progress calculates remaining amount and progress
+# percentage from the ledger-derived balance, not the Goal model's own
+# current_amount attribute.
+# This test exists to verify financial goal analytics business logic
+# without API or database, and to prove (VF-016D) that a stale/wrong
+# current_amount on the Goal model itself is ignored: the fake Goal below
+# carries current_amount=999.00 while the mocked ledger balance is
+# 500.00 - every assertion below must reflect 500.00.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository calls.
 # Returns:
-# - None. The test passes if goal progress values are calculated correctly.
+# - None. The test passes if goal progress values are calculated from the
+#   ledger balance, not the Goal model's current_amount.
 def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -2975,7 +2985,7 @@ def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
             id=goal_id,
             name="Vacation",
             target_amount=Decimal("2000.00"),
-            current_amount=Decimal("500.00"),
+            current_amount=Decimal("999.00"),
             status="active",
             target_date=date(2026, 12, 31),
         ),
@@ -2984,10 +2994,18 @@ def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
     def fake_get_goals(db_session: object, user_id=None):
         return goals
 
+    def fake_get_ledger_balances_for_user(db_session: object, user_id):
+        return {goal_id: Decimal("500.00")}
+
     monkeypatch.setattr(
         analytics_service.goals_repository,
         "get_goals",
         fake_get_goals,
+    )
+    monkeypatch.setattr(
+        analytics_service.goal_transaction_repository,
+        "get_ledger_balances_for_user",
+        fake_get_ledger_balances_for_user,
     )
 
     # Act
@@ -3045,6 +3063,15 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
         analytics_service.goals_repository,
         "get_goals",
         fake_get_empty_items,
+    )
+
+    def fake_get_ledger_balances_for_user(db_session: object, user_id):
+        return {}
+
+    monkeypatch.setattr(
+        analytics_service.goal_transaction_repository,
+        "get_ledger_balances_for_user",
+        fake_get_ledger_balances_for_user,
     )
 
     # Act
@@ -3132,5 +3159,66 @@ def test_get_budget_status_edit_uses_current_version_past_period_unaffected(
         # Assert
         assert current_status.limit_amount == Decimal("600.00")
         assert past_status.limit_amount == Decimal("500.00")
+    finally:
+        db_session.close()
+
+
+# Tests that get_goal_progress issues a bounded, small number of SQL
+# statements regardless of how many goals the user has.
+# This test exists to prove the ledger-balance lookup used for goal
+# progress (VF-016D) is a single grouped query, not one query per goal.
+# Five goals with transactions must not issue more queries than a single
+# goal would.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the query count stays at or below 2 (one
+#   goals query + one grouped balance query) for five goals.
+def test_get_goal_progress_does_not_n_plus_1_query_ledger_balances(
+    clean_database: None,
+) -> None:
+    # Arrange
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        for index in range(5):
+            goal = goal_repository.create_goal(
+                db_session=db_session,
+                goal_data=GoalCreate(
+                    name=f"Goal {index}",
+                    target_amount=Decimal("1000"),
+                    currency="EUR",
+                ),
+                user_id=user_id,
+            )
+            goal_transaction_repository.create_transaction(
+                db_session=db_session,
+                goal_id=goal.id,
+                user_id=user_id,
+                type="contribution",
+                amount=Decimal(f"{10 + index}.00"),
+                description=None,
+            )
+
+        query_count = 0
+
+        def count_queries(conn, cursor, statement, parameters, context, executemany):
+            nonlocal query_count
+            query_count += 1
+
+        # Act
+        event.listen(engine, "before_cursor_execute", count_queries)
+        try:
+            goal_progress = analytics_service.get_goal_progress(
+                db_session=db_session,
+                user_id=user_id,
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_queries)
+
+        # Assert
+        assert len(goal_progress) == 5
+        assert query_count <= 2
     finally:
         db_session.close()
