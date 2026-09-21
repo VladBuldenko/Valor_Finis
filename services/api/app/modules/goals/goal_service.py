@@ -4,7 +4,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.modules.goals import goal_repository, goal_transaction_repository
-from app.modules.goals.goal_errors import GoalInsufficientFundsError
+from app.modules.goals.goal_errors import (
+    GoalCurrencyImmutableError,
+    GoalDeletionNotAllowedError,
+    GoalInsufficientFundsError,
+)
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_schemas import (
     GoalCreate,
@@ -116,13 +120,28 @@ def get_goals(
     ]
 
 
-# Updates an existing financial goal owned by the authenticated user.
+# Updates an existing financial goal owned by the authenticated user,
+# enforcing currency immutability once transaction history exists.
 # This function exists to keep update business flow in the service layer
 # and response mapping outside the repository layer. current_amount in the
 # returned response is ledger-derived (VF-016D), even though the
 # repository update also still synchronizes the transitional
 # goals.current_amount column for compatibility - the response never
 # trusts that column directly.
+#
+# Concurrency/TOCTOU safety (VF-016E): the Goal row is locked with
+# SELECT ... FOR UPDATE *before* the history check, in the same database
+# transaction as the check and the update. This serializes against
+# create_goal_transaction's own row lock, so a currency change and the
+# Goal's first transaction can never both "see" a history-free Goal and
+# both succeed - whichever acquires the lock first determines the outcome
+# for the other.
+#
+# Currency immutability rule: only an *actual* change is checked against
+# history. goal_data.currency is already normalized by GoalUpdate's own
+# validator (e.g. "eur" -> "EUR") by the time it reaches this function, so
+# resending the Goal's current currency (in any casing) after history
+# exists is a no-op and is allowed, not rejected.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
@@ -131,17 +150,40 @@ def get_goals(
 # Returns:
 # - GoalResponse created from the updated database model, with a
 #   ledger-derived current_amount.
+# Raises:
+# - GoalNotFoundError: when goal does not exist or does not belong to the user.
+# - GoalCurrencyImmutableError: when currency is actually changing and the
+#   goal already has transaction history.
 def update_goal(
     db_session: Session,
     goal_id: UUID,
     goal_data: GoalUpdate,
     user_id: UUID,
 ) -> GoalResponse:
-    goal_model = goal_repository.update_goal(
+    goal_model = goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
         goal_id=goal_id,
-        goal_data=goal_data,
         user_id=user_id,
+    )
+
+    if "currency" in goal_data.model_fields_set:
+        is_actual_currency_change = goal_data.currency != goal_model.currency
+
+        if is_actual_currency_change:
+            has_history = goal_transaction_repository.has_transactions_for_goal(
+                db_session=db_session,
+                goal_id=goal_id,
+                user_id=user_id,
+            )
+
+            if has_history:
+                db_session.rollback()
+                raise GoalCurrencyImmutableError()
+
+    goal_model = goal_repository.apply_goal_update(
+        db_session=db_session,
+        goal_model=goal_model,
+        goal_data=goal_data,
     )
 
     current_amount = goal_transaction_repository.calculate_ledger_balance(
@@ -153,24 +195,59 @@ def update_goal(
     return _build_goal_response(goal_model, current_amount)
 
 
-# Deletes an existing financial goal owned by the authenticated user.
+# Deletes an existing financial goal owned by the authenticated user,
+# refusing to delete a goal that has any transaction history.
 # This function exists to keep delete business flow in the service layer
-# and to avoid exposing repository calls directly to the router.
+# and to avoid exposing repository calls directly to the router. Any
+# transaction (opening_balance, contribution, or withdrawal) counts as
+# history, even a withdrawal that brought the ledger balance back to
+# exactly 0 - balance is never used as a proxy for "no history" (VF-016E).
+# A user who wants to stop using a history-bearing Goal must archive it
+# via PATCH status="archived" instead.
+#
+# Concurrency/TOCTOU safety: the Goal row is locked with
+# SELECT ... FOR UPDATE *before* the history check, in the same database
+# transaction as the check and the delete. This serializes against
+# create_goal_transaction's own row lock: whichever of "delete this Goal"
+# or "create its first transaction" acquires the lock first determines the
+# outcome - either the Goal is deleted and the later transaction attempt
+# gets GoalNotFoundError, or the transaction is created first and the
+# later delete attempt sees history and gets GoalDeletionNotAllowedError.
+# The existing FK RESTRICT on goal_transactions.goal_id remains as
+# defense-in-depth and must never surface as a raw IntegrityError/500.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
 # - user_id: authenticated user identifier that owns the goal.
 # Returns:
 # - None.
+# Raises:
+# - GoalNotFoundError: when goal does not exist or does not belong to the user.
+# - GoalDeletionNotAllowedError: when the goal has any transaction history.
 def delete_goal(
     db_session: Session,
     goal_id: UUID,
     user_id: UUID,
 ) -> None:
-    goal_repository.delete_goal(
+    goal_model = goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
         goal_id=goal_id,
         user_id=user_id,
+    )
+
+    has_history = goal_transaction_repository.has_transactions_for_goal(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=user_id,
+    )
+
+    if has_history:
+        db_session.rollback()
+        raise GoalDeletionNotAllowedError()
+
+    goal_repository.delete_locked_goal(
+        db_session=db_session,
+        goal_model=goal_model,
     )
 
 

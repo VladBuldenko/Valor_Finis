@@ -829,6 +829,19 @@ trusts it any more (see 6.1 below). It remains physically present in this
 table for rollback safety and is not removed by this slice; final removal
 happens in a later cleanup migration.
 
+Currency immutability (VF-016E): currency is editable only while a Goal
+has no transaction history - once any GoalTransaction row exists for a
+Goal (any type, any resulting balance), an actual currency change is
+rejected at the application level (see 6.1 below). This is enforced in
+goal_service.update_goal, not by a PostgreSQL constraint: there is no
+CHECK or trigger tying goals.currency to goal_transactions' existence.
+
+Safe deletion (VF-016E): a Goal with any transaction history cannot be
+hard-deleted through the application (goal_service.delete_goal rejects it
+before attempting the delete). A Goal with no transaction history deletes
+normally. This is an application-level control, not a database constraint
+- see 6.1 below for the FK that backs it as defense-in-depth.
+
 6.1 Goal Transactions
 
 Table:
@@ -863,6 +876,22 @@ against the same stale balance, so the balance can never go negative even
 under a race. See goal_repository.get_goal_by_id_for_update and
 goal_service.create_goal_transaction.
 
+VF-016E extends this same row-lock discipline to currency changes and
+deletion: goal_service.update_goal and goal_service.delete_goal both
+acquire the owned Goal row lock (get_goal_by_id_for_update) *before*
+checking goal_transaction_repository.has_transactions_for_goal, in the
+same database transaction as the check and the resulting write. This
+serializes a currency change or a delete against the Goal's first
+transaction - whichever operation's lock is acquired (and commits) first
+determines the outcome the other one observes; a currency change or delete
+can never see a stale "no history yet" state while a concurrent first
+transaction is also in flight. has_transactions_for_goal is a plain
+existence check (first matching row only) - it never uses
+goals.current_amount or a ledger balance as a proxy for "has history",
+since a Goal can have real transaction history and a 0.00 balance at the
+same time (e.g. a contribution immediately followed by an equal
+withdrawal).
+
 Column
 
 Type
@@ -886,7 +915,12 @@ UUID
 no
 
 FK → goals.id, ON DELETE RESTRICT (not CASCADE - a Goal's financial
-history must not silently disappear if the Goal row is deleted)
+history must not silently disappear if the Goal row is deleted). As of
+VF-016E, goal_service.delete_goal already rejects a history-bearing Goal
+at the application level before attempting the delete, so this FK is now
+defense-in-depth (it should never actually fire in normal operation), not
+the primary mechanism - the application never lets a raw IntegrityError
+from this constraint reach a client.
 
 user_id
 
@@ -1308,6 +1342,16 @@ A GoalTransaction withdrawal cannot exceed the Goal's current
 ledger-derived balance (VF-016C) - Goal.current_amount is allowed to
 exceed Goal.target_amount (overfunding), so there is no longer an amount
 relationship enforced between the two Goal columns themselves.
+
+Goal.currency cannot actually change once the Goal has any transaction
+history (VF-016E) - resending the same normalized currency is allowed;
+this is checked under the same SELECT ... FOR UPDATE lock used for
+balance-changing writes, so it cannot race against the Goal's first
+transaction.
+
+A Goal with any transaction history cannot be hard-deleted (VF-016E) -
+checked under the same row lock as above; the underlying FK RESTRICT
+remains only as defense-in-depth.
 
 Budget.end_date >= Budget.start_date
 

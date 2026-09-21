@@ -161,3 +161,38 @@ def get_ledger_balances_for_user(
     )
 
     return {goal_id: balance for goal_id, balance in rows}
+
+
+# Returns whether a goal has any transaction history at all.
+# This function exists as the single source of truth for "is this Goal
+# funded/history-bearing" (VF-016E), used to decide whether currency may
+# still change and whether the Goal may still be hard-deleted. Any
+# transaction type counts - opening_balance, contribution, and withdrawal
+# all establish history, including a withdrawal that brings the ledger
+# balance back to exactly 0. This deliberately never uses
+# goals.current_amount or a balance calculation as a proxy: a Goal can have
+# real history and a 0.00 balance at the same time.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: financial goal identifier to check.
+# - user_id: authenticated user identifier that owns the goal, used as a
+#   defense-in-depth filter alongside goal_id.
+# Returns:
+# - True if at least one GoalTransaction row exists for this goal, False
+#   otherwise. Uses an existence check (first matching id only) rather
+#   than loading full history or aggregating a balance.
+def has_transactions_for_goal(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+) -> bool:
+    first_transaction_id = (
+        db_session.query(GoalTransactionModel.id)
+        .filter(
+            GoalTransactionModel.goal_id == goal_id,
+            GoalTransactionModel.user_id == user_id,
+        )
+        .first()
+    )
+
+    return first_transaction_id is not None
