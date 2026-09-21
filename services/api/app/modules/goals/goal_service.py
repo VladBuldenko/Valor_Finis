@@ -1,9 +1,11 @@
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals.goal_errors import GoalInsufficientFundsError
+from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_schemas import (
     GoalCreate,
     GoalResponse,
@@ -15,6 +17,38 @@ from app.modules.goals.goal_transaction_schemas import (
 )
 
 
+# Builds a GoalResponse from a Goal model and an already-computed
+# ledger-derived balance.
+# This function exists to make the source of current_amount explicit and
+# auditable (VF-016D): every public read path must pass in a balance it
+# calculated from goal_transactions, never GoalResponse.model_validate(
+# goal_model), which would silently read the transitional
+# goals.current_amount column instead - the column this slice makes
+# non-authoritative for reads.
+# Parameters:
+# - goal_model: the Goal database record (name/target_amount/etc. only -
+#   its own current_amount attribute is deliberately never read here).
+# - current_amount: ledger-derived balance to report for this goal.
+# Returns:
+# - GoalResponse with current_amount set to the given ledger balance.
+def _build_goal_response(
+    goal_model: GoalModel,
+    current_amount: Decimal,
+) -> GoalResponse:
+    return GoalResponse(
+        id=goal_model.id,
+        user_id=goal_model.user_id,
+        name=goal_model.name,
+        target_amount=goal_model.target_amount,
+        current_amount=current_amount,
+        currency=goal_model.currency,
+        target_date=goal_model.target_date,
+        status=goal_model.status,
+        created_at=goal_model.created_at,
+        updated_at=goal_model.updated_at,
+    )
+
+
 # Creates a new financial goal using validated input data and authenticated user id.
 # This function exists to keep application and business logic
 # separate from database and HTTP layers.
@@ -23,7 +57,10 @@ from app.modules.goals.goal_transaction_schemas import (
 # - goal_data: validated goal creation data.
 # - user_id: authenticated user identifier that owns the goal.
 # Returns:
-# - GoalResponse created from the saved database model.
+# - GoalResponse created from the saved database model, with a
+#   ledger-derived current_amount (always 0.00 for a brand new goal, since
+#   it cannot have any transactions yet - but this still goes through the
+#   same authoritative-read calculation as every other Goal response).
 def create_goal(
     db_session: Session,
     goal_data: GoalCreate,
@@ -35,17 +72,27 @@ def create_goal(
         user_id=user_id,
     )
 
-    return GoalResponse.model_validate(goal_model)
+    current_amount = goal_transaction_repository.calculate_ledger_balance(
+        db_session=db_session,
+        goal_id=goal_model.id,
+        user_id=user_id,
+    )
+
+    return _build_goal_response(goal_model, current_amount)
 
 
 # Returns financial goals for the authenticated user.
 # This function exists to map database models to public API responses
 # and to ensure service-level reads are always scoped to a user.
+# current_amount is ledger-derived (VF-016D): one bulk grouped query
+# fetches every one of the user's goal balances up front, so this never
+# issues one balance query per Goal no matter how many goals are returned.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter goals.
 # Returns:
-# - List of GoalResponse objects.
+# - List of GoalResponse objects, ordered exactly as
+#   goal_repository.get_goals returns them (created_at DESC).
 def get_goals(
     db_session: Session,
     user_id: UUID,
@@ -55,22 +102,35 @@ def get_goals(
         user_id=user_id,
     )
 
+    balances = goal_transaction_repository.get_ledger_balances_for_user(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
     return [
-        GoalResponse.model_validate(goal_model)
+        _build_goal_response(
+            goal_model,
+            balances.get(goal_model.id, Decimal("0.00")),
+        )
         for goal_model in goal_models
     ]
 
 
 # Updates an existing financial goal owned by the authenticated user.
 # This function exists to keep update business flow in the service layer
-# and response mapping outside the repository layer.
+# and response mapping outside the repository layer. current_amount in the
+# returned response is ledger-derived (VF-016D), even though the
+# repository update also still synchronizes the transitional
+# goals.current_amount column for compatibility - the response never
+# trusts that column directly.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
 # - goal_data: validated partial goal update data.
 # - user_id: authenticated user identifier that owns the goal.
 # Returns:
-# - GoalResponse created from the updated database model.
+# - GoalResponse created from the updated database model, with a
+#   ledger-derived current_amount.
 def update_goal(
     db_session: Session,
     goal_id: UUID,
@@ -84,7 +144,13 @@ def update_goal(
         user_id=user_id,
     )
 
-    return GoalResponse.model_validate(goal_model)
+    current_amount = goal_transaction_repository.calculate_ledger_balance(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=user_id,
+    )
+
+    return _build_goal_response(goal_model, current_amount)
 
 
 # Deletes an existing financial goal owned by the authenticated user.

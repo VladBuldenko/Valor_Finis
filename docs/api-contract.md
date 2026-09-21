@@ -596,11 +596,15 @@ rejected (extra fields are forbidden). A Goal always starts at 0 and can
 only be funded or drawn down afterward through
 POST /api/v1/goals/{goal_id}/transactions.
 
-goals.current_amount is transitional compatibility storage: it is kept in
-sync with the goal_transactions ledger on every transaction write, but the
-ledger (not this column) is the authoritative balance history. A later
-slice (VF-016D) will switch reads to a ledger-derived balance and
-eventually remove this column.
+Balance source (VF-016D): every current_amount value returned by this API
+- from POST /api/v1/goals, GET /api/v1/goals, PATCH /api/v1/goals/{goal_id},
+and GET /api/v1/analytics/goal-progress - is computed directly from the
+goal_transactions ledger at read time (opening_balance + contribution -
+withdrawal), never read from the goals.current_amount database column.
+goals.current_amount still physically exists and is still kept in sync by
+every transaction write, but it is transitional compatibility storage
+only: no read path trusts it, and a future cleanup migration will remove
+it once it is no longer needed for rollback safety.
 
 Create Goal
 
@@ -684,8 +688,9 @@ created_at
 updated_at
 
 current_amount is always present in the response (backward compatible),
-sourced from the transitional column described above. It may exceed
-target_amount - overfunding is a valid, representable state.
+computed from the goal_transactions ledger as described above - never
+read from the transitional column. It may exceed target_amount -
+overfunding is a valid, representable state.
 
 Create Goal Transaction
 
@@ -1415,6 +1420,11 @@ Response item:
 Goal Progress
 
 GET /api/v1/analytics/goal-progress
+
+current_amount here is ledger-derived (VF-016D), the same as every other
+Goal read - see the Goals section's "Balance source" note. remaining_amount
+is floored at 0; progress_percent is never capped at 100 - an overfunded
+goal (current_amount > target_amount) reports progress_percent above 100.
 
 Response item:
 
