@@ -17,6 +17,7 @@ import {
 import { getGoalProgress } from "../analytics/analytics.service";
 import type { GoalProgressItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
+import { getGoalErrorMessage } from "./goal-error-message";
 import { deleteGoal, getGoals } from "./goal.service";
 import { styles } from "./goals.styles";
 import type { Goal, GoalStatus } from "./goal.types";
@@ -82,12 +83,17 @@ export function GoalsScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to delete goal.";
-
-      Alert.alert("Delete goal failed", message);
+      // A history-bearing goal cannot be hard-deleted (VF-016E): the
+      // backend returns a 409 with a clear detail string ("Goal with
+      // transaction history cannot be deleted. Archive it instead."),
+      // which getGoalErrorMessage surfaces as-is instead of the raw
+      // "API request failed: 409 {...}" wrapper. This screen never
+      // auto-archives on a failed delete -- the message tells the user
+      // to archive via Edit Goal themselves.
+      Alert.alert(
+        "Delete goal failed",
+        getGoalErrorMessage(mutationError, "Unable to delete goal."),
+      );
     },
   });
 
@@ -101,7 +107,8 @@ export function GoalsScreen() {
 
     Alert.alert(
       "Delete goal?",
-      `"${goal.name}" will be permanently deleted.`,
+      `"${goal.name}" will be permanently deleted. This is only possible ` +
+        "if it has no transaction history yet.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -175,6 +182,18 @@ export function GoalsScreen() {
                       ? `Target date: ${goal.target_date}`
                       : "No target date"}
                   </Text>
+
+                  <Link
+                    href={{
+                      pathname: "/goals/[id]",
+                      params: { id: goal.id },
+                    }}
+                    asChild
+                  >
+                    <Pressable style={styles.editButton}>
+                      <Text style={styles.editButtonText}>Manage funds</Text>
+                    </Pressable>
+                  </Link>
 
                   <Link
                     href={{

@@ -191,4 +191,61 @@ export const styles = StyleSheet.create({
     paddingVertical: 14,
     marginTop: 16,
   },
+  // --- Goal detail / manage screen ---
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    marginTop: 28,
+  },
+  // Side-by-side Contribution/Withdrawal toggle on the Goal detail screen.
+  typeToggleRow: {
+    flexDirection: "row",
+    marginTop: 16,
+  },
+  typeToggleButton: {
+    flex: 1,
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 12,
+    marginRight: 8,
+  },
+  typeToggleButtonSelected: {
+    borderWidth: 2,
+  },
+  typeToggleButtonText: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  typeToggleButtonTextSelected: {
+    fontWeight: "700",
+  },
+  historyList: {
+    marginTop: 12,
+  },
+  historyRow: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  historyRowHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  historyType: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  historyAmount: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  historyDescription: {
+    fontSize: 14,
+    marginTop: 4,
+  },
+  historyDate: {
+    fontSize: 12,
+    marginTop: 4,
+  },
 });
