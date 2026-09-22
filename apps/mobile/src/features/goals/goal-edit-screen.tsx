@@ -20,6 +20,7 @@ import {
 } from "react-native";
 
 import { useAuth } from "../auth/auth-context";
+import { getGoalErrorMessage } from "./goal-error-message";
 import { validateGoalEditForm } from "./goal-edit-validation";
 import { getGoals, updateGoal } from "./goal.service";
 import { styles } from "./goals.styles";
@@ -31,44 +32,14 @@ const GOAL_STATUSES: GoalStatus[] = ["active", "completed", "archived"];
 // -only text formatting, matching goals-screen.tsx's STATUS_LABELS. Status
 // remains fully backend-authoritative: this screen never derives or changes
 // it automatically (e.g. reaching 100% saved does not auto-select Completed).
+// This is also the supported way to archive a history-bearing goal
+// (VF-016E): selecting Archived here works regardless of transaction
+// history, since it is a metadata change, not a delete.
 const STATUS_LABELS: Record<GoalStatus, string> = {
   active: "Active",
   completed: "Completed",
   archived: "Archived",
 };
-
-// Extracts a user-facing message from a failed goal update request.
-// apiRequest (api-client.ts) throws `Error("API request failed: <status>
-// <body>")`, where <body> is the raw response text -- for domain errors
-// (e.g. the 400 GoalInvalidAmountError, or a 404) that body is FastAPI JSON
-// with a string "detail" field. When it parses that way, the backend's own
-// detail text is shown instead of the raw "API request failed: ..."
-// wrapper, so the amount-invariant error reads as a normal message rather
-// than a technical one. Falls back to the raw error message otherwise (e.g.
-// a network failure has no such body, and a 422's detail is a structured
-// list rather than a string) -- this intentionally never invents new error
-// copy that could drift from what the backend actually says.
-function getGoalUpdateErrorMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "Unable to update goal.";
-  }
-
-  const match = error.message.match(/^API request failed: \d+ (.*)$/s);
-
-  if (match) {
-    try {
-      const body = JSON.parse(match[1]) as { detail?: unknown };
-
-      if (typeof body.detail === "string") {
-        return body.detail;
-      }
-    } catch {
-      // Response body wasn't JSON -- fall through to the raw message below.
-    }
-  }
-
-  return error.message;
-}
 
 export function GoalEditScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -93,7 +64,6 @@ export function GoalEditScreen() {
 
   const [name, setName] = useState("");
   const [targetAmount, setTargetAmount] = useState("");
-  const [currentAmount, setCurrentAmount] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [status, setStatus] = useState<GoalStatus>("active");
 
@@ -112,7 +82,6 @@ export function GoalEditScreen() {
     setSyncedGoalId(goal.id);
     setName(goal.name);
     setTargetAmount(goal.target_amount);
-    setCurrentAmount(goal.current_amount);
     setTargetDate(goal.target_date ?? "");
     setStatus(goal.status);
   }
@@ -138,7 +107,10 @@ export function GoalEditScreen() {
     },
 
     onError: (mutationError) => {
-      Alert.alert("Update goal failed", getGoalUpdateErrorMessage(mutationError));
+      Alert.alert(
+        "Update goal failed",
+        getGoalErrorMessage(mutationError, "Unable to update goal."),
+      );
     },
   });
 
@@ -183,7 +155,6 @@ export function GoalEditScreen() {
   // UI and always shown as the goal's actual value, never hardcoded.
   const normalizedName = name.trim();
   const normalizedTargetAmount = targetAmount.trim().replace(",", ".");
-  const normalizedCurrentAmount = currentAmount.trim().replace(",", ".");
   const trimmedTargetDate = targetDate.trim();
   const normalizedTargetDate = trimmedTargetDate || null;
 
@@ -195,10 +166,6 @@ export function GoalEditScreen() {
 
   if (normalizedTargetAmount !== goal.target_amount) {
     changedFields.target_amount = normalizedTargetAmount;
-  }
-
-  if (normalizedCurrentAmount !== goal.current_amount) {
-    changedFields.current_amount = normalizedCurrentAmount;
   }
 
   if (normalizedTargetDate !== goal.target_date) {
@@ -222,7 +189,6 @@ export function GoalEditScreen() {
     const validationError = validateGoalEditForm({
       name,
       targetAmount,
-      currentAmount,
       targetDate,
       status,
     });
@@ -268,18 +234,6 @@ export function GoalEditScreen() {
               placeholder="0.00"
               value={targetAmount}
               onChangeText={setTargetAmount}
-              keyboardType="decimal-pad"
-            />
-          </View>
-
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>Saved so far *</Text>
-
-            <TextInput
-              style={styles.input}
-              placeholder="0.00"
-              value={currentAmount}
-              onChangeText={setCurrentAmount}
               keyboardType="decimal-pad"
             />
           </View>

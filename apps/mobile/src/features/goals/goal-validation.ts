@@ -1,3 +1,5 @@
+import { validateGoalDecimalAmount } from "./goal-amount-validation";
+
 export type GoalFormValues = {
   name: string;
   targetAmount: string;
@@ -10,6 +12,8 @@ export type GoalFormValues = {
  * budget-validation.ts): first-error-wins, returns null when valid. The
  * 150-character cap on name matches the backend's GoalCreate.name
  * max_length; target date is optional but must be YYYY-MM-DD when present.
+ * target_amount validation is shared with Edit Goal and Goal transactions
+ * (goal-amount-validation.ts) -- string-based only, never Number/parseFloat.
  */
 export function validateGoalForm(values: GoalFormValues): string | null {
   const trimmedName = values.name.trim();
@@ -22,12 +26,13 @@ export function validateGoalForm(values: GoalFormValues): string | null {
     return "Name must be 150 characters or fewer.";
   }
 
-  const numericTargetAmount = Number(
-    values.targetAmount.trim().replace(",", "."),
+  const targetAmountError = validateGoalDecimalAmount(
+    values.targetAmount,
+    "Target amount",
   );
 
-  if (!Number.isFinite(numericTargetAmount) || numericTargetAmount <= 0) {
-    return "Target amount must be greater than zero.";
+  if (targetAmountError) {
+    return targetAmountError;
   }
 
   const trimmedTargetDate = values.targetDate.trim();

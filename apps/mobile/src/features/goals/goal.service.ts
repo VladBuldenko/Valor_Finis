@@ -1,6 +1,12 @@
 import { apiRequest } from "../../api/api-client";
 
-import type { Goal, GoalCreateInput, GoalUpdateInput } from "./goal.types";
+import type {
+  Goal,
+  GoalCreateInput,
+  GoalTransaction,
+  GoalTransactionCreateInput,
+  GoalUpdateInput,
+} from "./goal.types";
 
 /**
  * Returns all financial goals that belong to the authenticated user.
@@ -52,4 +58,37 @@ export async function deleteGoal(goalId: string): Promise<void> {
   return apiRequest<void>(`/api/v1/goals/${goalId}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * Returns a goal's full transaction history, newest first (the backend's
+ * own ordering -- never re-sorted client-side). Includes migration-created
+ * opening_balance entries alongside contribution/withdrawal entries.
+ */
+export async function getGoalTransactions(
+  goalId: string,
+): Promise<GoalTransaction[]> {
+  return apiRequest<GoalTransaction[]>(
+    `/api/v1/goals/${goalId}/transactions`,
+  );
+}
+
+/**
+ * Creates a contribution or withdrawal transaction for a goal owned by the
+ * authenticated user. The backend is the sole authority on insufficient-
+ * funds validation (a withdrawal larger than the current ledger balance
+ * fails with 409) -- this never pre-validates the amount against the
+ * goal's balance client-side.
+ */
+export async function createGoalTransaction(
+  goalId: string,
+  transactionData: GoalTransactionCreateInput,
+): Promise<GoalTransaction> {
+  return apiRequest<GoalTransaction>(
+    `/api/v1/goals/${goalId}/transactions`,
+    {
+      method: "POST",
+      body: JSON.stringify(transactionData),
+    },
+  );
 }

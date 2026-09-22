@@ -42,16 +42,59 @@ export type GoalCreateInput = {
 // backend (it uses `model_dump(exclude_unset=True)`). target_date is the
 // only field where an explicit null is meaningful (it clears the target
 // date); the backend rejects an explicit null for name, target_amount,
-// current_amount, currency, and status, so those stay plain optional values
-// rather than nullable. currency is part of the backend PATCH contract but
+// currency, and status, so those stay plain optional values rather than
+// nullable. currency is part of the backend PATCH contract but
 // intentionally unused here -- Edit Goal shows currency read-only and never
 // sends it (see goal-edit-screen.tsx). user_id is intentionally omitted --
-// it is derived from authentication on the server.
+// it is derived from authentication on the server. current_amount is
+// intentionally NOT part of this type (VF-016F): it is no longer
+// client-writable at all -- the backend rejects it outright, and funding a
+// goal now happens exclusively through a GoalTransaction (see below).
 export type GoalUpdateInput = {
   name?: string;
   target_amount?: string;
-  current_amount?: string;
   currency?: string;
   target_date?: string | null;
   status?: GoalStatus;
+};
+
+// Mirrors backend GoalTransactionResponse's `type` field
+// (services/api/app/modules/goals/goal_transaction_schemas.py).
+// opening_balance is a migration/system-created historical balance entry --
+// it can appear in read history but a client can never create one (see
+// GoalTransactionCreateInput below).
+export type GoalTransactionType =
+  | "opening_balance"
+  | "contribution"
+  | "withdrawal";
+
+// Mirrors backend GoalTransactionResponse. amount is always positive; the
+// transaction's `type` carries direction (VF-016B/C), never the amount's
+// sign. There is no currency field here by design -- a GoalTransaction
+// does not store its own currency, it always represents an amount in its
+// parent Goal's currency (see Goal.currency above), which is why the
+// backend now keeps Goal.currency immutable once any GoalTransaction
+// exists (VF-016E). Money fields stay JSON strings, matching Goal --
+// never parse them for display or arithmetic, only render the exact
+// string the backend returns.
+export type GoalTransaction = {
+  id: string;
+  goal_id: string;
+  user_id: string;
+  type: GoalTransactionType;
+  amount: string;
+  description: string | null;
+  created_at: string;
+};
+
+// Mirrors backend GoalTransactionCreate. Only contribution and withdrawal
+// are reachable here -- the type is deliberately narrower than
+// GoalTransaction['type'] above, since opening_balance is
+// system/migration-only and the backend rejects it from this endpoint
+// (422). user_id/goal_id are intentionally omitted -- user_id comes from
+// authentication and goal_id comes from the request path, not the body.
+export type GoalTransactionCreateInput = {
+  type: "contribution" | "withdrawal";
+  amount: string;
+  description?: string;
 };
