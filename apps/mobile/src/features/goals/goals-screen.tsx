@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "expo-router";
 import {
   useMutation,
@@ -36,9 +37,38 @@ function formatStatus(status: GoalStatus): string {
   return STATUS_LABELS[status];
 }
 
+// Local presentation-only view mode (VF-016F2) -- component state, not a
+// backend/domain concept, so it deliberately does not live in
+// goal.types.ts alongside the backend-mirroring types. "current"
+// intentionally includes both "active" and "completed" goals: only
+// "archived" is excluded, since completed remains a valid, visible status.
+type GoalListView = "current" | "archived";
+
+function matchesGoalListView(goal: Goal, view: GoalListView): boolean {
+  return view === "archived"
+    ? goal.status === "archived"
+    : goal.status !== "archived";
+}
+
+// The empty-state message must reflect the currently filtered view, not
+// the full unfiltered goals list -- e.g. a user with only archived goals
+// must never see "No goals yet." while viewing Current.
+function getGoalsEmptyMessage(
+  view: GoalListView,
+  totalGoalsCount: number,
+): string {
+  if (totalGoalsCount === 0) {
+    return "No goals yet.";
+  }
+
+  return view === "archived" ? "No archived goals." : "No current goals.";
+}
+
 export function GoalsScreen() {
   const { session } = useAuth();
   const queryClient = useQueryClient();
+
+  const [listView, setListView] = useState<GoalListView>("current");
 
   const {
     data: goals = [],
@@ -49,6 +79,10 @@ export function GoalsScreen() {
     queryFn: getGoals,
     enabled: Boolean(session),
   });
+
+  const visibleGoals = goals.filter((goal) =>
+    matchesGoalListView(goal, listView),
+  );
 
   const {
     data: goalProgress = [],
@@ -131,6 +165,47 @@ export function GoalsScreen() {
           </Pressable>
         </Link>
 
+        <View style={styles.typeToggleRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: listView === "current" }}
+            style={[
+              styles.typeToggleButton,
+              listView === "current" && styles.typeToggleButtonSelected,
+            ]}
+            onPress={() => setListView("current")}
+          >
+            <Text
+              style={[
+                styles.typeToggleButtonText,
+                listView === "current" && styles.typeToggleButtonTextSelected,
+              ]}
+            >
+              Current
+            </Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: listView === "archived" }}
+            style={[
+              styles.typeToggleButton,
+              listView === "archived" && styles.typeToggleButtonSelected,
+            ]}
+            onPress={() => setListView("archived")}
+          >
+            <Text
+              style={[
+                styles.typeToggleButtonText,
+                listView === "archived" &&
+                  styles.typeToggleButtonTextSelected,
+              ]}
+            >
+              Archived
+            </Text>
+          </Pressable>
+        </View>
+
         {goalProgressError ? (
           <Text style={styles.noticeText}>
             Goal progress is temporarily unavailable.
@@ -141,11 +216,13 @@ export function GoalsScreen() {
           <ActivityIndicator style={styles.loader} />
         ) : error ? (
           <Text style={styles.errorText}>Unable to load goals.</Text>
-        ) : goals.length === 0 ? (
-          <Text style={styles.secondaryText}>No goals yet.</Text>
+        ) : visibleGoals.length === 0 ? (
+          <Text style={styles.secondaryText}>
+            {getGoalsEmptyMessage(listView, goals.length)}
+          </Text>
         ) : (
           <View style={styles.list}>
-            {goals.map((goal) => {
+            {visibleGoals.map((goal) => {
               const progress = goalProgressById.get(goal.id);
 
               return (
