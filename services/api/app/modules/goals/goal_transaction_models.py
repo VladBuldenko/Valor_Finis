@@ -20,18 +20,17 @@ class GoalTransactionModel(Base):
         contribution (money added), and withdrawal (money removed).
 
     Why:
-        VF-016 replaces goals.current_amount as a freely client-editable
-        field with a derived balance backed by transaction history, so
-        overfunding/withdrawals/history become representable without an
-        independently-editable source of truth. This table is the FUTURE
-        authoritative source of truth for a Goal's balance. In VF-016B,
-        goals.current_amount remains transitional legacy storage: this
-        slice introduces ledger persistence and a lossless backfill of
-        existing balances only - no read/write path is switched over yet,
-        and no application logic should treat current_amount as a
-        permanent cache architecture. A later slice switches writes to
-        the ledger, switches reads/analytics to a ledger-derived balance,
-        and removes the legacy column in its own cleanup migration.
+        VF-016 replaces goals.current_amount (formerly a freely
+        client-editable field) with a derived balance backed by
+        transaction history, so overfunding/withdrawals/history become
+        representable without an independently-editable source of truth.
+        This table is THE authoritative source of a Goal's balance: the
+        Goal row itself has no balance column at all (removed in VF-016G,
+        after VF-016B introduced this ledger with a lossless backfill of
+        pre-existing balances, and VF-016C-D switched all reads/writes over
+        to it). A Goal's balance is always computed here, at read time,
+        from opening_balance + contribution - withdrawal - never cached or
+        stored anywhere on the Goal row.
 
     Fields:
         id: Unique transaction identifier.

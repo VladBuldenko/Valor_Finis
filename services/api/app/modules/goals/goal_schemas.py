@@ -22,10 +22,10 @@ class GoalBase(BaseModel):
     Why:
         Prevents duplication between create and response schemas.
         current_amount is deliberately NOT part of this shared base: it is
-        no longer client-writable (VF-016). Funding happens only through a
+        not client-writable at all (VF-016). Funding happens only through a
         GoalTransaction (see goal_transaction_schemas.py); GoalResponse adds
-        current_amount back itself, since it must keep echoing the
-        transitional balance for backward compatibility.
+        current_amount back itself as a read-only, ledger-derived field -
+        the Goal row has no balance storage of its own (VF-016G).
     """
 
     name: str = Field(
@@ -219,12 +219,14 @@ class GoalResponse(GoalBase):
 
     Why:
         Keeps the database model separated from the API contract.
-        current_amount is read-only here: it is populated from the
-        transitional goals.current_amount column (kept in sync by the
-        GoalTransaction write path), never accepted as client input.
-        Overfunding is a valid product state (VF-016), so current_amount is
-        allowed to exceed target_amount - only non-negativity is enforced,
-        matching the DB's own CHECK constraint.
+        current_amount is read-only and ledger-derived (VF-016G): it is
+        computed from the goal_transactions ledger at read time
+        (opening_balance + contribution - withdrawal) every time a Goal is
+        returned, never accepted as client input, and never persisted on
+        the Goal row itself. Overfunding is a valid product state (VF-016),
+        so current_amount is allowed to exceed target_amount - only
+        non-negativity is enforced (a withdrawal can never take the ledger
+        balance below zero, see goal_service.create_goal_transaction).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -237,8 +239,8 @@ class GoalResponse(GoalBase):
         max_digits=12,
         decimal_places=2,
         description=(
-            "Amount currently saved for the goal, derived from the "
-            "transitional current_amount column. May exceed target_amount."
+            "Amount currently saved for the goal, computed from the "
+            "goal_transactions ledger. Read-only. May exceed target_amount."
         ),
         examples=["500.00"],
     )

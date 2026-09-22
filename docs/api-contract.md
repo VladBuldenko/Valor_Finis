@@ -596,15 +596,13 @@ rejected (extra fields are forbidden). A Goal always starts at 0 and can
 only be funded or drawn down afterward through
 POST /api/v1/goals/{goal_id}/transactions.
 
-Balance source (VF-016D): every current_amount value returned by this API
-- from POST /api/v1/goals, GET /api/v1/goals, PATCH /api/v1/goals/{goal_id},
-and GET /api/v1/analytics/goal-progress - is computed directly from the
-goal_transactions ledger at read time (opening_balance + contribution -
-withdrawal), never read from the goals.current_amount database column.
-goals.current_amount still physically exists and is still kept in sync by
-every transaction write, but it is transitional compatibility storage
-only: no read path trusts it, and a future cleanup migration will remove
-it once it is no longer needed for rollback safety.
+Balance source (VF-016D, storage removed in VF-016G): every current_amount
+value returned by this API - from POST /api/v1/goals, GET /api/v1/goals,
+PATCH /api/v1/goals/{goal_id}, and GET /api/v1/analytics/goal-progress - is
+computed directly from the goal_transactions ledger at read time
+(opening_balance + contribution - withdrawal). The Goal row has no balance
+column at all: goal_transactions is the only persisted source of a Goal's
+balance.
 
 Create Goal
 
@@ -707,8 +705,8 @@ created_at
 updated_at
 
 current_amount is always present in the response (backward compatible),
-computed from the goal_transactions ledger as described above - never
-read from the transitional column. It may exceed target_amount -
+computed from the goal_transactions ledger as described above and never
+persisted on the Goal row itself. It may exceed target_amount -
 overfunding is a valid, representable state.
 
 Delete Goal

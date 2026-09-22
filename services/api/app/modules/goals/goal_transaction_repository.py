@@ -48,9 +48,10 @@ def calculate_ledger_balance(
 # Creates and saves a new append-only goal transaction record.
 # This function exists to isolate PostgreSQL write operations for the
 # ledger from business logic and HTTP handling. It never commits by
-# default so the caller (goal_service.create_goal_transaction) can compose
-# this insert with the transitional goals.current_amount update in a
-# single database transaction.
+# default so the caller (goal_service.create_goal_transaction) can keep
+# this insert inside the same service-controlled database transaction as
+# the owned Goal row lock it acquired first (SELECT ... FOR UPDATE) -
+# the lock must stay held until the insert itself commits.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal this transaction belongs to.
@@ -169,9 +170,9 @@ def get_ledger_balances_for_user(
 # still change and whether the Goal may still be hard-deleted. Any
 # transaction type counts - opening_balance, contribution, and withdrawal
 # all establish history, including a withdrawal that brings the ledger
-# balance back to exactly 0. This deliberately never uses
-# goals.current_amount or a balance calculation as a proxy: a Goal can have
-# real history and a 0.00 balance at the same time.
+# balance back to exactly 0. This deliberately never uses a ledger balance
+# calculation as a proxy for history: a Goal can have real history and a
+# 0.00 balance at the same time.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier to check.

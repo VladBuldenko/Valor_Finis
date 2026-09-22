@@ -73,7 +73,6 @@ erDiagram
         UUID user_id
         VARCHAR name
         NUMERIC target_amount
-        NUMERIC current_amount
         VARCHAR currency
         DATE target_date
         VARCHAR status
@@ -753,14 +752,6 @@ no
 
 Target amount
 
-current_amount
-
-NUMERIC(12,2)
-
-no
-
-Default 0
-
 currency
 
 VARCHAR(3)
@@ -807,27 +798,23 @@ ck_goals_target_amount_positive
 
 target_amount > 0
 
-ck_goals_current_amount_non_negative
-
-current_amount >= 0
-
 Indexes
 
 user_id
 target_date
 
-current_amount is application-writable only by the goal_transactions write
-path (VF-016C) - it is no longer accepted on POST/PATCH
-/api/v1/goals(/{goal_id}) request bodies at all (see api-contract.md). The
-old "current_amount <= target_amount" rule has been removed: overfunding
-above target_amount is a valid, allowed state, and there is no PostgreSQL
-CHECK constraint relating the two columns.
+The Goal's balance is not stored on this table at all (removed in
+VF-016G): it is computed at read time from goal_transactions (see 6.1
+below), never accepted on POST/PATCH /api/v1/goals(/{goal_id}) request
+bodies, and returned to clients as the read-only GoalResponse.current_amount
+field (see api-contract.md). There is no "balance <= target_amount" rule:
+overfunding above target_amount is a valid, allowed state.
 
-As of VF-016D, goals.current_amount is transitional compatibility storage
-only: every transaction write still synchronizes it, but no read path
-trusts it any more (see 6.1 below). It remains physically present in this
-table for rollback safety and is not removed by this slice; final removal
-happens in a later cleanup migration.
+Prior to VF-016G, goals.current_amount existed as transitional compatibility
+storage: every transaction write synchronized it, but no read path trusted
+it. That column and its ck_goals_current_amount_non_negative constraint
+were dropped by migration 220b12b15adc; goal_transactions is now the only
+persisted source of a Goal's balance.
 
 Currency immutability (VF-016E): currency is editable only while a Goal
 has no transaction history - once any GoalTransaction row exists for a
@@ -853,27 +840,26 @@ Purpose:
 Append-only ledger of balance-affecting events for a Goal: opening_balance
 (migration-created historical balance), contribution, and withdrawal.
 Introduced in VF-016B; VF-016C wired up the write path (POST
-/api/v1/goals/{goal_id}/transactions inserts a contribution/withdrawal row
-and atomically recomputes goals.current_amount from the full ledger in the
-same database transaction). VF-016D wires up the read path: this table is
-now authoritative for both writes and reads. Every public Goal balance -
+/api/v1/goals/{goal_id}/transactions inserts a contribution/withdrawal
+row). VF-016D wired up the read path: this table has been authoritative
+for both writes and reads since then. Every public Goal balance -
 POST/GET/PATCH /api/v1/goals and GET /api/v1/analytics/goal-progress -
 is computed from this table at read time (opening_balance + contribution -
-withdrawal), never from goals.current_amount. That column still exists and
-is still kept in sync by every transaction write (for rollback safety and
-in case an older deployment still reads it), but no read path in this
-codebase trusts it: a GET request never repairs it either, even when it
-has drifted from the ledger. See goal_service._build_goal_response and
-goal_transaction_repository.get_ledger_balances_for_user. The legacy
-column's removal is deferred to a later cleanup migration.
+withdrawal). As of VF-016G, this is the ONLY persisted source of a Goal's
+balance: the goals table has no balance column at all (see 6 above), so
+there is no legacy storage left to drift out of sync or to remove in a
+later migration. See goal_service._build_goal_response and
+goal_transaction_repository.get_ledger_balances_for_user.
 
 Concurrency: every balance-changing write locks the owned Goal row with
 SELECT ... FOR UPDATE before calculating the ledger balance, in the same
-database transaction as the ledger insert and the current_amount update.
-This serializes concurrent writes against the same Goal at the PostgreSQL
-level - two simultaneous withdrawal requests can never both validate
-against the same stale balance, so the balance can never go negative even
-under a race. See goal_repository.get_goal_by_id_for_update and
+database transaction as the ledger insert. This serializes concurrent
+writes against the same Goal at the PostgreSQL level - two simultaneous
+withdrawal requests can never both validate against the same stale
+balance, so the balance can never go negative even under a race. The lock
+serializes the write regardless of whether anything on the Goal row
+itself changes (as of VF-016G, nothing does). See
+goal_repository.get_goal_by_id_for_update and
 goal_service.create_goal_transaction.
 
 VF-016E extends this same row-lock discipline to currency changes and
@@ -886,11 +872,10 @@ transaction - whichever operation's lock is acquired (and commits) first
 determines the outcome the other one observes; a currency change or delete
 can never see a stale "no history yet" state while a concurrent first
 transaction is also in flight. has_transactions_for_goal is a plain
-existence check (first matching row only) - it never uses
-goals.current_amount or a ledger balance as a proxy for "has history",
-since a Goal can have real transaction history and a 0.00 balance at the
-same time (e.g. a contribution immediately followed by an equal
-withdrawal).
+existence check (first matching row only) - it never uses a ledger balance
+calculation as a proxy for "has history", since a Goal can have real
+transaction history and a 0.00 balance at the same time (e.g. a
+contribution immediately followed by an equal withdrawal).
 
 Column
 
@@ -1308,7 +1293,6 @@ Expense.amount > 0
 Budget.limit_amount > 0
 
 Goal.target_amount > 0
-Goal.current_amount >= 0
 
 Receipt.status is valid
 Receipt.total_amount_detected > 0 when present
@@ -1339,9 +1323,10 @@ Some rules require business context and are currently enforced by Pydantic/servi
 Examples:
 
 A GoalTransaction withdrawal cannot exceed the Goal's current
-ledger-derived balance (VF-016C) - Goal.current_amount is allowed to
-exceed Goal.target_amount (overfunding), so there is no longer an amount
-relationship enforced between the two Goal columns themselves.
+ledger-derived balance (VF-016C) - that balance is allowed to exceed
+Goal.target_amount (overfunding), so there is no amount relationship
+enforced between the two at all. The Goal row itself has no balance
+column to relate target_amount to in the first place (VF-016G).
 
 Goal.currency cannot actually change once the Goal has any transaction
 history (VF-016E) - resending the same normalized currency is allowed;

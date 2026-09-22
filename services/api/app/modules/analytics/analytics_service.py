@@ -820,11 +820,11 @@ def get_budget_status(
 # Calculates progress for each financial goal of the authenticated user.
 # This function exists to show how much money is already saved
 # and how much is still needed for each goal.
-# current_amount is ledger-derived (VF-016D), never read from the
-# transitional goals.current_amount column: one bulk grouped query fetches
-# every one of the user's goal balances up front (the same repository call
-# GoalResponse read paths use), so this never issues one balance query per
-# Goal no matter how many goals the user has.
+# current_amount is ledger-derived (VF-016D): the Goal row has no balance
+# column at all (VF-016G), so one bulk grouped query fetches every one of
+# the user's goal balances up front (the same repository call GoalResponse
+# read paths use), never issuing one balance query per Goal no matter how
+# many goals the user has.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier used to filter goals.
