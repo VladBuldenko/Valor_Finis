@@ -2960,18 +2960,16 @@ def test_get_budget_status_metrics_ended_via_service(
 
 
 # Tests that goal progress calculates remaining amount and progress
-# percentage from the ledger-derived balance, not the Goal model's own
-# current_amount attribute.
+# percentage from the ledger-derived balance returned by
+# get_ledger_balances_for_user, not any attribute of the Goal model
+# itself (VF-016G: the Goal row has no balance column at all).
 # This test exists to verify financial goal analytics business logic
-# without API or database, and to prove (VF-016D) that a stale/wrong
-# current_amount on the Goal model itself is ignored: the fake Goal below
-# carries current_amount=999.00 while the mocked ledger balance is
-# 500.00 - every assertion below must reflect 500.00.
+# without API or database.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository calls.
 # Returns:
 # - None. The test passes if goal progress values are calculated from the
-#   ledger balance, not the Goal model's current_amount.
+#   mocked ledger balance repository call.
 def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -2985,7 +2983,6 @@ def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
             id=goal_id,
             name="Vacation",
             target_amount=Decimal("2000.00"),
-            current_amount=Decimal("999.00"),
             status="active",
             target_date=date(2026, 12, 31),
         ),

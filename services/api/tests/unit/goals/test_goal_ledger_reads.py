@@ -277,41 +277,48 @@ def test_get_goals_ownership_isolation(clean_database: None) -> None:
 
 
 # ------------------------------------------------------------------
-# Authoritative ledger / drift
+# Authoritative ledger / no balance storage
 # ------------------------------------------------------------------
+#
+# VF-016G removed the legacy goals.current_amount column entirely, so the
+# "stale column disagrees with the ledger" scenario these tests used to
+# cover (corrupting goal.current_amount directly, then proving reads still
+# trusted the ledger) is now structurally impossible - there is no column
+# left to corrupt. The tests below prove the stronger successor invariant:
+# a Goal's balance is never stored anywhere on the Goal row at all, so a
+# balance-changing write cannot even have a stale value to leave behind.
 
 
-# Tests the critical VF-016D invariant: when the transitional
-# goals.current_amount column disagrees with the ledger, get_goals must
-# trust the ledger, and must not repair the stale column as a side effect
-# of reading it.
+# Tests that creating a goal transaction never writes to the Goal row
+# itself - not even its updated_at timestamp. This is the definitive proof
+# that the balance exists only in goal_transactions: if any Goal-row field
+# changed as a side effect of a transaction write, this would fail.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the response reflects the ledger (150.00),
-#   the corrupted column (999.00) is never returned, and the column
-#   remains corrupted in the database after the read.
-def test_get_goals_ignores_stale_current_amount_column(clean_database: None) -> None:
+# - None. The test passes if the Goal row's updated_at is bit-for-bit
+#   unchanged after a contribution, while the ledger balance is correct.
+def test_create_goal_transaction_does_not_mutate_goal_row(
+    clean_database: None,
+) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
     try:
         goal = _create_goal(db_session, user_id, target_amount=Decimal("1000"))
-        _add_transaction(db_session, goal.id, user_id, "opening_balance", Decimal("100.00"))
-        _add_transaction(db_session, goal.id, user_id, "contribution", Decimal("50.00"))
+        original_updated_at = goal.updated_at
 
-        # Corrupt the transitional column directly, bypassing every
-        # application write path.
-        goal.current_amount = Decimal("999.00")
-        db_session.commit()
+        goal_service.create_goal_transaction(
+            db_session=db_session,
+            goal_id=goal.id,
+            transaction_data=GoalTransactionCreate(
+                type="contribution",
+                amount=Decimal("50.00"),
+            ),
+            user_id=user_id,
+        )
 
-        # Act
-        goals = goal_service.get_goals(db_session=db_session, user_id=user_id)
-
-        # Assert: the ledger value (150.00) wins, not the corrupted column.
-        assert goals[0].current_amount == Decimal("150.00")
-
-        # Assert: reading did not repair the stale column.
+        # Assert: the Goal row itself was never touched by the write.
         verify_session = SessionLocal()
         try:
             raw_goal = (
@@ -319,22 +326,34 @@ def test_get_goals_ignores_stale_current_amount_column(clean_database: None) -> 
                 .filter(GoalModel.id == goal.id)
                 .first()
             )
-            assert raw_goal.current_amount == Decimal("999.00")
+            assert raw_goal.updated_at == original_updated_at
         finally:
             verify_session.close()
+
+        # Assert: the balance is nonetheless correct, computed purely from
+        # the ledger.
+        balance = goal_transaction_repository.calculate_ledger_balance(
+            db_session=db_session,
+            goal_id=goal.id,
+            user_id=user_id,
+        )
+        assert balance == Decimal("50.00")
     finally:
         db_session.close()
 
 
-# Tests that update_goal's response also trusts the ledger over a stale
-# current_amount column, even when the PATCH itself only touches an
-# unrelated field (name).
+# Tests that update_goal's response stays ledger-derived when the PATCH
+# only touches an unrelated field (name) - editing Goal metadata can never
+# affect the ledger balance, since there is no balance field on the Goal
+# row for a metadata update to disturb.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the response reflects the ledger, not the
-#   corrupted column.
-def test_update_goal_ignores_stale_current_amount_column(clean_database: None) -> None:
+# - None. The test passes if the response's current_amount still reflects
+#   the ledger after the metadata-only update.
+def test_update_goal_metadata_change_does_not_affect_ledger_balance(
+    clean_database: None,
+) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
@@ -342,9 +361,6 @@ def test_update_goal_ignores_stale_current_amount_column(clean_database: None) -
         goal = _create_goal(db_session, user_id, target_amount=Decimal("1000"))
         _add_transaction(db_session, goal.id, user_id, "opening_balance", Decimal("100.00"))
         _add_transaction(db_session, goal.id, user_id, "contribution", Decimal("50.00"))
-
-        goal.current_amount = Decimal("999.00")
-        db_session.commit()
 
         # Act
         response = goal_service.update_goal(

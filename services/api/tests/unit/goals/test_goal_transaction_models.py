@@ -11,13 +11,8 @@ from app.modules.goals.goal_schemas import GoalCreate
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 
 
-def _create_goal(db_session, user_id, current_amount=Decimal("0")) -> GoalModel:
-    # GoalCreate no longer accepts current_amount (VF-016C) - every Goal is
-    # created at 0. These model-level tests need to simulate a Goal that
-    # already holds a balance (e.g. a legacy row, or one funded through the
-    # ledger), so current_amount is set directly on the ORM model after
-    # creation, bypassing the public schema entirely.
-    goal_model = goal_repository.create_goal(
+def _create_goal(db_session, user_id) -> GoalModel:
+    return goal_repository.create_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Emergency fund",
@@ -28,13 +23,6 @@ def _create_goal(db_session, user_id, current_amount=Decimal("0")) -> GoalModel:
         ),
         user_id=user_id,
     )
-
-    if current_amount != Decimal("0"):
-        goal_model.current_amount = current_amount
-        db_session.commit()
-        db_session.refresh(goal_model)
-
-    return goal_model
 
 
 # Tests that a transaction with a positive amount and a valid type persists.
@@ -314,7 +302,7 @@ def test_goal_with_transaction_history_cannot_be_deleted(clean_database: None) -
     user_id = uuid4()
 
     try:
-        goal = _create_goal(db_session, user_id, current_amount=Decimal("100"))
+        goal = _create_goal(db_session, user_id)
 
         transaction = GoalTransactionModel(
             goal_id=goal.id,

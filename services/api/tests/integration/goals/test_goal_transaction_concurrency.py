@@ -26,8 +26,8 @@ from app.modules.goals.goal_transaction_schemas import GoalTransactionCreate
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
 # - None. The test passes if exactly one withdrawal succeeds, exactly one
-#   fails with GoalInsufficientFundsError, and the final ledger/
-#   current_amount balance is 20.00.
+#   fails with GoalInsufficientFundsError, and the final ledger balance is
+#   20.00.
 def test_concurrent_withdrawals_cannot_overdraw_goal(clean_database: None) -> None:
     # Arrange: a goal with a 100 EUR balance, funded through the same
     # atomic write path this test is exercising.
@@ -111,7 +111,6 @@ def test_concurrent_withdrawals_cannot_overdraw_goal(clean_database: None) -> No
             .first()
         )
         assert final_goal is not None
-        assert final_goal.current_amount == Decimal("20.00")
 
         ledger_balance = goal_transaction_repository.calculate_ledger_balance(
             db_session=verify_session,
