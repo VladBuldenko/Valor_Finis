@@ -26,19 +26,24 @@ class GoalModel(Base):
         user_id: Owner of the goal.
         name: Human-readable goal name.
         target_amount: Amount the user wants to reach.
-        current_amount: Amount already saved.
         currency: Currency code such as EUR or USD.
         target_date: Optional date when the user wants to reach the goal.
         status: Current goal state such as active, completed, or archived.
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
+
+    Note (VF-016G): this model has no persisted balance column. A Goal's
+    balance exists only as the sum of its goal_transactions ledger rows
+    (opening_balance + contribution - withdrawal); it is never stored on
+    the Goal row itself. See goal_transaction_repository.py for the
+    ledger-balance calculation, and goal_schemas.GoalResponse for the
+    public, ledger-derived current_amount field.
     """
 
     __tablename__ = "goals"
 
     __table_args__ = (
         CheckConstraint("target_amount > 0", name="ck_goals_target_amount_positive"),
-        CheckConstraint("current_amount >= 0", name="ck_goals_current_amount_non_negative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -61,13 +66,6 @@ class GoalModel(Base):
     target_amount: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
         nullable=False,
-    )
-
-    current_amount: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2),
-        nullable=False,
-        default=Decimal("0"),
-        server_default="0",
     )
 
     currency: Mapped[str] = mapped_column(

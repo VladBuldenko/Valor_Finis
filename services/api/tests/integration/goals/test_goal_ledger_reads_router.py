@@ -1,10 +1,7 @@
-from decimal import Decimal
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from app.db.database_session import SessionLocal
-from app.modules.goals.goal_models import GoalModel
 from tests.helpers import auth_headers, create_goal, create_goal_transaction
 
 
@@ -92,36 +89,28 @@ def test_get_goals_endpoint_other_user_ledger_does_not_leak(
     assert response_data[0]["current_amount"] == "10.00"
 
 
-# Tests the critical VF-016D invariant at the API level: when the
-# transitional goals.current_amount column disagrees with the ledger, both
-# GET /goals and PATCH /goals/{id} must return the ledger value, never the
-# corrupted column.
+# Tests the VF-016G invariant at the API level: since the Goal row has no
+# balance column at all, GET /goals and PATCH /goals/{id} always report the
+# ledger balance and a transaction write never mutates the Goal row (its
+# updated_at is unchanged), so there is no storage left to drift out of
+# sync with the ledger in the first place.
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if both endpoints return 150.00, not 999.00.
-def test_goal_endpoints_ignore_stale_current_amount_column(
+# - None. The test passes if both endpoints report 150.00 and the Goal's
+#   updated_at is unaffected by the transaction writes.
+def test_goal_endpoints_remain_ledger_derived_after_transaction_writes(
     client: TestClient,
     clean_database: None,
 ) -> None:
     # Arrange
     user_id = str(uuid4())
     goal = create_goal(client=client, user_id=user_id, name="Vacation", target_amount=1000)
+    before = client.get("/api/v1/goals", headers=auth_headers(user_id)).json()[0]
+
     create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=100)
     create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=50)
-
-    # Corrupt the transitional column directly, bypassing every
-    # application write path.
-    db_session = SessionLocal()
-    try:
-        goal_model = (
-            db_session.query(GoalModel).filter(GoalModel.id == goal["id"]).first()
-        )
-        goal_model.current_amount = Decimal("999.00")
-        db_session.commit()
-    finally:
-        db_session.close()
 
     # Act
     get_response = client.get("/api/v1/goals", headers=auth_headers(user_id))
@@ -133,6 +122,7 @@ def test_goal_endpoints_ignore_stale_current_amount_column(
 
     # Assert
     assert get_response.json()[0]["current_amount"] == "150.00"
+    assert get_response.json()[0]["updated_at"] == before["updated_at"]
     assert patch_response.json()["current_amount"] == "150.00"
     assert patch_response.json()["name"] == "Renamed"
 
@@ -195,15 +185,16 @@ def test_goal_progress_endpoint_uncapped_overfunded_progress_percent(
     assert response_data["progress_percent"] == "120.00"
 
 
-# Tests the critical VF-016D invariant for Goal Progress: a stale
-# goals.current_amount column must never leak into the analytics response.
+# Tests the VF-016G invariant for Goal Progress: since the Goal row has no
+# balance column at all, the analytics response is always ledger-derived
+# and unaffected by transaction writes touching anything but the ledger.
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if the response reflects the ledger (150.00),
-#   not the corrupted column (999.00).
-def test_goal_progress_endpoint_ignores_stale_current_amount_column(
+# - None. The test passes if the response reflects the ledger balance
+#   (150.00) after both transactions were written.
+def test_goal_progress_endpoint_remains_ledger_derived_after_transaction_writes(
     client: TestClient,
     clean_database: None,
 ) -> None:
@@ -212,16 +203,6 @@ def test_goal_progress_endpoint_ignores_stale_current_amount_column(
     goal = create_goal(client=client, user_id=user_id, name="Vacation", target_amount=1000)
     create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=100)
     create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=50)
-
-    db_session = SessionLocal()
-    try:
-        goal_model = (
-            db_session.query(GoalModel).filter(GoalModel.id == goal["id"]).first()
-        )
-        goal_model.current_amount = Decimal("999.00")
-        db_session.commit()
-    finally:
-        db_session.close()
 
     # Act
     response = client.get("/api/v1/analytics/goal-progress", headers=auth_headers(user_id))

@@ -8,6 +8,7 @@ from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals import goal_service
 from app.modules.goals.goal_errors import GoalInsufficientFundsError, GoalNotFoundError
 from app.modules.goals.goal_schemas import GoalCreate
+from app.modules.goals.goal_transaction_repository import calculate_ledger_balance
 from app.modules.goals.goal_transaction_schemas import (
     GoalTransactionCreate,
     GoalTransactionResponse,
@@ -27,8 +28,7 @@ def _create_goal(db_session, user_id, target_amount=Decimal("2000")):
 
 
 # Tests that a contribution on a freshly created (zero-balance) goal
-# succeeds and the ledger-derived balance is copied to the transitional
-# current_amount column.
+# succeeds and the ledger balance reflects it.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -58,8 +58,10 @@ def test_create_goal_transaction_contribution_on_zero_balance(
         assert result.goal_id == goal.id
         assert result.user_id == user_id
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("150.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("150.00")
     finally:
         db_session.close()
 
@@ -91,8 +93,10 @@ def test_create_goal_transaction_repeated_contributions_accumulate(
                 user_id=user_id,
             )
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("175.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("175.00")
     finally:
         db_session.close()
 
@@ -133,8 +137,10 @@ def test_create_goal_transaction_withdrawal_reduces_balance(
 
         assert result.type == "withdrawal"
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("120.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("120.00")
     finally:
         db_session.close()
 
@@ -176,8 +182,10 @@ def test_create_goal_transaction_withdrawal_equal_to_balance_succeeds(
             user_id=user_id,
         )
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("0.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("0.00")
     finally:
         db_session.close()
 
@@ -222,9 +230,9 @@ def test_create_goal_transaction_withdrawal_greater_than_balance_rejected(
 
 
 # Tests that a failed withdrawal creates no transaction and does not
-# change current_amount.
-# This test exists to verify atomicity: the ledger insert and the
-# transitional balance update must never partially apply.
+# change the ledger balance.
+# This test exists to verify atomicity: a failed withdrawal must never
+# partially apply.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -274,8 +282,10 @@ def test_create_goal_transaction_failed_withdrawal_changes_nothing(
 
         assert len(transactions_after) == len(transactions_before) == 1
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("50.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("50.00")
     finally:
         db_session.close()
 
@@ -305,9 +315,12 @@ def test_create_goal_transaction_overfunding_is_allowed(
             user_id=user_id,
         )
 
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
         db_session.refresh(goal)
-        assert goal.current_amount == Decimal("150.00")
-        assert goal.current_amount > goal.target_amount
+        assert balance == Decimal("150.00")
+        assert balance > goal.target_amount
     finally:
         db_session.close()
 
@@ -348,8 +361,10 @@ def test_create_goal_transaction_includes_existing_opening_balance(
             user_id=user_id,
         )
 
-        db_session.refresh(goal)
-        assert goal.current_amount == Decimal("250.00")
+        balance = calculate_ledger_balance(
+            db_session=db_session, goal_id=goal.id, user_id=user_id
+        )
+        assert balance == Decimal("250.00")
     finally:
         db_session.close()
 

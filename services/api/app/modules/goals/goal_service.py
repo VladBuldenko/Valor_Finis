@@ -26,12 +26,10 @@ from app.modules.goals.goal_transaction_schemas import (
 # This function exists to make the source of current_amount explicit and
 # auditable (VF-016D): every public read path must pass in a balance it
 # calculated from goal_transactions, never GoalResponse.model_validate(
-# goal_model), which would silently read the transitional
-# goals.current_amount column instead - the column this slice makes
-# non-authoritative for reads.
+# goal_model) - the Goal row has no balance column to read in the first
+# place (VF-016G), so this is the only way to populate current_amount.
 # Parameters:
-# - goal_model: the Goal database record (name/target_amount/etc. only -
-#   its own current_amount attribute is deliberately never read here).
+# - goal_model: the Goal database record (name/target_amount/etc.).
 # - current_amount: ledger-derived balance to report for this goal.
 # Returns:
 # - GoalResponse with current_amount set to the given ledger balance.
@@ -124,10 +122,9 @@ def get_goals(
 # enforcing currency immutability once transaction history exists.
 # This function exists to keep update business flow in the service layer
 # and response mapping outside the repository layer. current_amount in the
-# returned response is ledger-derived (VF-016D), even though the
-# repository update also still synchronizes the transitional
-# goals.current_amount column for compatibility - the response never
-# trusts that column directly.
+# returned response is ledger-derived (VF-016D): the Goal row itself has no
+# balance column to update, so the response is always computed fresh from
+# goal_transactions after applying the metadata change.
 #
 # Concurrency/TOCTOU safety (VF-016E): the Goal row is locked with
 # SELECT ... FOR UPDATE *before* the history check, in the same database
@@ -252,8 +249,7 @@ def delete_goal(
 
 
 # Creates a contribution or withdrawal transaction for a goal owned by the
-# authenticated user, and atomically synchronizes the transitional
-# current_amount column to the resulting ledger balance.
+# authenticated user.
 # This function exists as the single write path for balance-changing goal
 # transactions (VF-016C). The whole operation runs as one database
 # transaction:
@@ -261,11 +257,14 @@ def delete_goal(
 #      writes never validate against the same stale balance;
 #   2. calculate the current ledger balance from goal_transactions;
 #   3. for a withdrawal, reject if it would take the balance negative;
-#   4. insert the new append-only transaction (not yet committed);
-#   5. update goals.current_amount to the new ledger-derived balance;
-#   6. commit once.
-# goal.current_amount is never incremented/decremented from its previous
-# value - it is always recomputed from the ledger, so it cannot drift.
+#   4. insert the new append-only transaction;
+#   5. commit once.
+# The Goal row itself is never written here (VF-016G) - its balance is
+# never stored anywhere, only ever computed from goal_transactions, so it
+# cannot drift from the ledger. The row lock is still essential: it is
+# what serializes this write against a concurrent one on the same Goal
+# (see get_goal_by_id_for_update), independent of whether anything on the
+# Goal row itself changes.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
@@ -282,7 +281,9 @@ def create_goal_transaction(
     transaction_data: GoalTransactionCreate,
     user_id: UUID,
 ) -> GoalTransactionResponse:
-    goal_model = goal_repository.get_goal_by_id_for_update(
+    # The return value is not needed - only the row lock and the
+    # existence/ownership check this call performs matter here.
+    goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
         goal_id=goal_id,
         user_id=user_id,
@@ -310,13 +311,6 @@ def create_goal_transaction(
         description=transaction_data.description,
         commit=False,
     )
-
-    if transaction_data.type == "withdrawal":
-        new_balance = current_balance - transaction_data.amount
-    else:
-        new_balance = current_balance + transaction_data.amount
-
-    goal_model.current_amount = new_balance
 
     db_session.commit()
     db_session.refresh(transaction_model)

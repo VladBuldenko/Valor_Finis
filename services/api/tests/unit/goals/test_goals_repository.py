@@ -44,7 +44,6 @@ def test_create_goal_creates_new_goal(clean_database: None) -> None:
         assert created_goal.user_id == user_id
         assert created_goal.name == goal_data.name
         assert created_goal.target_amount == Decimal("2000")
-        assert created_goal.current_amount == Decimal("0")
         assert created_goal.currency == goal_data.currency
         assert created_goal.target_date == goal_data.target_date
         assert created_goal.status == goal_data.status
@@ -107,7 +106,6 @@ def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
         assert goals[0].user_id == user_id
         assert goals[0].name == user_goal_data.name
         assert goals[0].target_amount == Decimal("2000")
-        assert goals[0].current_amount == Decimal("0")
         assert goals[0].currency == user_goal_data.currency
         assert goals[0].target_date == user_goal_data.target_date
         assert goals[0].status == user_goal_data.status
@@ -189,3 +187,18 @@ def test_get_goal_by_id_for_update_raises_not_found_for_other_user(
             )
     finally:
         db_session.close()
+
+
+# Tests that GoalModel has no persisted balance column at all.
+# This test exists as the definitive VF-016G invariant: the legacy
+# transitional current_amount column has been removed from the schema, not
+# merely made non-authoritative for reads. A Goal's balance can only ever
+# be computed from goal_transactions.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if "current_amount" is not a mapped column.
+def test_goal_model_has_no_current_amount_column() -> None:
+    column_names = {column.name for column in GoalModel.__table__.columns}
+
+    assert "current_amount" not in column_names

@@ -1,4 +1,3 @@
-from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -23,13 +22,13 @@ def create_goal(
     goal_data: GoalCreate,
     user_id: UUID,
 ) -> GoalModel:
-    # current_amount always starts at 0 (VF-016): a Goal can only be funded
-    # afterward through a contribution GoalTransaction, never at creation.
+    # A new Goal has no goal_transactions rows yet, so its ledger-derived
+    # balance is Decimal("0.00") by construction (VF-016G) - there is no
+    # balance field to set here at all.
     goal_model = GoalModel(
         user_id=user_id,
         name=goal_data.name,
         target_amount=goal_data.target_amount,
-        current_amount=Decimal("0"),
         currency=goal_data.currency,
         target_date=goal_data.target_date,
         status=goal_data.status,
@@ -154,10 +153,10 @@ def apply_goal_update(
     for field_name, field_value in update_data.items():
         setattr(goal_model, field_name, field_value)
 
-    # No current_amount-vs-target_amount check here (VF-016): current_amount
-    # is no longer client-writable and overfunding is an allowed product
-    # state, so changing target_amount below the ledger-derived balance is
-    # always valid.
+    # No balance-vs-target_amount check here (VF-016): overfunding is an
+    # allowed product state, so changing target_amount below the Goal's
+    # ledger-derived balance is always valid. The Goal row has no balance
+    # field to compare against in the first place (VF-016G).
     db_session.commit()
     db_session.refresh(goal_model)
 
