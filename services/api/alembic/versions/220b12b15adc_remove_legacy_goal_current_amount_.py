@@ -37,9 +37,12 @@ def upgrade() -> None:
         contribution - withdrawal) over its goal_transactions rows,
         computed at read time.
 
-    No ledger data is touched by this migration in either direction:
-    goal_transactions rows are never read, inserted, updated, or deleted
-    here. This is schema cleanup only.
+    upgrade() itself does not read or modify goal_transactions at all - it
+    only removes the legacy Goal column and constraint. downgrade() does
+    read goal_transactions, to reconstruct current_amount from the ledger
+    (see downgrade() below). In neither direction does this migration
+    insert, update, or delete a GoalTransaction row: ledger history itself
+    is never mutated.
     """
 
     op.drop_constraint(
@@ -56,9 +59,9 @@ def downgrade() -> None:
 
     What:
         Adds back current_amount (NUMERIC(12,2) NOT NULL, matching the
-        original column's server default of 0) and
-        ck_goals_current_amount_non_negative, then reconstructs every
-        Goal's value from its goal_transactions history.
+        original column's server default of 0), reconstructs every Goal's
+        value from its goal_transactions history, then restores
+        ck_goals_current_amount_non_negative.
 
     Why:
         A rollback to the application version this migration precedes
