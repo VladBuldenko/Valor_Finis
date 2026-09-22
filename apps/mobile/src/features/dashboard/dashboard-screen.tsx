@@ -155,6 +155,15 @@ export function DashboardScreen() {
     goalProgress.map((progress) => [progress.goal_id, progress]),
   );
 
+  // Archived goals are historical records (VF-016F2) -- the Dashboard's
+  // Goal progress card is meant to surface what still needs attention, so
+  // it only ever shows non-archived goals. "Current" deliberately includes
+  // both "active" and "completed", not just "active": completed is a
+  // valid, still-relevant status and must not disappear from this card.
+  // Visibility is driven by Goal.status only -- never inferred from
+  // balance/target/progress/dates.
+  const currentGoals = goals.filter((goal) => goal.status !== "archived");
+
   async function handleSignOut() {
     try {
       setIsSigningOut(true);
@@ -379,11 +388,13 @@ export function DashboardScreen() {
             <ActivityIndicator style={styles.loader} />
           ) : goalsError ? (
             <Text style={styles.errorText}>Unable to load goals.</Text>
-          ) : goals.length === 0 ? (
-            <Text style={styles.secondaryText}>No goals yet.</Text>
+          ) : currentGoals.length === 0 ? (
+            <Text style={styles.secondaryText}>
+              {goals.length === 0 ? "No goals yet." : "No current goals."}
+            </Text>
           ) : (
             <View style={styles.categoryList}>
-              {goals.map((goal) => {
+              {currentGoals.map((goal) => {
                 const progress = goalProgressById.get(goal.id);
 
                 return (
