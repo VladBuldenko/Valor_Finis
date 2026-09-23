@@ -226,16 +226,20 @@ def test_create_income_endpoint_rejects_user_id_field(
     assert response.status_code == 422
 
 
-# Tests that the API rejects a client-supplied account_id.
-# This test exists as the end-to-end regression for the VF-017C
-# architectural rule that account_id must not exist in the public Income
-# contract yet.
+# Tests that POST /income with an account_id pointing at a non-existent
+# (or other-user) Account behaves as not found.
+# This test exists as the end-to-end regression for the VF-017D
+# architectural rule: account_id is now a legitimate field on the public
+# Income contract, unlike VF-017C where it did not exist at all - a
+# well-formed but unowned/missing account_id is an ownership failure
+# (404), not a schema validation failure (422).
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if the response is 422.
-def test_create_income_endpoint_rejects_account_id_field(
+# - None. The test passes if the response is 404 and no Income row was
+#   created (atomic failure).
+def test_create_income_endpoint_nonexistent_account_id_not_found(
     client: TestClient, clean_database: None,
 ) -> None:
     user_id = str(uuid4())
@@ -249,7 +253,10 @@ def test_create_income_endpoint_rejects_account_id_field(
             "account_id": "11111111-1111-1111-1111-111111111111",
         },
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
+
+    list_response = client.get("/api/v1/income", headers=auth_headers(user_id))
+    assert list_response.json() == []
 
 
 # Tests that GET /income returns only the authenticated user's records,

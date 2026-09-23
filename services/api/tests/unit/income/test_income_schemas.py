@@ -99,20 +99,26 @@ def test_income_create_rejects_injected_fx_fields() -> None:
         IncomeCreate(**_valid_create_kwargs(), base_amount=Decimal("2500.00"))
 
 
-# Tests that IncomeCreate rejects an account_id field.
-# This test exists as the schema-level regression for the VF-017C
-# architectural rule: account_id must not exist in the public Income
-# contract until VF-017D makes the link actually affect Account balance.
+# Tests that IncomeCreate accepts an optional account_id field.
+# This test exists as the schema-level regression for the VF-017D
+# architectural rule: account_id is now a legitimate, optional linkage
+# field on IncomeCreate (unlike VF-017C, where it did not exist at all).
+# It is still never persisted directly on IncomeModel - see
+# income_repository.create_income, which whitelists real columns only.
 # Parameters:
 # - None.
 # Returns:
-# - None. The test passes if a ValidationError is raised.
-def test_income_create_rejects_account_id_field() -> None:
-    with pytest.raises(ValidationError):
-        IncomeCreate(
-            **_valid_create_kwargs(),
-            account_id="11111111-1111-1111-1111-111111111111",
-        )
+# - None. The test passes if the field round-trips as a UUID and is
+#   None when omitted.
+def test_income_create_accepts_optional_account_id_field() -> None:
+    income = IncomeCreate(
+        **_valid_create_kwargs(),
+        account_id="11111111-1111-1111-1111-111111111111",
+    )
+    assert str(income.account_id) == "11111111-1111-1111-1111-111111111111"
+
+    unlinked = IncomeCreate(**_valid_create_kwargs())
+    assert unlinked.account_id is None
 
 
 # Tests that IncomeUpdate requires at least one field.
@@ -156,6 +162,41 @@ def test_income_update_allows_partial_source_update() -> None:
     update = IncomeUpdate(source="freelance")
     assert update.source == "freelance"
     assert "amount" not in update.model_fields_set
+
+
+# Tests IncomeUpdate.account_id's three-state PATCH semantics: absent
+# means unchanged, a UUID means attach/move, explicit null means detach.
+# This test exists to prove account_id is deliberately excluded from the
+# "cannot be null" validation every other field here is subject to -
+# unlike amount/currency/received_at/source, null is a meaningful, valid
+# value for account_id (VF-017D).
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if all three states are distinguishable via
+#   model_fields_set and the field's resulting value.
+def test_income_update_account_id_three_state_semantics() -> None:
+    absent = IncomeUpdate(source="gift")
+    assert "account_id" not in absent.model_fields_set
+
+    attach = IncomeUpdate(account_id="11111111-1111-1111-1111-111111111111")
+    assert "account_id" in attach.model_fields_set
+    assert attach.account_id is not None
+
+    detach = IncomeUpdate(account_id=None)
+    assert "account_id" in detach.model_fields_set
+    assert detach.account_id is None
+
+
+# Tests that IncomeUpdate accepts account_id alone (a pure attach/detach/
+# move PATCH with no other field) as a valid, non-empty payload.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if construction succeeds.
+def test_income_update_account_id_alone_is_valid_payload() -> None:
+    update = IncomeUpdate(account_id="11111111-1111-1111-1111-111111111111")
+    assert update.model_fields_set == {"account_id"}
 
 
 # Tests that IncomeResponse round-trips FX snapshot fields.
