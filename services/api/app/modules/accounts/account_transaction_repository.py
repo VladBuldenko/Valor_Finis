@@ -15,6 +15,14 @@ from app.modules.accounts.account_transaction_models import AccountTransactionMo
 # balance, debit rows subtract from it. An account with no transactions
 # has a balance of exactly Decimal("0.00"). Unlike Goal, this balance may
 # be negative - there is no floor anywhere in this calculation.
+#
+# Uses one PostgreSQL SUM aggregate query (the same signed-CASE expression
+# get_ledger_balances_for_user uses for its bulk grouped variant) rather
+# than loading every row into Python and summing there - an account's
+# ledger can grow indefinitely, so this keeps the query O(1) in
+# transferred rows and memory regardless of history length. The
+# arithmetic itself still happens in PostgreSQL NUMERIC, and the driver
+# returns it as a Python Decimal - never float.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - account_id: account identifier to sum transactions for.
@@ -27,24 +35,21 @@ def calculate_ledger_balance(
     account_id: UUID,
     user_id: UUID,
 ) -> Decimal:
-    transactions = (
-        db_session.query(AccountTransactionModel)
+    signed_amount = case(
+        (AccountTransactionModel.direction == "debit", -AccountTransactionModel.amount),
+        else_=AccountTransactionModel.amount,
+    )
+
+    balance = (
+        db_session.query(func.sum(signed_amount))
         .filter(
             AccountTransactionModel.account_id == account_id,
             AccountTransactionModel.user_id == user_id,
         )
-        .all()
+        .scalar()
     )
 
-    balance = Decimal("0.00")
-
-    for transaction in transactions:
-        if transaction.direction == "debit":
-            balance -= transaction.amount
-        else:
-            balance += transaction.amount
-
-    return balance
+    return balance if balance is not None else Decimal("0.00")
 
 
 # Creates and saves a new immutable account transaction record.

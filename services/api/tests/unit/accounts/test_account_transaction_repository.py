@@ -82,6 +82,45 @@ def test_calculate_ledger_balance_mixed_credit_and_debit(clean_database: None) -
         db_session.close()
 
 
+# Tests that calculate_ledger_balance's SQL SUM aggregate correctly sums
+# two individually valid NUMERIC(12,2) rows into a total that exceeds a
+# single row's own 12-digit range.
+# This test exists as the repository-layer regression for the remote-review
+# finding that the response schema previously capped current_balance at
+# max_digits=12 - it isolates the SQL aggregation itself (not the API
+# response layer, see the router test for that) to prove the underlying
+# SUM(CASE ...) query has no such cap: PostgreSQL NUMERIC arithmetic
+# widens automatically, and the driver returns the full-precision Decimal.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the aggregated balance is exactly
+#   18000000000.00, above what either individual row could store alone.
+def test_calculate_ledger_balance_sum_exceeds_single_row_numeric_range(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        _add_transaction(
+            db_session, account.id, user_id, "opening_balance", "credit",
+            Decimal("9000000000.00"), date(2026, 9, 1),
+        )
+        _add_transaction(
+            db_session, account.id, user_id, "adjustment", "credit",
+            Decimal("9000000000.00"), date(2026, 9, 2),
+        )
+
+        balance = account_transaction_repository.calculate_ledger_balance(
+            db_session=db_session, account_id=account.id, user_id=user_id,
+        )
+        assert balance == Decimal("18000000000.00")
+    finally:
+        db_session.close()
+
+
 # Tests that a debit larger than accumulated credits produces a negative
 # ledger balance.
 # This test exists to prove the ledger calculation itself has no floor -

@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from pytest import MonkeyPatch
 
 from app.db.database_session import SessionLocal
 from app.modules.accounts import account_repository, account_service, account_transaction_repository
@@ -175,11 +176,63 @@ def test_create_account_opening_balance_uses_given_date(clean_database: None) ->
         db_session.close()
 
 
+# Tests that omitting opening_balance_date (with a non-zero opening_balance)
+# defaults the opening_balance transaction's date to the service's current
+# date - deterministically, not tied to whatever day the test happens to
+# run on.
+# This test exists as the regression for the remote-review requirement
+# that the default-date behavior be proven without depending on the
+# machine's actual date. It freezes date.today() as seen from inside
+# account_service by monkeypatching the "date" name in that module's own
+# namespace with a fixed subclass, rather than adding a new dependency
+# (e.g. freezegun) for something monkeypatch already handles cleanly.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to freeze date.today() as seen by
+#   account_service.
+# Returns:
+# - None. The test passes if the stored transaction_date matches the
+#   frozen date exactly.
+def test_create_account_opening_balance_defaults_to_frozen_today(
+    clean_database: None, monkeypatch: MonkeyPatch,
+) -> None:
+    frozen_today = date(2027, 3, 10)
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return frozen_today
+
+    monkeypatch.setattr(account_service, "date", _FrozenDate)
+
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        result = account_service.create_account(
+            db_session=db_session,
+            account_data=AccountCreate(
+                name="Checking", type="checking", currency="EUR",
+                opening_balance=Decimal("100.00"),
+            ),
+            user_id=user_id,
+        )
+
+        history = account_transaction_repository.get_transactions_for_account(
+            db_session=db_session, account_id=result.id, user_id=user_id,
+        )
+        assert history[0].transaction_date == frozen_today
+    finally:
+        db_session.close()
+
+
 # Tests that account creation and its opening_balance transaction are
-# atomic: mixed with an intentionally-invalid scenario is impractical to
-# simulate without mocking, so this test instead directly proves the
-# positive case - both rows are visible together after create_account
-# returns, confirming they were committed as one unit.
+# atomic on the success path: both rows are visible together after
+# create_account returns, confirming they were committed as one unit.
+# See test_create_account_opening_balance_failure_persists_nothing below
+# for the failure-path counterpart - this test alone does not prove that
+# a mid-operation failure leaves nothing durable, only that success leaves
+# both rows durable together.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -212,6 +265,69 @@ def test_create_account_and_opening_balance_are_atomic(clean_database: None) -> 
             db_session=verify_session, account_id=result.id, user_id=user_id,
         )
         assert balance == Decimal("500.00")
+    finally:
+        verify_session.close()
+
+
+# Tests the failure-path counterpart of atomicity: if the opening_balance
+# transaction insert fails AFTER the Account row has already been flushed
+# (but not yet committed), no partial Account is left durable in the
+# database - the Account and its opening_balance transaction commit
+# together, or neither becomes durable.
+# This test exists as the regression for the remote-review finding that
+# the prior atomicity test only proved the success path. It injects a
+# deterministic failure by monkeypatching
+# account_transaction_repository.create_transaction (as seen from inside
+# account_service) to raise after account_repository.create_account has
+# already run - production code is not weakened or branched for
+# testability, only the repository call the service already depends on is
+# replaced for the duration of this test. The test session is closed
+# without ever calling commit(), so SQLAlchemy rolls back the flushed-but-
+# uncommitted Account INSERT along with the connection when it returns to
+# the pool - a completely separate verification session must therefore
+# see zero rows for this user.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to inject the deterministic failure.
+# Returns:
+# - None. The test passes if the exception propagates and no Account row
+#   for this user exists afterward, from a completely separate session.
+def test_create_account_opening_balance_failure_persists_nothing(
+    clean_database: None, monkeypatch: MonkeyPatch,
+) -> None:
+    def _raise_after_account_flush(*args, **kwargs):
+        raise RuntimeError("simulated failure creating opening_balance transaction")
+
+    monkeypatch.setattr(
+        account_service.account_transaction_repository,
+        "create_transaction",
+        _raise_after_account_flush,
+    )
+
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        with pytest.raises(RuntimeError):
+            account_service.create_account(
+                db_session=db_session,
+                account_data=AccountCreate(
+                    name="Checking", type="checking", currency="EUR",
+                    opening_balance=Decimal("500.00"),
+                ),
+                user_id=user_id,
+            )
+    finally:
+        db_session.close()
+
+    verify_session = SessionLocal()
+    try:
+        surviving_accounts = (
+            verify_session.query(AccountModel)
+            .filter(AccountModel.user_id == user_id)
+            .all()
+        )
+        assert surviving_accounts == []
     finally:
         verify_session.close()
 

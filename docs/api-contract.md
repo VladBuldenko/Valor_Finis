@@ -1636,6 +1636,12 @@ no
 
 default EUR; normalized to uppercase, 3 alphabetic characters
 
+status
+
+no
+
+active or archived; default active
+
 opening_balance
 
 no

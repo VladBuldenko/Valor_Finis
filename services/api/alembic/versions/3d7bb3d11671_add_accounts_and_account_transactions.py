@@ -209,10 +209,20 @@ def downgrade() -> None:
         then drops accounts.
 
     Why:
-        No data reconstruction is needed in either direction: both tables
-        are new in this migration, so there is nothing pre-existing for
-        downgrade to restore - this is the inverse of pure schema
-        creation, not a data-losing rollback.
+        No data reconstruction is needed here, because there is no
+        PRE-EXISTING data this migration's upgrade() ever read from or
+        depended on - accounts/account_transactions did not exist before
+        this revision, unlike e.g. 220b12b15adc's downgrade, which
+        reconstructs a genuinely prior column from ledger history.
+
+        This downgrade IS a data-losing rollback for anything created
+        while VF-017B was active: it drops account_transactions and
+        accounts outright, so any real Account or AccountTransaction rows
+        a user created after upgrading to this revision are permanently
+        deleted the moment this downgrade runs. There is nothing to
+        preserve them into, since the schema being rolled back to
+        (220b12b15adc) has no accounts/account_transactions tables at
+        all.
     """
 
     op.drop_index(

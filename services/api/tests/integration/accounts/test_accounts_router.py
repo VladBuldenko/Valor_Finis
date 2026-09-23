@@ -63,6 +63,48 @@ def test_create_account_endpoint_with_negative_opening_balance(
     assert account["current_balance"] == "-75.00"
 
 
+# Tests that a current_balance derived from summing multiple individually
+# valid transactions can exceed a single row's own NUMERIC(12,2) range
+# and still round-trip successfully through GET /accounts.
+# This test exists as the regression for the remote-review finding that
+# AccountResponse.current_balance previously carried max_digits=12 (the
+# per-row storage limit), which would have failed FastAPI response
+# validation for exactly this scenario: two individually valid
+# 9,000,000,000.00 credits (each fits NUMERIC(12,2) - 12 total digits) sum
+# to 18,000,000,000.00 (13 total digits), a perfectly valid ledger
+# balance that must not be rejected merely because it exceeds one row's
+# own range.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if GET /accounts succeeds (200) and reports the
+#   full 18,000,000,000.00 sum.
+def test_get_accounts_endpoint_balance_may_exceed_single_row_numeric_range(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+
+    account = create_account(
+        client=client, user_id=user_id, opening_balance="9000000000.00",
+    )
+    assert account["current_balance"] == "9000000000.00"
+
+    adjustment_response = client.post(
+        f"/api/v1/accounts/{account['id']}/transactions",
+        headers=auth_headers(user_id),
+        json={
+            "direction": "credit", "amount": "9000000000.00",
+            "transaction_date": "2026-09-23",
+        },
+    )
+    assert adjustment_response.status_code == 201
+
+    list_response = client.get("/api/v1/accounts", headers=auth_headers(user_id))
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["current_balance"] == "18000000000.00"
+
+
 # Tests that the API rejects a current_balance field on account creation.
 # This test exists because current_balance is never client-writable.
 # Parameters:

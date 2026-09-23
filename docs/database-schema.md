@@ -1128,11 +1128,13 @@ intentionally deferred to a later slice, not part of this migration.
 
 This table is the only persisted source of an Account's balance: the
 accounts table has no balance column at all (see 7 above). Every public
-Account balance - POST/GET/PATCH /api/v1/accounts and GET
-/api/v1/accounts/{account_id}/transactions - is computed from this table
-at read time (SUM of credit amounts minus debit amounts). See
-account_service._build_account_response and
+current_balance value - returned by POST/GET/PATCH /api/v1/accounts - is
+computed from this table at read time (SUM of credit amounts minus debit
+amounts). See account_service._build_account_response and
 account_transaction_repository.get_ledger_balances_for_user.
+GET /api/v1/accounts/{account_id}/transactions reads rows from this same
+table too, but returns transaction history, not an AccountResponse - it
+does not itself return current_balance.
 
 Column
 

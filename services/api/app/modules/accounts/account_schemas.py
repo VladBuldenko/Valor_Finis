@@ -275,6 +275,16 @@ class AccountResponse(AccountBase):
         descriptive financial record, not a payment-authorization system,
         so a negative balance (e.g. an opening balance followed by a
         larger debit adjustment) is a valid, representable state.
+
+        current_balance deliberately has NO max_digits constraint, unlike
+        AccountTransaction.amount (NUMERIC(12,2) on every persisted row).
+        A single transaction's amount is correctly bounded to 12 digits,
+        but current_balance is the SUM of arbitrarily many valid rows -
+        e.g. two individually valid 9,000,000,000.00 credits sum to
+        18,000,000,000.00, which is a perfectly valid ledger balance that
+        must not fail response validation merely because it exceeds one
+        row's own storage range. decimal_places=2 is kept since every
+        summand shares that scale, so the sum always does too.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -283,11 +293,12 @@ class AccountResponse(AccountBase):
     user_id: UUID
 
     current_balance: Decimal = Field(
-        max_digits=12,
         decimal_places=2,
         description=(
             "Current balance, computed from the account_transactions "
-            "ledger. Read-only. May be negative, zero, or positive."
+            "ledger. Read-only. May be negative, zero, or positive, and "
+            "may exceed a single transaction's own NUMERIC(12,2) range "
+            "since it is a sum of arbitrarily many rows."
         ),
         examples=["874.50"],
     )
