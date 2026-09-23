@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Numeric, String, func
+from sqlalchemy import CheckConstraint, Date, DateTime, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,12 +46,17 @@ class IncomeModel(Base):
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
 
-    Note (VF-017C): this table has no account_id column. Linking an
-    Income to an Account is deferred to VF-017D, which will also make
-    that link atomically synchronize an AccountTransaction - adding
-    account_id here first, before that link has any effect on Account
-    balance, would make the field semantically false (see
-    income_schemas.py for the full rationale).
+    Note (VF-017D): this table still has no account_id column, even
+    though Income can now be linked to an Account. Income is the
+    canonical record; its link to an Account is represented entirely by
+    an AccountTransaction row (kind="income") whose income_id points back
+    here - see account_transaction_models.py. Storing account_id on both
+    sides would create two independently-writable copies of the same
+    fact, exactly the "two sources of business truth" this design
+    deliberately avoids. The public API still exposes a read-only,
+    derived account_id on IncomeResponse - see income_service.py's
+    _build_income_response and account_transaction_repository.py's
+    get_income_projection/get_income_account_links_for_user.
     """
 
     __tablename__ = "income"
@@ -77,6 +82,11 @@ class IncomeModel(Base):
             "AND fx_rate_date IS NOT NULL AND fx_source IS NOT NULL)",
             name="ck_income_fx_snapshot_all_or_none",
         ),
+        # Composite-unique FK target (VF-017D): lets account_transactions
+        # carry a (income_id, user_id) -> income(id, user_id) foreign key,
+        # so a cross-user Income<->Account link is impossible to construct
+        # at the database level, not only the service level.
+        UniqueConstraint("id", "user_id", name="uq_income_id_user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

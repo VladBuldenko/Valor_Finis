@@ -35,6 +35,7 @@ from app.modules.goals.goal_errors import (
     GoalNotFoundError,
 )
 from app.modules.income.income_errors import (
+    IncomeAccountCurrencyMismatchError,
     IncomeFutureDatedNotSupportedError,
     IncomeNotFoundError,
 )
@@ -158,6 +159,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     IncomeFutureDatedNotSupportedError: (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "A foreign-currency income cannot be dated in the future.",
+    ),
+    IncomeAccountCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Income currency must match the account's currency to link them.",
     ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
