@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, String, func
+from sqlalchemy import CheckConstraint, DateTime, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,6 +59,11 @@ class AccountModel(Base):
             "status IN ('active','archived')",
             name="ck_accounts_status_valid",
         ),
+        # Composite-unique FK target (VF-017D): lets account_transactions
+        # carry a (account_id, user_id) -> accounts(id, user_id) foreign
+        # key, so a cross-user Income<->Account link is impossible to
+        # construct at the database level, not only the service level.
+        UniqueConstraint("id", "user_id", name="uq_accounts_id_user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

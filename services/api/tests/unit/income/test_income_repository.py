@@ -113,9 +113,8 @@ def test_update_income_applies_fields_and_snapshot(clean_database: None) -> None
 
         updated = income_repository.update_income(
             db_session=db_session,
-            income_id=income.id,
+            income_model=income,
             income_data=IncomeUpdate(amount=Decimal("3000.00")),
-            user_id=user_id,
             base_amount=Decimal("3000.00"),
             base_currency="EUR",
             fx_rate=Decimal("1.00000000"),
@@ -142,11 +141,59 @@ def test_delete_income_removes_record(clean_database: None) -> None:
         income = _create_income(db_session, user_id)
 
         income_repository.delete_income(
-            db_session=db_session, income_id=income.id, user_id=user_id,
+            db_session=db_session, income_model=income,
         )
 
         with pytest.raises(IncomeNotFoundError):
             income_repository.get_income_by_id(
+                db_session=db_session, income_id=income.id, user_id=user_id,
+            )
+    finally:
+        db_session.close()
+
+
+# Tests that get_income_by_id_for_update returns the owned income record,
+# locked.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the correct IncomeModel instance is
+#   returned.
+def test_get_income_by_id_for_update_returns_owned_income(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        income = _create_income(db_session, user_id)
+
+        locked = income_repository.get_income_by_id_for_update(
+            db_session=db_session, income_id=income.id, user_id=user_id,
+        )
+
+        assert locked.id == income.id
+        assert locked.user_id == user_id
+    finally:
+        db_session.close()
+
+
+# Tests that get_income_by_id_for_update raises IncomeNotFoundError for a
+# missing or other-user income record.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if IncomeNotFoundError is raised.
+def test_get_income_by_id_for_update_raises_not_found_for_other_user(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    try:
+        income = _create_income(db_session, other_user_id)
+
+        with pytest.raises(IncomeNotFoundError):
+            income_repository.get_income_by_id_for_update(
                 db_session=db_session, income_id=income.id, user_id=user_id,
             )
     finally:

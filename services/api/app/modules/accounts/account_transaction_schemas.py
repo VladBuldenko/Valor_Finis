@@ -65,8 +65,13 @@ class AccountTransactionResponse(BaseModel):
         The kind Literal here is deliberately wider than
         AccountTransactionCreate's (which has no kind field at all): GET
         history must be able to represent the opening_balance row created
-        at account creation, even though clients can never create one
-        directly through this API.
+        at account creation and the income row created by linking an
+        Income (VF-017D), even though clients can never create either
+        directly through this API. Widening this Literal to add "income"
+        is additive at the type level, but callers that switch
+        exhaustively on kind must still be updated to tolerate the new
+        value - it is not claimed to be a transparent, zero-effort change
+        for every possible client.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -75,7 +80,7 @@ class AccountTransactionResponse(BaseModel):
     account_id: UUID
     user_id: UUID
 
-    kind: Literal["opening_balance", "adjustment"] = Field(
+    kind: Literal["opening_balance", "adjustment", "income"] = Field(
         description="What kind of ledger event this row represents.",
         examples=["adjustment"],
     )
@@ -101,6 +106,16 @@ class AccountTransactionResponse(BaseModel):
         default=None,
         description="Optional free-text note.",
         examples=["Bank fee correction"],
+    )
+
+    income_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "If this row is a synchronized Income projection (kind="
+            "\"income\"), the source Income's id. Null for direct "
+            "opening_balance/adjustment rows."
+        ),
+        examples=[None],
     )
 
     created_at: datetime

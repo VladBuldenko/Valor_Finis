@@ -41,13 +41,17 @@ class IncomeBase(BaseModel):
     Why:
         Prevents duplication between create and response schemas.
 
-        Deliberately has NO account_id field (VF-017C). An account_id
-        field would claim "this income belongs to Account X" while
-        having zero effect on that Account's balance in this slice -
-        linking Income to an Account only becomes meaningful once it
-        atomically creates/synchronizes an AccountTransaction, which is
-        VF-017D's job, not this one. Adding the field now, unused, would
-        be a semantically false contract.
+        account_id is deliberately NOT part of this shared base
+        (VF-017D): it means something different in each context -
+        writable linkage-intent on IncomeCreate/IncomeUpdate, versus a
+        derived, database-computed, read-only value on IncomeResponse.
+        Income has no account_id database column at all (see
+        income_models.py) - the response's account_id is resolved from
+        the AccountTransaction projection at read time, never persisted
+        on income. Declaring account_id three times, once per schema
+        with the right semantics each time, is more honest than a shared
+        field that would need extra config to paper over that
+        difference.
     """
 
     amount: Decimal = Field(
@@ -106,9 +110,27 @@ class IncomeCreate(IncomeBase):
         come from authentication data. The five FX snapshot fields are
         not accepted either (extra="forbid" rejects them) - they are
         always backend-resolved (see income_service.create_income).
+
+        account_id (VF-017D) is optional: an Income need not be linked to
+        an Account at all. When given, the Income and its
+        AccountTransaction projection are created atomically - Income's
+        own currency must exactly match the target Account's currency
+        (no FX conversion between Income and Account), the Account must
+        belong to the authenticated user, and it must not be archived.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional Account to link this Income to. The Account must "
+            "belong to the authenticated user, must not be archived, and "
+            "its currency must exactly match this Income's currency. "
+            "Omit to create an unlinked Income."
+        ),
+        examples=[None],
+    )
 
 
 class IncomeUpdate(BaseModel):
@@ -122,9 +144,31 @@ class IncomeUpdate(BaseModel):
         Allows users to update only selected income fields while
         preventing empty update requests and invalid null values for
         required fields.
+
+        account_id (VF-017D) has three-state PATCH semantics, matching
+        the existing Expense.category_id convention exactly: absent from
+        the request (not in model_fields_set) leaves the current linkage
+        untouched; a UUID attaches (if currently unlinked) or moves (if
+        already linked elsewhere); explicit null detaches. It is
+        deliberately excluded from the "cannot be null" validation below
+        - unlike every other field here, null is a meaningful, valid
+        value for account_id. The final state (not each field in
+        isolation) is what gets validated - e.g. changing currency and
+        account_id in the same request is evaluated against the
+        resulting combination, not against intermediate states (see
+        income_service.update_income).
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Attach/move (a UUID), detach (explicit null), or leave "
+            "unchanged (omit this field entirely)."
+        ),
+        examples=[None],
+    )
 
     amount: Optional[Decimal] = Field(
         default=None,
@@ -226,12 +270,32 @@ class IncomeResponse(IncomeBase):
         populated together for every row - still modeled as Optional to
         keep the response schema an honest mirror of the nullable-together
         database columns, not because an unresolved Income can exist.
+
+        account_id (VF-017D) is read-only and fully derived: Income has
+        no account_id database column (see income_models.py), so this
+        value is resolved from the AccountTransaction projection at read
+        time - null means unlinked. Because this field cannot be
+        populated by ORM attribute access, IncomeResponse.model_validate
+        (income_model) is no longer sufficient on its own for building a
+        response - every create/update/read path must go through
+        income_service._build_income_response, which supplies the
+        already-resolved account_id explicitly.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     user_id: UUID
+
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "The Account this Income is currently linked to, derived "
+            "from its AccountTransaction projection. Read-only. Null "
+            "means unlinked."
+        ),
+        examples=[None],
+    )
 
     base_amount: Optional[Decimal] = Field(
         default=None,
