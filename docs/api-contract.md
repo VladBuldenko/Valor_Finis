@@ -1686,7 +1686,181 @@ Transaction history is returned newest first, ordered by
 transaction_date DESC, then created_at DESC, then id DESC for
 deterministic output.
 
-12. Error Contract
+12. Income
+
+Base path:
+
+/api/v1/income
+
+Endpoints
+
+Method
+
+Path
+
+Success
+
+POST
+
+/api/v1/income
+
+201
+
+GET
+
+/api/v1/income
+
+200
+
+PATCH
+
+/api/v1/income/{income_id}
+
+200
+
+DELETE
+
+/api/v1/income/{income_id}
+
+204
+
+VF-017C scope: Income represents money the user received - salary,
+freelance payment, refund, gift, or other. Income is completely
+independent of Account in this slice: creating, updating, or deleting an
+Income record does NOT change any Account balance, and there is no
+account_id field anywhere in the Income contract. Linking Income to an
+Account, in a way that actually affects that Account's balance
+atomically, is VF-017D's job, not this one - adding an account_id field
+before that link has any effect would claim a relationship that does not
+exist yet. There is no GET /api/v1/income/{income_id} endpoint, matching
+the Goals/Accounts pattern. Income does not have its own category - the
+`source` field (see below) is the only classification VF-017C provides.
+
+Source values (closed set, DB-enforced via CHECK):
+
+salary
+freelance
+refund
+gift
+other
+
+FX snapshot model: base_amount, base_currency, fx_rate, fx_rate_date, and
+fx_source are READ-ONLY on every Income endpoint - sending any of them on
+POST /api/v1/income or PATCH /api/v1/income/{income_id} is rejected
+(extra fields are forbidden). They reuse the exact same FX architecture
+Expense already established (VF-014B5C): at create/update time, the
+service resolves `currency` + `amount` + `received_at` into a historical
+FX snapshot via the shared fx_service/financial_settings infrastructure
+and persists it - analytics/read paths never recompute FX. When
+`currency` equals the user's base currency, this resolves instantly and
+deterministically to base_amount = amount, fx_rate = 1, fx_source =
+"identity" (no network call). A foreign currency resolves the historical
+official rate in effect on received_at, using the same bounded-lookback
+provider logic Expense already uses. There is no legacy-unresolved case
+for Income (unlike Expense, which has pre-FX rows): every Income row
+always has a complete snapshot.
+
+Future-dated foreign income: a foreign-currency Income dated after today
+is rejected with 422 and the message "A foreign-currency income cannot be
+dated in the future." - a distinct message from Expense's own
+"A foreign-currency expense cannot be dated in the future.", both mapped
+from their own domain-specific error class even though the underlying FX
+resolution logic that detects this condition is fully shared,
+unduplicated code. A future-dated identity (base-currency) income is
+accepted - the future-date restriction only protects historical rate
+lookups, which an identity conversion never needs.
+
+PATCH FX re-resolution rules: when amount, currency, or received_at is
+present in the request, the FX snapshot is recomputed - amount alone
+reuses the existing resolved rate (only base_amount is recomputed);
+currency and/or received_at changing triggers a full fresh resolution.
+When only source and/or description change, the existing snapshot is
+copied unchanged and the FX provider is never called.
+
+Create Income
+
+POST /api/v1/income
+
+Request:
+
+{
+  "amount": "2500.00",
+  "currency": "EUR",
+  "received_at": "2026-09-23",
+  "source": "salary",
+  "description": "September salary"
+}
+
+Fields:
+
+Field
+
+Required
+
+Notes
+
+amount
+
+yes
+
+greater than 0
+
+currency
+
+no
+
+default EUR; normalized to uppercase, 3 alphabetic characters
+
+received_at
+
+yes
+
+date the money was actually received
+
+source
+
+yes
+
+salary, freelance, refund, gift, or other
+
+description
+
+no
+
+optional free-text note, up to 500 characters
+
+Income Response
+
+Returns the income fields plus:
+
+id
+user_id
+base_amount
+base_currency
+fx_rate
+fx_rate_date
+fx_source
+created_at
+updated_at
+
+base_amount/base_currency/fx_rate/fx_rate_date/fx_source are backend-
+derived from the persisted historical FX snapshot at write time,
+read-only, and never accepted as input. They are resolved and persisted
+once at create/update time; read paths (GET /income, GET /income/{id}
+equivalents) never recompute FX. This is not a ledger - Income has no
+AccountTransaction relationship in VF-017C (see above); "ledger-derived"
+describes Goal/Account balances (computed by summing many rows), which
+does not apply here.
+
+Income does not yet feed any analytics endpoint. There is no cash-flow,
+net-income, or net-worth analytics surface in VF-017C - the existing
+Spending Forecast endpoint explicitly remains expense-only and continues
+to document itself as "never a cash-flow/income/savings/net-worth
+forecast." If a genuine income-aware analytics surface is built later,
+it will be new endpoints, not a silent change to what any existing
+endpoint's numbers mean.
+
+13. Error Contract
 
 Domain errors use a consistent JSON shape:
 
@@ -1755,6 +1929,7 @@ Important current domain mappings include:
 404  Budget not found.
 404  Goal not found.
 404  Account not found.
+404  Income not found.
 404  Receipt not found.
 404  Linked expense not found.
 404  Receipt file not found.
@@ -1773,6 +1948,7 @@ Important current domain mappings include:
 413  Receipt file is too large.
 415  Receipt file type is not supported.
 
+422  A foreign-currency income cannot be dated in the future.
 422  Receipt file is empty.
 422  Receipt OCR processing failed.
 422  Required receipt confirmation data is missing.
@@ -1781,7 +1957,7 @@ Important current domain mappings include:
 
 Pydantic/FastAPI request validation errors also return HTTP 422.
 
-13. Client Integration Rules
+14. Client Integration Rules
 
 Web and mobile clients should follow these rules:
 
@@ -1801,7 +1977,7 @@ Do not create a second expense after successful receipt confirmation.
 
 Use /docs as the detailed runtime schema reference.
 
-14. Contract Source of Truth
+15. Contract Source of Truth
 
 The public contract is defined by:
 

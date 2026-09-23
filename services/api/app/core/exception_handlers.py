@@ -34,6 +34,10 @@ from app.modules.goals.goal_errors import (
     GoalInsufficientFundsError,
     GoalNotFoundError,
 )
+from app.modules.income.income_errors import (
+    IncomeFutureDatedNotSupportedError,
+    IncomeNotFoundError,
+)
 from app.modules.receipts.receipt_errors import (
     ReceiptAlreadyConfirmedError,
     ReceiptConfirmationDataMissingError,
@@ -146,6 +150,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalDeletionNotAllowedError: (
         status.HTTP_409_CONFLICT,
         "Goal with transaction history cannot be deleted. Archive it instead.",
+    ),
+    IncomeNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Income not found.",
+    ),
+    IncomeFutureDatedNotSupportedError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "A foreign-currency income cannot be dated in the future.",
     ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
