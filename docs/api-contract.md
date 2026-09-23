@@ -1679,8 +1679,22 @@ Account Transaction Response
   "amount": "50.00",
   "transaction_date": "2026-09-23",
   "description": null,
+  "income_id": null,
   "created_at": "2026-09-23T10:00:00Z"
 }
+
+`kind` is one of `opening_balance`, `adjustment`, or `income` (VF-017D
+adds `income` - an additive change to this Literal; clients that switch
+exhaustively on `kind` must be updated to tolerate the new value, it is
+not claimed to be transparent for every possible client). `income_id` is
+non-null only on a `kind="income"` row, and identifies the source Income
+this row is a synchronized projection of - null on every direct
+`opening_balance`/`adjustment` row. There is still no PATCH/DELETE
+endpoint for an individual transaction, for either direct or
+Income-backed rows: an `income`-kind row can be created/updated/deleted
+ONLY as a side effect of the corresponding Income create/PATCH/DELETE
+(see the Income section below) - direct rows remain immutable exactly as
+before.
 
 Transaction history is returned newest first, ordered by
 transaction_date DESC, then created_at DESC, then id DESC for
@@ -1724,17 +1738,26 @@ DELETE
 
 204
 
-VF-017C scope: Income represents money the user received - salary,
-freelance payment, refund, gift, or other. Income is completely
-independent of Account in this slice: creating, updating, or deleting an
-Income record does NOT change any Account balance, and there is no
-account_id field anywhere in the Income contract. Linking Income to an
-Account, in a way that actually affects that Account's balance
-atomically, is VF-017D's job, not this one - adding an account_id field
-before that link has any effect would claim a relationship that does not
-exist yet. There is no GET /api/v1/income/{income_id} endpoint, matching
-the Goals/Accounts pattern. Income does not have its own category - the
-`source` field (see below) is the only classification VF-017C provides.
+Income represents money the user received - salary, freelance payment,
+refund, gift, or other. There is no GET /api/v1/income/{income_id}
+endpoint, matching the Goals/Accounts pattern. Income does not have its
+own category - the `source` field (see below) is the only classification
+this domain provides.
+
+Account linkage (VF-017D): Income may optionally be linked to an
+Account via `account_id` on POST/PATCH. Income remains the canonical
+record - linking it creates a synchronized AccountTransaction ledger
+projection (kind="income", direction="credit") in the linked Account,
+which is how that Account's balance comes to reflect it (Account
+balance is always SUM(credits) - SUM(debits) over its
+account_transactions rows - see the Accounts section above). `account_id`
+has NO database column on income at all: the value returned on
+IncomeResponse is derived from that projection at read time, never
+persisted on the Income row itself. Linking is allowed only when
+Income.currency exactly matches Account.currency (after normalization) -
+there is no FX conversion between Income and Account; Income's own
+base-currency FX snapshot (below) is a completely separate, unrelated
+concern untouched by linking.
 
 Source values (closed set, DB-enforced via CHECK):
 
@@ -1788,7 +1811,8 @@ Request:
   "currency": "EUR",
   "received_at": "2026-09-23",
   "source": "salary",
-  "description": "September salary"
+  "description": "September salary",
+  "account_id": null
 }
 
 Fields:
@@ -1829,12 +1853,47 @@ no
 
 optional free-text note, up to 500 characters
 
+account_id
+
+no
+
+optional Account to link this Income to; the Account must belong to the
+authenticated user, must not be archived, and its currency must exactly
+match this Income's currency
+
+Update Income
+
+PATCH /api/v1/income/{income_id}
+
+`account_id` has three-state PATCH semantics, matching the existing
+Expense.category_id convention exactly: absent from the request leaves
+the current linkage untouched; a UUID attaches (if currently unlinked)
+or moves (if already linked elsewhere); explicit `null` detaches. The
+PATCH is evaluated against its FINAL resulting state, not field-by-field
+in isolation - e.g. changing `currency` and `account_id` together in one
+request is validated against the combination that results, so an
+EUR Income on an EUR Account can move to a USD Account while also
+changing to USD in the same request, as long as the final currency
+matches the final Account. There is no silent auto-detach: a currency
+change that would leave the Income linked to a now-mismatched Account is
+rejected outright (422), never resolved by detaching on the client's
+behalf.
+
+Archived-Account rule: rejected only when the PATCH would add NEW
+activity to an Account - attaching, or moving INTO an archived Account
+(409, the existing "Archived account cannot receive new transactions."
+message). Amount/received_at corrections to an Income already linked to
+an Account that was archived afterward are allowed (this is maintaining
+existing history, not new activity), as is detaching from, deleting from,
+or moving OUT of an archived Account.
+
 Income Response
 
 Returns the income fields plus:
 
 id
 user_id
+account_id
 base_amount
 base_currency
 fx_rate
@@ -1843,14 +1902,18 @@ fx_source
 created_at
 updated_at
 
+account_id is read-only and fully derived (VF-017D): Income has no
+account_id database column at all, so this value is resolved from the
+AccountTransaction projection at read time - null means unlinked.
+
 base_amount/base_currency/fx_rate/fx_rate_date/fx_source are backend-
 derived from the persisted historical FX snapshot at write time,
 read-only, and never accepted as input. They are resolved and persisted
 once at create/update time; read paths (GET /income, GET /income/{id}
-equivalents) never recompute FX. This is not a ledger - Income has no
-AccountTransaction relationship in VF-017C (see above); "ledger-derived"
-describes Goal/Account balances (computed by summing many rows), which
-does not apply here.
+equivalents) never recompute FX. This snapshot is unrelated to Account
+linkage - "ledger-derived" describes Goal/Account balances (computed by
+summing many rows); Income's own amount/currency are never revalued
+through the Account link, only through this independent FX mechanism.
 
 Income does not yet feed any analytics endpoint. There is no cash-flow,
 net-income, or net-worth analytics surface in VF-017C - the existing
@@ -1949,6 +2012,7 @@ Important current domain mappings include:
 415  Receipt file type is not supported.
 
 422  A foreign-currency income cannot be dated in the future.
+422  Income currency must match the account's currency to link them.
 422  Receipt file is empty.
 422  Receipt OCR processing failed.
 422  Required receipt confirmation data is missing.
