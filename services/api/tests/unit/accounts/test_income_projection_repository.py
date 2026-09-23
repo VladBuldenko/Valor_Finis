@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.db.database_session import SessionLocal
 from app.modules.accounts import account_repository, account_transaction_repository
 from app.modules.accounts.account_schemas import AccountCreate
+from app.modules.accounts.account_transaction_models import AccountTransactionModel
 from app.modules.income.income_models import IncomeModel
 
 
@@ -262,5 +263,128 @@ def test_get_income_account_links_for_user_ownership_isolation(
             db_session=db_session, user_id=user_id,
         )
         assert links == {income.id: account.id}
+    finally:
+        db_session.close()
+
+
+# Tests that update_income_projection refuses to mutate a direct
+# adjustment row (not an Income projection).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if a ValueError is raised and the row's
+#   amount/account_id/transaction_date are unchanged afterward.
+def test_update_income_projection_rejects_direct_adjustment_row(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        direct_row = account_transaction_repository.create_transaction(
+            db_session=db_session, account_id=account.id, user_id=user_id,
+            kind="adjustment", direction="credit", amount=Decimal("100.00"),
+            transaction_date=date(2026, 9, 1), description=None,
+        )
+
+        try:
+            account_transaction_repository.update_income_projection(
+                db_session=db_session, projection=direct_row, amount=Decimal("999.00"),
+            )
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+        db_session.refresh(direct_row)
+        assert direct_row.amount == Decimal("100.00")
+        assert direct_row.account_id == account.id
+        assert direct_row.transaction_date == date(2026, 9, 1)
+    finally:
+        db_session.close()
+
+
+# Tests that delete_income_projection refuses to delete a direct
+# adjustment row (not an Income projection).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if a ValueError is raised and the row still
+#   exists in the database afterward.
+def test_delete_income_projection_rejects_direct_adjustment_row(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        direct_row = account_transaction_repository.create_transaction(
+            db_session=db_session, account_id=account.id, user_id=user_id,
+            kind="adjustment", direction="credit", amount=Decimal("100.00"),
+            transaction_date=date(2026, 9, 1), description=None,
+        )
+        direct_row_id = direct_row.id
+
+        try:
+            account_transaction_repository.delete_income_projection(
+                db_session=db_session, projection=direct_row,
+            )
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+        still_exists = (
+            db_session.query(AccountTransactionModel)
+            .filter(AccountTransactionModel.id == direct_row_id)
+            .first()
+        )
+        assert still_exists is not None
+    finally:
+        db_session.close()
+
+
+# Tests that update_income_projection and delete_income_projection also
+# refuse an opening_balance-kind row, as defense-in-depth alongside the
+# adjustment-kind coverage above.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if both calls raise ValueError and the row is
+#   left completely unchanged.
+def test_projection_mutators_reject_direct_opening_balance_row(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        direct_row = account_transaction_repository.create_transaction(
+            db_session=db_session, account_id=account.id, user_id=user_id,
+            kind="opening_balance", direction="credit", amount=Decimal("500.00"),
+            transaction_date=date(2026, 9, 1), description=None,
+        )
+        direct_row_id = direct_row.id
+
+        try:
+            account_transaction_repository.update_income_projection(
+                db_session=db_session, projection=direct_row, amount=Decimal("999.00"),
+            )
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+        try:
+            account_transaction_repository.delete_income_projection(
+                db_session=db_session, projection=direct_row,
+            )
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+        db_session.refresh(direct_row)
+        assert direct_row.id == direct_row_id
+        assert direct_row.amount == Decimal("500.00")
     finally:
         db_session.close()

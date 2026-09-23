@@ -258,6 +258,38 @@ def get_income_projection(
     )
 
 
+# Validates that a projection given to update_income_projection or
+# delete_income_projection is actually an Income projection, before any
+# mutation or delete is issued.
+# This function exists so those two functions guard against programmer
+# misuse structurally, not merely by convention: without this check, a
+# future internal caller could accidentally pass a direct opening_balance
+# or adjustment row (e.g. from a mis-scoped query) and this repository
+# would silently mutate/delete a row that is supposed to be immutable.
+# This is an internal invariant violation, not a user-facing business
+# error - it can only happen from a programming mistake inside this
+# codebase, never from any client request, so it deliberately raises a
+# plain ValueError rather than a new domain/HTTP error class.
+# Parameters:
+# - projection: the AccountTransactionModel a caller is about to mutate
+#   or delete.
+# Returns:
+# - None.
+# Raises:
+# - ValueError: projection is not an Income projection (kind != "income"
+#   or income_id is None).
+def _validate_income_projection_for_mutation(
+    projection: AccountTransactionModel,
+) -> None:
+    if projection.kind != "income" or projection.income_id is None:
+        raise ValueError(
+            "update_income_projection/delete_income_projection may only be "
+            "called with an Income projection (kind='income', income_id "
+            "set) - refusing to mutate/delete a direct "
+            "opening_balance/adjustment row."
+        )
+
+
 # Creates the one AccountTransaction projection row for a newly-linked
 # Income.
 # This function exists as the only way a kind="income" row may be
@@ -317,12 +349,15 @@ def create_income_projection(
 # be mutated - there is deliberately no way to change kind, direction, or
 # description through it, keeping every other AccountTransaction row
 # (opening_balance, adjustment) genuinely immutable by construction, not
-# merely by convention. Passing None for a parameter leaves that field
-# unchanged - e.g. a same-Account amount/date sync passes account_id=None,
-# while a move passes the new account_id alongside the current
-# amount/transaction_date (harmless no-op writes when those did not
-# themselves change). Never commits by default, for the same
-# service-controlled-transaction reason as create_income_projection.
+# merely by convention: _validate_income_projection_for_mutation is
+# called BEFORE any field is touched, so passing a direct row here raises
+# ValueError instead of silently mutating it. Passing None for a
+# parameter leaves that field unchanged - e.g. a same-Account amount/date
+# sync passes account_id=None, while a move passes the new account_id
+# alongside the current amount/transaction_date (harmless no-op writes
+# when those did not themselves change). Never commits by default, for
+# the same service-controlled-transaction reason as
+# create_income_projection.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - projection: the already-resolved AccountTransactionModel to update
@@ -335,6 +370,9 @@ def create_income_projection(
 #   immediately.
 # Returns:
 # - Updated AccountTransactionModel instance.
+# Raises:
+# - ValueError: projection is not an Income projection - see
+#   _validate_income_projection_for_mutation.
 def update_income_projection(
     db_session: Session,
     projection: AccountTransactionModel,
@@ -343,6 +381,8 @@ def update_income_projection(
     transaction_date: Optional[date] = None,
     commit: bool = True,
 ) -> AccountTransactionModel:
+    _validate_income_projection_for_mutation(projection)
+
     if account_id is not None:
         projection.account_id = account_id
 
@@ -379,11 +419,16 @@ def update_income_projection(
 #   immediately.
 # Returns:
 # - None.
+# Raises:
+# - ValueError: projection is not an Income projection - see
+#   _validate_income_projection_for_mutation.
 def delete_income_projection(
     db_session: Session,
     projection: AccountTransactionModel,
     commit: bool = True,
 ) -> None:
+    _validate_income_projection_for_mutation(projection)
+
     db_session.delete(projection)
 
     if commit:
