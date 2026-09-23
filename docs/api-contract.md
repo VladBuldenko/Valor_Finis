@@ -1480,7 +1480,207 @@ Response item:
   "target_date": "2026-12-31"
 }
 
-11. Error Contract
+11. Accounts
+
+Base path:
+
+/api/v1/accounts
+
+Endpoints
+
+Method
+
+Path
+
+Success
+
+POST
+
+/api/v1/accounts
+
+201
+
+GET
+
+/api/v1/accounts
+
+200
+
+PATCH
+
+/api/v1/accounts/{account_id}
+
+200
+
+DELETE
+
+/api/v1/accounts/{account_id}
+
+204
+
+POST
+
+/api/v1/accounts/{account_id}/transactions
+
+201
+
+GET
+
+/api/v1/accounts/{account_id}/transactions
+
+200
+
+VF-017B scope: an Account represents where real money is held - checking,
+savings, or cash. Credit cards, debt/liability accounts, investment
+accounts, account-to-account transfers, Income, Expense <-> Account
+integration, and Goal <-> Account movement are all explicitly NOT part of
+this slice. There is no GET /api/v1/accounts/{account_id} endpoint -
+mobile detail screens resolve a single account from the list response,
+matching the established Goals pattern.
+
+Account != Budget: a Budget is a spending limit/allocation and has no
+relationship to Account cash, in this slice or any future one. An
+Account's spending never feeds Budget analytics differently based on
+whether an Expense happens to be linked to an Account - that link does
+not exist yet at all.
+
+Balance model: current_balance is READ-ONLY on every Account endpoint. It
+is not accepted by POST /api/v1/accounts or PATCH
+/api/v1/accounts/{account_id} - sending it is rejected (extra fields are
+forbidden). current_balance is computed at read time from the
+account_transactions ledger (SUM of credit amounts minus debit amounts) -
+the Account row has no balance column at all, matching the Goal ledger
+architecture. Unlike Goal.current_amount, current_balance has NO floor:
+an Account is a descriptive financial record, not a payment-authorization
+system, so a debit larger than the current balance is always allowed and
+the resulting balance may be negative, zero, or positive.
+
+Opening balance: a real pre-existing account is onboarded by sending an
+optional signed opening_balance (and optional opening_balance_date) on
+POST /api/v1/accounts. A positive value creates one immutable credit
+opening_balance transaction; a negative value creates one immutable debit
+opening_balance transaction (the stored ledger amount itself is always
+positive - direction carries the sign); omitted or exactly 0 creates no
+transaction at all. The Account row and its opening_balance transaction
+are created atomically in one database transaction. opening_balance is
+create-input only - it is never returned as an Account field, and at most
+one opening_balance transaction can ever exist per account.
+
+Manual adjustments: POST /api/v1/accounts/{account_id}/transactions
+accepts only direction, amount, transaction_date, and an optional
+description - there is no kind field on this request at all. The backend
+always creates kind="adjustment"; opening_balance is unreachable through
+this endpoint (it is created exactly once, atomically, via
+POST /api/v1/accounts). There is no PATCH or DELETE endpoint for an
+individual account transaction: every direct transaction (opening_balance
+and adjustment) is immutable once created. Corrections are made with a
+compensating adjustment, never an edit.
+
+Lifecycle rules:
+
+Currency is editable only while an Account has no transaction history.
+Once any AccountTransaction exists, an actual currency change is
+rejected with 409 ("Account currency cannot be changed after transaction
+history exists."). Resending the account's current currency (any casing)
+is a no-op and is always allowed, even with history.
+
+An Account with no transaction history deletes normally (204). An
+Account with any transaction history cannot be deleted (409, "Account
+with transaction history cannot be deleted. Archive it instead.") -
+archive it instead via PATCH status="archived".
+
+Archiving (PATCH status="archived") remains possible regardless of
+transaction history, and an archived account's balance and full history
+remain fully readable. A new manual adjustment into an archived account
+is rejected with 409 ("Archived account cannot receive new
+transactions."). Reactivating (PATCH status="active") allows new
+adjustments again.
+
+Create Account
+
+POST /api/v1/accounts
+
+Request:
+
+{
+  "name": "Main Checking",
+  "type": "checking",
+  "currency": "EUR",
+  "opening_balance": "1000.00",
+  "opening_balance_date": "2026-09-23"
+}
+
+Fields:
+
+Field
+
+Required
+
+Notes
+
+name
+
+yes
+
+1-120 characters, trimmed
+
+type
+
+yes
+
+checking, savings, or cash
+
+currency
+
+no
+
+default EUR; normalized to uppercase, 3 alphabetic characters
+
+opening_balance
+
+no
+
+signed Decimal; converted into one immutable opening_balance ledger
+transaction, never persisted as a field
+
+opening_balance_date
+
+no
+
+defaults to today when opening_balance is non-zero and this is omitted
+
+Account Response
+
+Returns the account fields plus:
+
+id
+user_id
+current_balance
+created_at
+updated_at
+
+current_balance is always ledger-derived, never read from a stored
+column, and may be negative.
+
+Account Transaction Response
+
+{
+  "id": "<uuid>",
+  "account_id": "<uuid>",
+  "user_id": "<uuid>",
+  "kind": "adjustment",
+  "direction": "credit",
+  "amount": "50.00",
+  "transaction_date": "2026-09-23",
+  "description": null,
+  "created_at": "2026-09-23T10:00:00Z"
+}
+
+Transaction history is returned newest first, ordered by
+transaction_date DESC, then created_at DESC, then id DESC for
+deterministic output.
+
+12. Error Contract
 
 Domain errors use a consistent JSON shape:
 
@@ -1548,6 +1748,7 @@ Important current domain mappings include:
 404  Expense not found.
 404  Budget not found.
 404  Goal not found.
+404  Account not found.
 404  Receipt not found.
 404  Linked expense not found.
 404  Receipt file not found.
@@ -1556,6 +1757,9 @@ Important current domain mappings include:
 409  Default category cannot be modified.
 409  Default category cannot be deleted.
 409  Budget with this name, period, and start date already exists for this user.
+409  Account currency cannot be changed after transaction history exists.
+409  Account with transaction history cannot be deleted. Archive it instead.
+409  Archived account cannot receive new transactions.
 409  Receipt cannot be processed in its current status.
 409  Receipt cannot be confirmed in its current status.
 409  Receipt has already been confirmed.
@@ -1571,7 +1775,7 @@ Important current domain mappings include:
 
 Pydantic/FastAPI request validation errors also return HTTP 422.
 
-12. Client Integration Rules
+13. Client Integration Rules
 
 Web and mobile clients should follow these rules:
 
@@ -1591,7 +1795,7 @@ Do not create a second expense after successful receipt confirmation.
 
 Use /docs as the detailed runtime schema reference.
 
-13. Contract Source of Truth
+14. Contract Source of Truth
 
 The public contract is defined by:
 
