@@ -13,6 +13,7 @@ expenses
 budgets
 goals
 accounts
+income
 receipts
 
 Valor Finis does not currently store application users in a local users table.
@@ -104,6 +105,18 @@ erDiagram
         VARCHAR type
         VARCHAR currency
         VARCHAR status
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
+    INCOME {
+        UUID id PK
+        UUID user_id
+        NUMERIC amount
+        VARCHAR currency
+        DATE received_at
+        VARCHAR source
+        VARCHAR description
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -994,7 +1007,7 @@ Stores real-world places a user's money is held: a checking account, a
 savings account, or cash. VF-017B scope only - credit cards, debt/
 liability accounts, and investment accounts are explicitly out of scope.
 An Account is distinct from a Budget (a spending limit, never a cash
-source - see 12. Application-Enforced Invariants) and from a Goal (an
+source - see 13. Application-Enforced Invariants) and from a Goal (an
 aspirational target, not yet connected to any cash source in this
 slice).
 
@@ -1273,7 +1286,195 @@ non-zero opening_balance on POST /api/v1/accounts. No migration backfill
 exists for this table - accounts is a brand-new table with no
 pre-existing balance to migrate from.
 
-8. Receipts
+8. Income
+
+Table:
+
+income
+
+Purpose:
+
+Stores money the user received - salary, freelance payment, refund,
+gift, or other (VF-017C). Independent of Account in this slice: creating,
+updating, or deleting an Income row has no effect on any Account balance,
+and this table has no account_id column at all. Linking Income to an
+Account, in a way that actually changes that Account's ledger-derived
+balance atomically, is deferred to VF-017D - adding the column before
+that link has any effect would claim a relationship that does not exist
+yet. Income does not have its own category table; `source` (below) is
+the only classification this slice provides.
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+user_id
+
+UUID
+
+no
+
+Resource owner
+
+amount
+
+NUMERIC(12,2)
+
+no
+
+Amount received, in currency. Never revalued.
+
+currency
+
+VARCHAR(3)
+
+no
+
+Default EUR
+
+received_at
+
+DATE
+
+no
+
+Date the money was actually received
+
+source
+
+VARCHAR(20)
+
+no
+
+salary, freelance, refund, gift, or other
+
+description
+
+VARCHAR(500)
+
+yes
+
+Optional free-text note
+
+base_amount
+
+NUMERIC(12,2)
+
+yes
+
+amount converted to the user's base currency, using the historical rate
+in effect on received_at. Backend-derived only.
+
+base_currency
+
+VARCHAR(3)
+
+yes
+
+The base currency base_amount is denominated in
+
+fx_rate
+
+NUMERIC(18,8)
+
+yes
+
+units of base_currency per 1 unit of currency; base_amount = amount *
+fx_rate
+
+fx_rate_date
+
+DATE
+
+yes
+
+The actual published rate date used - may differ from received_at
+(weekends/holidays), never later than it
+
+fx_source
+
+VARCHAR(30)
+
+yes
+
+'identity' | 'ecb' | 'nbu'
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Server timestamp
+
+updated_at
+
+TIMESTAMPTZ
+
+no
+
+Updated automatically
+
+Constraints
+
+ck_income_amount_positive
+
+amount > 0
+
+ck_income_source_valid
+
+source IN ('salary','freelance','refund','gift','other')
+
+ck_income_base_amount_positive
+
+base_amount IS NULL OR base_amount > 0
+
+ck_income_fx_rate_positive
+
+fx_rate IS NULL OR fx_rate > 0
+
+ck_income_fx_snapshot_all_or_none
+
+The five FX columns (base_amount, base_currency, fx_rate, fx_rate_date,
+fx_source) must be either all NULL or all NOT NULL together - identical
+technique to ck_expenses_fx_snapshot_all_or_none
+
+Indexes
+
+user_id
+received_at
+
+FX architecture: this table reuses the exact same FX resolution
+infrastructure Expense established in 81d194a3e0ff/0e300e8d7162
+(app.modules.fx, financial_settings.get_base_currency) - not a new FX
+implementation. Unlike expenses, income has no legacy-unresolved rows:
+every Income row is created after this FX logic exists, so all five FX
+columns are always populated together for every row (the all-or-none
+CHECK still exists at the database level as the same structural
+guarantee Expense has, but in practice the "all NULL" branch is never hit
+for Income). Currency identity (currency == base currency) resolves
+instantly to fx_rate = 1, fx_source = "identity", with no network call. A
+foreign-dated future income is rejected before any resolution is
+attempted - see docs/api-contract.md's Income section for the exact
+public error message, which is deliberately distinct from Expense's own
+message even though the underlying detection logic is fully shared.
+
+No production/backfill logic exists for this table - income is a
+brand-new table with no pre-existing data to migrate.
+
+9. Receipts
 
 Table:
 
@@ -1445,7 +1646,7 @@ storage_path
 
 is currently enforced by the application schema rather than by a PostgreSQL constraint.
 
-8.1 User Financial Settings
+9.1 User Financial Settings
 
 Table:
 
@@ -1524,7 +1725,7 @@ is a deliberately deferred, unresolved product decision (see the VF-014B5
 architecture discovery report), not something this table's shape commits
 to either way.
 
-9. Ownership Model
+10. Ownership Model
 
 All main entities contain:
 
@@ -1543,7 +1744,7 @@ AND user_id = :authenticated_user_id
 
 This rule is part of the security model.
 
-10. Relationship Summary
+11. Relationship Summary
 
 categories
    │
@@ -1596,7 +1797,7 @@ Receipt.expense_id = NULL
 
 No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it. A Goal or an Account with transaction history cannot be deleted at all.
 
-11. Database-Enforced Invariants
+12. Database-Enforced Invariants
 
 PostgreSQL currently protects these important rules directly:
 
@@ -1631,6 +1832,12 @@ AccountTransaction.direction is one of credit/debit
 At most one AccountTransaction with kind = 'opening_balance' per account
 (partial unique index)
 
+Income.amount > 0
+Income.source is one of salary/freelance/refund/gift/other
+Income.base_amount > 0 when present
+Income.fx_rate > 0 when present
+Income's five FX snapshot columns are all NULL or all NOT NULL together
+
 A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
 
 A goal still referenced by a goal_transactions row cannot be deleted (ON DELETE RESTRICT)
@@ -1639,7 +1846,7 @@ An account still referenced by an account_transactions row cannot be deleted (ON
 
 These constraints protect data even if an application-layer validation path is bypassed.
 
-12. Application-Enforced Invariants
+13. Application-Enforced Invariants
 
 Some rules require business context and are currently enforced by Pydantic/service logic rather than directly by PostgreSQL.
 
@@ -1699,6 +1906,13 @@ Referenced category belongs to authenticated user
 
 Referenced expense belongs to authenticated user
 
+A foreign-currency Income dated in the future is rejected outright (no
+estimated rate is ever persisted as if it were historical fact) - a
+base-currency (identity) Income has no such restriction, since identity
+conversion needs no historical rate at all. Mirrors Expense's identical
+rule exactly, reusing the same fx_service logic, but surfaces its own
+distinct public error message (see docs/api-contract.md).
+
 This separation is intentional:
 
 Database
@@ -1709,7 +1923,7 @@ Application
     ↓
 protects contextual business rules
 
-13. Transactions
+14. Transactions
 
 The most important multi-entity transaction is receipt confirmation.
 
@@ -1729,7 +1943,7 @@ ROLLBACK
 
 The database must never contain a partially confirmed receipt workflow.
 
-14. Migration Strategy
+15. Migration Strategy
 
 Schema changes are managed only through Alembic.
 
@@ -1759,7 +1973,7 @@ CI applies all migrations before running integration tests.
 
 Current schema can be reconstructed from an empty PostgreSQL database through the Alembic migration chain.
 
-15. Design Principles
+16. Design Principles
 
 Database design follows these rules:
 
@@ -1783,7 +1997,7 @@ Indexes should support real query patterns.
 
 Data integrity takes priority over convenience.
 
-16. Current Schema
+17. Current Schema
 
 PostgreSQL
 │
@@ -1814,6 +2028,9 @@ PostgreSQL
 ├── account_transactions
 │   ├── PK id
 │   └── FK account_id → accounts (ON DELETE RESTRICT)
+│
+├── income
+│   └── PK id
 │
 ├── receipts
 │   ├── PK id
