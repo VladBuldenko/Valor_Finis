@@ -12,6 +12,7 @@ categories
 expenses
 budgets
 goals
+accounts
 receipts
 
 Valor Finis does not currently store application users in a local users table.
@@ -92,6 +93,17 @@ erDiagram
         NUMERIC total_amount_detected
         VARCHAR currency_detected
         DATE purchase_date_detected
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
+    ACCOUNTS {
+        UUID id PK
+        UUID user_id
+        VARCHAR name
+        VARCHAR type
+        VARCHAR currency
+        VARCHAR status
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -970,7 +982,298 @@ created_at = the Goal's own created_at) when this table was introduced.
 Goals with current_amount == 0 received no row - no money is manufactured.
 See alembic/versions/e90a257f987b_add_goal_transactions_and_backfill.py.
 
-7. Receipts
+7. Accounts
+
+Table:
+
+accounts
+
+Purpose:
+
+Stores real-world places a user's money is held: a checking account, a
+savings account, or cash. VF-017B scope only - credit cards, debt/
+liability accounts, and investment accounts are explicitly out of scope.
+An Account is distinct from a Budget (a spending limit, never a cash
+source - see 12. Application-Enforced Invariants) and from a Goal (an
+aspirational target, not yet connected to any cash source in this
+slice).
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+user_id
+
+UUID
+
+no
+
+Resource owner
+
+name
+
+VARCHAR(120)
+
+no
+
+Not unique - a user may have multiple similarly named accounts
+
+type
+
+VARCHAR(20)
+
+no
+
+checking, savings, or cash
+
+currency
+
+VARCHAR(3)
+
+no
+
+Default EUR
+
+status
+
+VARCHAR(20)
+
+no
+
+active or archived, default active
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Server timestamp
+
+updated_at
+
+TIMESTAMPTZ
+
+no
+
+Updated automatically
+
+Constraints
+
+ck_accounts_type_valid
+
+type IN ('checking','savings','cash')
+
+ck_accounts_status_valid
+
+status IN ('active','archived')
+
+Indexes
+
+user_id
+
+The Account's balance is not stored on this table at all: it is
+computed at read time from account_transactions (see 7.1 below), never
+accepted on POST/PATCH /api/v1/accounts(/{account_id}) request bodies,
+and returned to clients as the read-only AccountResponse.current_balance
+field (see api-contract.md). Unlike Goal, there is no non-negativity
+constraint anywhere in this domain: an Account is a descriptive
+financial record, not a payment-authorization system, so its
+ledger-derived balance may be negative.
+
+Currency immutability: currency is editable only while an Account has no
+transaction history - once any AccountTransaction row exists, an actual
+currency change is rejected at the application level (see 7.1 below).
+This mirrors Goal's currency-immutability rule exactly and for the same
+reason: AccountTransaction rows do not store their own currency.
+
+Safe deletion: an Account with any transaction history cannot be
+hard-deleted through the application (account_service.delete_account
+rejects it before attempting the delete). An Account with no transaction
+history deletes normally. This is an application-level control, not a
+database constraint - see 7.1 below for the FK that backs it as
+defense-in-depth.
+
+Archiving: PATCH status="archived" remains possible regardless of
+transaction history. An archived Account's balance and full history stay
+fully readable, but a new manual adjustment transaction into it is
+rejected at the application level (see 7.1 below). Reactivating (PATCH
+status="active") allows new adjustments again.
+
+7.1 Account Transactions
+
+Table:
+
+account_transactions
+
+Purpose:
+
+Ledger of balance-affecting events for an Account. VF-017B ships exactly
+two kinds: opening_balance (recorded once, at account creation, to
+represent a real pre-existing balance) and adjustment (a direct manual
+correction/reconciliation entry). income, expense, and transfer kinds are
+intentionally deferred to a later slice, not part of this migration.
+
+This table is the only persisted source of an Account's balance: the
+accounts table has no balance column at all (see 7 above). Every public
+current_balance value - returned by POST/GET/PATCH /api/v1/accounts - is
+computed from this table at read time (SUM of credit amounts minus debit
+amounts). See account_service._build_account_response and
+account_transaction_repository.get_ledger_balances_for_user.
+GET /api/v1/accounts/{account_id}/transactions reads rows from this same
+table too, but returns transaction history, not an AccountResponse - it
+does not itself return current_balance.
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+account_id
+
+UUID
+
+no
+
+FK accounts.id ON DELETE RESTRICT
+
+user_id
+
+UUID
+
+no
+
+Denormalized owner, no FK
+
+kind
+
+VARCHAR(20)
+
+no
+
+opening_balance or adjustment (VF-017B)
+
+direction
+
+VARCHAR(10)
+
+no
+
+credit or debit - kept separate from kind (unlike GoalTransaction, where
+type implies direction) so a future income/expense/transfer kind can
+reuse the same direction concept without restructuring this column
+
+amount
+
+NUMERIC(12,2)
+
+no
+
+Always positive; direction carries the sign
+
+transaction_date
+
+DATE
+
+no
+
+The date this event actually happened
+
+description
+
+VARCHAR(500)
+
+yes
+
+Optional free-text note
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Server timestamp
+
+Constraints
+
+ck_account_transactions_amount_positive
+
+amount > 0
+
+ck_account_transactions_kind_valid
+
+kind IN ('opening_balance','adjustment')
+
+ck_account_transactions_direction_valid
+
+direction IN ('credit','debit')
+
+uq_account_transactions_one_opening_balance_per_account
+
+Partial unique index on account_id WHERE kind = 'opening_balance' -
+at most one opening_balance row per account, enforced at the database
+level
+
+Indexes
+
+user_id
+(account_id, transaction_date) - per-account transaction history,
+ordered access, and future balance aggregation
+
+Immutability: opening_balance and adjustment rows are append-only - there
+is no UPDATE/DELETE path or endpoint for either. Corrections are made
+with compensating adjustment entries, never edits - identical philosophy
+to GoalTransaction. A future slice that links income/expense source rows
+to this table will introduce a different, explicitly-scoped correction
+model for those specific rows only (kept in sync with their mutable
+source row) - not part of this migration; opening_balance and adjustment
+rows stay immutable regardless of that future change.
+
+Concurrency: every write that can race against a lifecycle change (a new
+transaction, a currency change, a delete, an archive) locks the owned
+Account row with SELECT ... FOR UPDATE first, in the same database
+transaction as the write. This mirrors Goal's row-lock discipline
+exactly, but the lock here is never used to validate a balance - an
+Account's ledger-derived balance has no floor, so two simultaneous debit
+adjustments can both succeed without either being rejected; the lock only
+serializes the lifecycle-state races (currency-change-vs-first-transaction,
+delete-vs-first-transaction, archive-vs-new-transaction), never a
+balance check. See account_repository.get_account_by_id_for_update and
+account_service.py.
+
+Opening-balance creation: unlike goal_transactions' migration-time
+backfill (a one-time historical event), account_transactions' single
+opening_balance row per account is created at normal application runtime,
+atomically with the Account row itself, whenever a client provides a
+non-zero opening_balance on POST /api/v1/accounts. No migration backfill
+exists for this table - accounts is a brand-new table with no
+pre-existing balance to migrate from.
+
+8. Receipts
 
 Table:
 
@@ -1142,7 +1445,7 @@ storage_path
 
 is currently enforced by the application schema rather than by a PostgreSQL constraint.
 
-7.1 User Financial Settings
+8.1 User Financial Settings
 
 Table:
 
@@ -1221,7 +1524,7 @@ is a deliberately deferred, unresolved product decision (see the VF-014B5
 architecture discovery report), not something this table's shape commits
 to either way.
 
-8. Ownership Model
+9. Ownership Model
 
 All main entities contain:
 
@@ -1240,7 +1543,7 @@ AND user_id = :authenticated_user_id
 
 This rule is part of the security model.
 
-9. Relationship Summary
+10. Relationship Summary
 
 categories
    │
@@ -1255,6 +1558,10 @@ budgets
 goals
    │
    └──< goal_transactions.goal_id
+
+accounts
+   │
+   └──< account_transactions.account_id
 
 expenses
    │
@@ -1278,13 +1585,18 @@ Goal deleted
 Rejected if any goal_transactions reference the goal (ON DELETE RESTRICT,
 VF-016B)
 
+Account deleted
+    ↓
+Rejected if any account_transactions reference the account (ON DELETE
+RESTRICT, VF-017B)
+
 Expense deleted
     ↓
 Receipt.expense_id = NULL
 
-No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it. A Goal with transaction history cannot be deleted at all.
+No dependent financial records are automatically deleted through these relationships, except a budget's own version history, which is deleted with it. A Goal or an Account with transaction history cannot be deleted at all.
 
-10. Database-Enforced Invariants
+11. Database-Enforced Invariants
 
 PostgreSQL currently protects these important rules directly:
 
@@ -1310,13 +1622,24 @@ BudgetVersion.change_reason is valid
 GoalTransaction.amount > 0
 GoalTransaction.type is valid
 
+Account.type is one of checking/savings/cash
+Account.status is one of active/archived
+
+AccountTransaction.amount > 0
+AccountTransaction.kind is valid
+AccountTransaction.direction is one of credit/debit
+At most one AccountTransaction with kind = 'opening_balance' per account
+(partial unique index)
+
 A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
 
 A goal still referenced by a goal_transactions row cannot be deleted (ON DELETE RESTRICT)
 
+An account still referenced by an account_transactions row cannot be deleted (ON DELETE RESTRICT)
+
 These constraints protect data even if an application-layer validation path is bypassed.
 
-11. Application-Enforced Invariants
+12. Application-Enforced Invariants
 
 Some rules require business context and are currently enforced by Pydantic/service logic rather than directly by PostgreSQL.
 
@@ -1337,6 +1660,23 @@ transaction.
 A Goal with any transaction history cannot be hard-deleted (VF-016E) -
 checked under the same row lock as above; the underlying FK RESTRICT
 remains only as defense-in-depth.
+
+Account.currency cannot actually change once the Account has any
+transaction history (VF-017B) - resending the same normalized currency is
+allowed; this is checked under the same SELECT ... FOR UPDATE lock used
+for transaction-creating writes, so it cannot race against the Account's
+first transaction. Unlike GoalTransaction withdrawals, there is
+deliberately NO equivalent "insufficient funds" rule for AccountTransaction
+debits anywhere in this domain - an Account's ledger-derived balance may
+be negative, zero, or positive with no floor.
+
+An Account with any transaction history cannot be hard-deleted (VF-017B) -
+checked under the same row lock as above; the underlying FK RESTRICT
+remains only as defense-in-depth.
+
+A new AccountTransaction cannot be created against an archived Account
+(VF-017B) - checked under the same row lock, so it cannot race against a
+concurrent archive.
 
 Budget.end_date >= Budget.start_date
 
@@ -1369,7 +1709,7 @@ Application
     ↓
 protects contextual business rules
 
-12. Transactions
+13. Transactions
 
 The most important multi-entity transaction is receipt confirmation.
 
@@ -1389,7 +1729,7 @@ ROLLBACK
 
 The database must never contain a partially confirmed receipt workflow.
 
-13. Migration Strategy
+14. Migration Strategy
 
 Schema changes are managed only through Alembic.
 
@@ -1419,7 +1759,7 @@ CI applies all migrations before running integration tests.
 
 Current schema can be reconstructed from an empty PostgreSQL database through the Alembic migration chain.
 
-14. Design Principles
+15. Design Principles
 
 Database design follows these rules:
 
@@ -1443,7 +1783,7 @@ Indexes should support real query patterns.
 
 Data integrity takes priority over convenience.
 
-15. Current Schema
+16. Current Schema
 
 PostgreSQL
 │
@@ -1467,6 +1807,13 @@ PostgreSQL
 │
 ├── goals
 │   └── PK id
+│
+├── accounts
+│   └── PK id
+│
+├── account_transactions
+│   ├── PK id
+│   └── FK account_id → accounts (ON DELETE RESTRICT)
 │
 ├── receipts
 │   ├── PK id

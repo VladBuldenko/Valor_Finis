@@ -181,6 +181,82 @@ def create_goal_transaction(
     return response.json()
 
 
+# Creates an account through the API for integration tests.
+# This helper exists to avoid repeating account setup code.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier.
+# - name: account name.
+# - type: account type.
+# - currency: account currency.
+# - opening_balance: optional signed starting balance.
+# Returns:
+# - Created account response body.
+def create_account(
+    client: TestClient,
+    user_id: str,
+    name: str = "Main Checking",
+    type: str = "checking",
+    currency: str = "EUR",
+    opening_balance: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": name,
+        "type": type,
+        "currency": currency,
+    }
+
+    if opening_balance is not None:
+        payload["opening_balance"] = opening_balance
+
+    response = client.post(
+        "/api/v1/accounts",
+        headers=auth_headers(user_id),
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+
+    return response.json()
+
+
+# Creates a manual adjustment account transaction through the API for
+# integration tests.
+# This helper exists to avoid repeating adjustment setup code, e.g. to
+# fund/drain an account before exercising a scenario that depends on a
+# specific balance.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier.
+# - account_id: account identifier to adjust.
+# - amount: adjustment amount.
+# - direction: "credit" or "debit".
+# - transaction_date: date the adjustment happened.
+# Returns:
+# - Created account transaction response body.
+def create_account_transaction(
+    client: TestClient,
+    user_id: str,
+    account_id: str,
+    amount: str = "100.00",
+    direction: str = "credit",
+    transaction_date: str = "2026-09-23",
+) -> dict[str, Any]:
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/transactions",
+        headers=auth_headers(user_id),
+        json={
+            "direction": direction,
+            "amount": amount,
+            "transaction_date": transaction_date,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    return response.json()
+
+
 # Creates a receipt through the API for integration tests.
 # This helper exists to avoid repeating receipt creation request code.
 # Parameters:

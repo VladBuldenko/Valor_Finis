@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.db.database_session import SessionLocal
 from app.main import app
+from app.modules.accounts.account_models import AccountModel
+from app.modules.accounts.account_transaction_models import AccountTransactionModel
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.categories.category_models import CategoryModel
 from app.modules.expenses.expenses_models import ExpenseModel
@@ -42,6 +44,8 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(BudgetModel).delete()
         db_session.query(GoalTransactionModel).delete()
         db_session.query(GoalModel).delete()
+        db_session.query(AccountTransactionModel).delete()
+        db_session.query(AccountModel).delete()
         db_session.query(CategoryModel).delete()
         db_session.query(UserFinancialSettingsModel).delete()
         db_session.commit()
@@ -53,6 +57,8 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(BudgetModel).delete()
         db_session.query(GoalTransactionModel).delete()
         db_session.query(GoalModel).delete()
+        db_session.query(AccountTransactionModel).delete()
+        db_session.query(AccountModel).delete()
         db_session.query(CategoryModel).delete()
         db_session.query(UserFinancialSettingsModel).delete()
         db_session.commit()
