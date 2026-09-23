@@ -1,6 +1,5 @@
 from datetime import date
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -69,25 +68,31 @@ def create_income(
 # logic. Ordering is deterministic (received_at DESC, created_at DESC,
 # id DESC) so two income records received on the same day never come back
 # in an arbitrary order between requests.
+#
+# user_id is mandatory, not optional: Income is a strictly user-owned
+# financial domain, and this repository must never expose an "all users"
+# read path, even one the current service layer happens not to call
+# today. Ownership filtering belongs in the repository primitive itself,
+# not merely in how callers happen to use it.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter income records.
+# - user_id: authenticated user identifier used to filter income records.
 # Returns:
-# - List of IncomeModel instances from the database.
+# - List of IncomeModel instances from the database, scoped to the user.
 def get_income(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[IncomeModel]:
-    query = db_session.query(IncomeModel)
-
-    if user_id is not None:
-        query = query.filter(IncomeModel.user_id == user_id)
-
-    return query.order_by(
-        IncomeModel.received_at.desc(),
-        IncomeModel.created_at.desc(),
-        IncomeModel.id.desc(),
-    ).all()
+    return (
+        db_session.query(IncomeModel)
+        .filter(IncomeModel.user_id == user_id)
+        .order_by(
+            IncomeModel.received_at.desc(),
+            IncomeModel.created_at.desc(),
+            IncomeModel.id.desc(),
+        )
+        .all()
+    )
 
 
 # Returns one income record by id and authenticated user id.

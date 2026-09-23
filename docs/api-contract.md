@@ -1843,8 +1843,14 @@ fx_source
 created_at
 updated_at
 
-base_amount/base_currency/fx_rate/fx_rate_date/fx_source are always
-ledger-derived at write time, read-only, and never accepted as input.
+base_amount/base_currency/fx_rate/fx_rate_date/fx_source are backend-
+derived from the persisted historical FX snapshot at write time,
+read-only, and never accepted as input. They are resolved and persisted
+once at create/update time; read paths (GET /income, GET /income/{id}
+equivalents) never recompute FX. This is not a ledger - Income has no
+AccountTransaction relationship in VF-017C (see above); "ledger-derived"
+describes Goal/Account balances (computed by summing many rows), which
+does not apply here.
 
 Income does not yet feed any analytics endpoint. There is no cash-flow,
 net-income, or net-worth analytics surface in VF-017C - the existing
