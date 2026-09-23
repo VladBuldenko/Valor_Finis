@@ -49,6 +49,44 @@ def create_expense(
     return response.json()
 
 
+# Creates an income record through the API for integration tests.
+# This helper exists to avoid repeating income setup code. Defaults to
+# EUR (the identity FX path), so callers that don't care about FX
+# resolution never need to mock the ECB/NBU HTTP boundary.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier.
+# - amount: amount received.
+# - currency: income currency.
+# - received_at: date the money was received.
+# - source: income source.
+# Returns:
+# - Created income response body.
+def create_income(
+    client: TestClient,
+    user_id: str,
+    amount: Union[int, float] = 2500,
+    currency: str = "EUR",
+    received_at: str = "2026-05-07",
+    source: str = "salary",
+) -> dict[str, Any]:
+    response = client.post(
+        "/api/v1/income",
+        headers=auth_headers(user_id),
+        json={
+            "amount": amount,
+            "currency": currency,
+            "received_at": received_at,
+            "source": source,
+            "description": None,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    return response.json()
+
+
 # Creates a category through the API for integration tests.
 # This helper exists to avoid repeating category setup code.
 # Parameters:
