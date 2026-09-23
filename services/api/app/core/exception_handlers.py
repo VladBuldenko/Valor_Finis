@@ -3,6 +3,12 @@ from typing import Dict, Tuple, Type
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.modules.accounts.account_errors import (
+    AccountArchivedError,
+    AccountCurrencyImmutableError,
+    AccountDeletionNotAllowedError,
+    AccountNotFoundError,
+)
 from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
     BudgetImmutableFieldError,
@@ -51,6 +57,22 @@ DOMAIN_ERROR_RESPONSES: Dict[
     Type[Exception],
     DomainErrorResponse,
 ] = {
+    AccountNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Account not found.",
+    ),
+    AccountCurrencyImmutableError: (
+        status.HTTP_409_CONFLICT,
+        "Account currency cannot be changed after transaction history exists.",
+    ),
+    AccountDeletionNotAllowedError: (
+        status.HTTP_409_CONFLICT,
+        "Account with transaction history cannot be deleted. Archive it instead.",
+    ),
+    AccountArchivedError: (
+        status.HTTP_409_CONFLICT,
+        "Archived account cannot receive new transactions.",
+    ),
     CategoryAlreadyExistsError: (
         status.HTTP_409_CONFLICT,
         "Category with this name already exists for this user.",
