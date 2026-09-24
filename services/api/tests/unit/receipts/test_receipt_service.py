@@ -1490,6 +1490,7 @@ def test_confirm_receipt_creates_expense_and_confirms_receipt(
         "expense_date": detected_date,
         "description": None,
         "source": "receipt",
+        "account_id": None,
     }
 
     update_receipt_mock.assert_called_once()

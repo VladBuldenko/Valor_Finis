@@ -9,6 +9,7 @@ from app.modules.accounts import account_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_schemas import AccountCreate
 from app.modules.accounts.account_transaction_models import AccountTransactionModel
+from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.income.income_models import IncomeModel
 
 
@@ -37,6 +38,28 @@ def _create_income(db_session, user_id, amount=Decimal("2500.00")) -> IncomeMode
     db_session.commit()
     db_session.refresh(income)
     return income
+
+
+def _create_expense(db_session, user_id, amount=Decimal("50.00")) -> ExpenseModel:
+    expense = ExpenseModel(
+        user_id=user_id,
+        category_id=None,
+        title="Groceries",
+        amount=amount,
+        currency="EUR",
+        expense_date=date(2026, 9, 23),
+        description=None,
+        source="manual",
+        base_amount=amount,
+        base_currency="EUR",
+        fx_rate=Decimal("1.00000000"),
+        fx_rate_date=date(2026, 9, 23),
+        fx_source="identity",
+    )
+    db_session.add(expense)
+    db_session.commit()
+    db_session.refresh(expense)
+    return expense
 
 
 # Tests that a transaction with a positive amount and valid kind/direction
@@ -660,6 +683,322 @@ def test_account_transaction_cross_user_account_link_rejected_at_db_level(
         try:
             db_session.commit()
             assert False, "expected IntegrityError for cross-user account linkage"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="expense" row with expense_id set and
+# direction="debit" persists - the valid shape of an Expense projection
+# (VF-017E). Exact mirror of the income-kind valid-shape test.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the row is persisted.
+def test_account_transaction_expense_kind_valid_shape_persists(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        projection = AccountTransactionModel(
+            account_id=account.id,
+            user_id=user_id,
+            kind="expense",
+            direction="debit",
+            amount=Decimal("50.00"),
+            transaction_date=date(2026, 9, 23),
+            expense_id=expense.id,
+        )
+        db_session.add(projection)
+        db_session.commit()
+        db_session.refresh(projection)
+
+        assert projection.expense_id == expense.id
+        assert projection.kind == "expense"
+        assert projection.income_id is None
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="expense" row is rejected when expense_id is NULL.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_expense_kind_without_expense_id_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="debit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=None,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for expense kind without expense_id"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="expense" row is rejected when direction is "credit".
+# This test exists to prove the source-linkage CHECK enforces "every
+# Expense projection is a debit" at the database level.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_expense_kind_credit_direction_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="credit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=expense.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for expense kind with credit direction"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a direct (opening_balance/adjustment) row is rejected when
+# expense_id is set.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_direct_kind_with_expense_id_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="adjustment",
+                direction="debit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=expense.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for direct kind with expense_id set"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="income" row is rejected when expense_id is also set -
+# a row must never simultaneously claim to be both an Income and an
+# Expense projection.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_income_kind_with_expense_id_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        income = _create_income(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="income",
+                direction="credit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                income_id=income.id,
+                expense_id=expense.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for income kind with expense_id also set"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="expense" row is rejected when income_id is also set -
+# the mirror image of the previous test.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_expense_kind_with_income_id_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        income = _create_income(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="debit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=expense.id,
+                income_id=income.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for expense kind with income_id also set"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a second AccountTransaction row referencing the same
+# expense_id is rejected.
+# This test exists to prove "at most one projection per Expense" is
+# enforced at the database level via UNIQUE(expense_id).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing the second row raises
+#   IntegrityError.
+def test_account_transaction_second_row_same_expense_id_rejected(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        expense = _create_expense(db_session, user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="debit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=expense.id,
+            )
+        )
+        db_session.commit()
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="debit",
+                amount=Decimal("50.00"),
+                transaction_date=date(2026, 9, 24),
+                expense_id=expense.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for duplicate expense_id"
+        except IntegrityError:
+            db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Tests that a projection whose user_id does not match the referenced
+# Expense's own user_id is rejected by the composite ownership foreign
+# key - the database-level backstop for cross-user linkage.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_cross_user_expense_link_rejected_at_db_level(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    try:
+        account = _create_account(db_session, user_id)
+        other_users_expense = _create_expense(db_session, other_user_id)
+
+        db_session.add(
+            AccountTransactionModel(
+                account_id=account.id,
+                user_id=user_id,
+                kind="expense",
+                direction="debit",
+                amount=Decimal("100.00"),
+                transaction_date=date(2026, 9, 23),
+                expense_id=other_users_expense.id,
+            )
+        )
+
+        try:
+            db_session.commit()
+            assert False, "expected IntegrityError for cross-user expense linkage"
         except IntegrityError:
             db_session.rollback()
     finally:

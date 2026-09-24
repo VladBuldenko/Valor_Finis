@@ -47,8 +47,8 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-# Tests that exactly one Alembic head exists after the VF-SEC-01
-# migration, and that it is this migration's own revision.
+# Tests that the Alembic chain has exactly one head and that the
+# VF-SEC-01 migration is still part of its linear ancestry.
 # This exists as a lightweight, non-DB-mutating structural check - it
 # reads the versions/ directory's revision graph, not the live database
 # - unlike A/B/C below (upgrade/downgrade/re-upgrade against a real
@@ -58,17 +58,28 @@ def _script_directory() -> ScriptDirectory:
 # the shared pytest database's live schema mid-suite, since a failure
 # partway through a live upgrade/downgrade call inside the test run
 # would corrupt the schema for every other test that runs afterward.
+# Deliberately does NOT assert the current head literally equals
+# edcfdf3f7114: this migration is not expected to always be the chain's
+# tip forever (VF-017E already chains onto it) - the real, durable
+# invariant this test protects is that VF-SEC-01 never forked the chain
+# and is never later orphaned/skipped by a future migration's
+# down_revision.
 # Parameters:
 # - None.
 # Returns:
-# - None. The test passes if there is exactly one head and it matches
-#   this migration's revision id.
-def test_exactly_one_alembic_head_after_vf_sec_01_migration() -> None:
+# - None. The test passes if there is exactly one head and edcfdf3f7114
+#   is part of that head's ancestry.
+def test_exactly_one_alembic_head_and_vf_sec_01_still_in_ancestry() -> None:
     script = _script_directory()
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "edcfdf3f7114"
+
+    ancestor_revisions = {
+        revision.revision
+        for revision in script.walk_revisions(base="base", head=heads[0])
+    }
+    assert "edcfdf3f7114" in ancestor_revisions
 
 
 # Tests that the migration's down_revision correctly chains onto
