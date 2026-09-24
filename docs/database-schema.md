@@ -1849,6 +1849,65 @@ AND user_id = :authenticated_user_id
 
 This rule is part of the security model.
 
+10.1 Supabase Data API Posture (VF-SEC-01)
+
+FastAPI is the only business-data gateway. Every business read/write in
+this application goes:
+
+mobile → Supabase Auth (bearer token) → FastAPI → SQLAlchemy → PostgreSQL
+
+never:
+
+mobile/anything → Supabase Data API (PostgREST) → business tables
+
+The FastAPI backend connects to PostgreSQL directly via SQLAlchemy/
+psycopg2 and never depends on Supabase's Data API for any of its own
+reads or writes, so this posture does not change backend behavior.
+
+As of migration edcfdf3f7114 (VF-SEC-01), the Supabase Data API roles -
+anon, authenticated, and service_role - have no table privileges at all
+on the 12 application-owned public tables (the 11 business tables in
+this document plus alembic_version). Data API access to any of them now
+requires an explicit future security review and an explicit, narrowly-
+scoped GRANT - never a blanket re-opening.
+
+Supabase Auth and Supabase Storage are structurally independent systems
+from the Data API/PostgREST layer and both remain fully enabled and
+unaffected: Auth is verified per-request against Supabase's `/auth/v1/
+user` endpoint; Storage (used only for receipt files, only when
+RECEIPT_STORAGE_DRIVER=supabase) is accessed via Supabase's `/storage/
+v1/object/...` HTTP API with a backend-only secret key, authorized
+through Storage's own bucket policies rather than `public` schema table
+grants.
+
+New Alembic-created public tables are private by default going forward:
+this migration also strips the postgres role's default privileges for
+future tables/sequences/functions from anon/authenticated/service_role,
+so a new table does not silently inherit broad Data API access the way
+existing tables previously did.
+
+Row-Level Security (RLS) is deliberately NOT enabled as part of this
+posture: once these roles hold no table privileges, the tables are
+already unreachable via Data API regardless of RLS, so it is not the
+current authorization boundary. RLS remains available as a future
+defense-in-depth layer if direct Data API access to any table is ever
+intentionally reintroduced.
+
+None of this changes the application-layer ownership rule in §10 above -
+every FastAPI-layer `user_id` scoping check remains mandatory regardless
+of database-level Data API privileges, since Data API exposure and
+FastAPI's own authorization are independent, layered defenses.
+
+alembic_version is migration metadata, not business data, and is
+included in the same revoke: it must never be directly readable or
+writable by anon/authenticated/service_role, since a client-writable
+migration-tracking row is a schema-integrity risk in its own right.
+
+Operational note: Supabase Dashboard → Data API → "Default privileges
+for new entities" should also be verified OFF during production
+rollout, as a platform-level confirmation alongside this migration's
+own default-privilege changes.
+
 11. Relationship Summary
 
 categories
