@@ -10,6 +10,30 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="accounts"
+        options={{
+          title: "Accounts",
+        }}
+      />
+      <Stack.Screen
+        name="accounts/new"
+        options={{
+          title: "Add Account",
+        }}
+      />
+      <Stack.Screen
+        name="accounts/[id]/index"
+        options={{
+          title: "Account",
+        }}
+      />
+      <Stack.Screen
+        name="accounts/[id]/edit"
+        options={{
+          title: "Edit Account",
+        }}
+      />
+      <Stack.Screen
         name="analytics"
         options={{
           title: "Analytics",
