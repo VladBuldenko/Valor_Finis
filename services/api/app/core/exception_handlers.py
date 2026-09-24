@@ -22,7 +22,10 @@ from app.modules.categories.errors import (
     CategoryInUseByBudgetError,
     CategoryNotFoundError,
 )
-from app.modules.expenses.expenses_errors import ExpenseNotFoundError
+from app.modules.expenses.expenses_errors import (
+    ExpenseAccountCurrencyMismatchError,
+    ExpenseNotFoundError,
+)
 from app.modules.fx.fx_errors import (
     FxFutureDatedNotSupportedError,
     FxProviderUnavailableError,
@@ -101,6 +104,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     ExpenseNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Expense not found.",
+    ),
+    ExpenseAccountCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Expense currency must match the account's currency to link them.",
     ),
     FxProviderUnavailableError: (
         status.HTTP_503_SERVICE_UNAVAILABLE,
