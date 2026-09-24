@@ -38,7 +38,7 @@ def test_accounts_table_schema_matches_migration() -> None:
 
 # Tests that the account_transactions table exists at HEAD with the
 # expected columns, constraints, and foreign keys, including the VF-017D
-# income_id linkage additions.
+# income_id and VF-017E expense_id linkage additions.
 # Parameters:
 # - None.
 # Returns:
@@ -51,7 +51,8 @@ def test_account_transactions_table_schema_matches_migration() -> None:
     }
     assert columns == {
         "id", "account_id", "user_id", "kind", "direction", "amount",
-        "transaction_date", "description", "income_id", "created_at",
+        "transaction_date", "description", "income_id", "expense_id",
+        "created_at",
     }
 
     check_constraints = {
@@ -61,12 +62,14 @@ def test_account_transactions_table_schema_matches_migration() -> None:
     assert "ck_account_transactions_amount_positive" in check_constraints
     assert "ck_account_transactions_kind_valid" in check_constraints
     assert "ck_account_transactions_direction_valid" in check_constraints
-    assert "ck_account_transactions_income_linkage_valid" in check_constraints
+    assert "ck_account_transactions_source_linkage_valid" in check_constraints
+    assert "ck_account_transactions_income_linkage_valid" not in check_constraints
 
     foreign_keys = {fk["name"] for fk in inspector.get_foreign_keys("account_transactions")}
     assert "account_transactions_account_id_fkey" in foreign_keys
     assert "fk_account_transactions_account_id_user_id" in foreign_keys
     assert "fk_account_transactions_income_id_user_id" in foreign_keys
+    assert "fk_account_transactions_expense_id_user_id" in foreign_keys
 
     composite_account_fk = next(
         fk for fk in inspector.get_foreign_keys("account_transactions")
@@ -86,6 +89,15 @@ def test_account_transactions_table_schema_matches_migration() -> None:
     assert composite_income_fk["referred_columns"] == ["id", "user_id"]
     assert composite_income_fk["options"].get("ondelete") == "CASCADE"
 
+    composite_expense_fk = next(
+        fk for fk in inspector.get_foreign_keys("account_transactions")
+        if fk["name"] == "fk_account_transactions_expense_id_user_id"
+    )
+    assert composite_expense_fk["referred_table"] == "expenses"
+    assert composite_expense_fk["constrained_columns"] == ["expense_id", "user_id"]
+    assert composite_expense_fk["referred_columns"] == ["id", "user_id"]
+    assert composite_expense_fk["options"].get("ondelete") == "CASCADE"
+
     index_names = {index["name"] for index in inspector.get_indexes("account_transactions")}
     assert "uq_account_transactions_one_opening_balance_per_account" in index_names
 
@@ -94,6 +106,7 @@ def test_account_transactions_table_schema_matches_migration() -> None:
         for constraint in inspector.get_unique_constraints("account_transactions")
     }
     assert "uq_account_transactions_income_id" in unique_constraints
+    assert "uq_account_transactions_expense_id" in unique_constraints
 
 
 # Tests that the income table's composite (id, user_id) unique constraint
@@ -110,3 +123,19 @@ def test_income_table_has_composite_ownership_unique_constraint() -> None:
         constraint["name"] for constraint in inspector.get_unique_constraints("income")
     }
     assert "uq_income_id_user_id" in unique_constraints
+
+
+# Tests that the expenses table's composite (id, user_id) unique
+# constraint exists at HEAD (VF-017E) - the FK target the composite
+# ownership foreign key on account_transactions.expense_id relies on.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the constraint exists.
+def test_expenses_table_has_composite_ownership_unique_constraint() -> None:
+    inspector = inspect(engine)
+
+    unique_constraints = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("expenses")
+    }
+    assert "uq_expenses_id_user_id" in unique_constraints

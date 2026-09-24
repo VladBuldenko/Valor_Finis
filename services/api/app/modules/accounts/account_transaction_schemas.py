@@ -65,13 +65,14 @@ class AccountTransactionResponse(BaseModel):
         The kind Literal here is deliberately wider than
         AccountTransactionCreate's (which has no kind field at all): GET
         history must be able to represent the opening_balance row created
-        at account creation and the income row created by linking an
-        Income (VF-017D), even though clients can never create either
-        directly through this API. Widening this Literal to add "income"
-        is additive at the type level, but callers that switch
-        exhaustively on kind must still be updated to tolerate the new
-        value - it is not claimed to be a transparent, zero-effort change
-        for every possible client.
+        at account creation, the income row created by linking an Income
+        (VF-017D), and the expense row created by linking an Expense
+        (VF-017E), even though clients can never create any of these
+        directly through this API. Widening this Literal is additive at
+        the type level, but callers that switch exhaustively on kind must
+        still be updated to tolerate each new value - it is not claimed
+        to be a transparent, zero-effort change for every possible
+        client.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -80,7 +81,7 @@ class AccountTransactionResponse(BaseModel):
     account_id: UUID
     user_id: UUID
 
-    kind: Literal["opening_balance", "adjustment", "income"] = Field(
+    kind: Literal["opening_balance", "adjustment", "income", "expense"] = Field(
         description="What kind of ledger event this row represents.",
         examples=["adjustment"],
     )
@@ -113,7 +114,17 @@ class AccountTransactionResponse(BaseModel):
         description=(
             "If this row is a synchronized Income projection (kind="
             "\"income\"), the source Income's id. Null for direct "
-            "opening_balance/adjustment rows."
+            "opening_balance/adjustment rows and for expense-backed rows."
+        ),
+        examples=[None],
+    )
+
+    expense_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "If this row is a synchronized Expense projection (kind="
+            "\"expense\"), the source Expense's id. Null for direct "
+            "opening_balance/adjustment rows and for income-backed rows."
         ),
         examples=[None],
     )

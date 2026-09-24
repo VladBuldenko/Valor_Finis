@@ -9,18 +9,21 @@ from sqlalchemy.orm import Session
 from app.modules.accounts.account_transaction_models import AccountTransactionModel
 
 # VF-017D: Income <-> Account ledger projection primitives.
+# VF-017E: Expense <-> Account ledger projection primitives (exact mirror).
 #
-# These four functions are the ONLY way an "income"-kind AccountTransaction
-# row may ever be created, read, updated, or deleted. They exist as
-# narrowly-scoped primitives - not a generic "update any AccountTransaction"
-# function - specifically so no future code path can accidentally make a
-# direct opening_balance/adjustment row mutable by reusing something meant
-# only for source-backed projections. create_income_projection hardcodes
-# kind="income", direction="credit", description=None; update_income_
-# projection may only ever change account_id/amount/transaction_date (the
-# three fields Income synchronization can legitimately need to change) -
-# there is deliberately no way to change kind, direction, or description
-# through it.
+# These functions are the ONLY way an "income"-kind or "expense"-kind
+# AccountTransaction row may ever be created, read, updated, or deleted.
+# They exist as narrowly-scoped primitives - not a generic "update any
+# AccountTransaction" function - specifically so no future code path can
+# accidentally make a direct opening_balance/adjustment row (or the wrong
+# source's projection) mutable by reusing something meant only for
+# source-backed projections. create_income_projection/
+# create_expense_projection hardcode kind="income"/"expense",
+# direction="credit"/"debit", description=None; update_income_projection/
+# update_expense_projection may only ever change
+# account_id/amount/transaction_date (the three fields synchronization can
+# legitimately need to change) - there is deliberately no way to change
+# kind, direction, or description through either.
 
 
 # Calculates an account's ledger balance from its transaction history.
@@ -467,3 +470,254 @@ def get_income_account_links_for_user(
     )
 
     return {income_id: account_id for income_id, account_id in rows}
+
+
+# Returns an Expense's current AccountTransaction projection, if any.
+# This function exists as the single way expenses_service resolves "is
+# this Expense currently linked, and to which Account" - callers that
+# need to serialize against concurrent changes must have already locked
+# the Expense row (via expenses_repository.get_expense_by_id_for_update)
+# before calling this, so the projection observed here cannot be
+# concurrently moved/detached out from under the caller. Exact mirror of
+# get_income_projection.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - expense_id: expense identifier to look up the projection for.
+# - user_id: authenticated user identifier that owns the expense record,
+#   used as a defense-in-depth filter alongside expense_id.
+# Returns:
+# - AccountTransactionModel if a projection exists, None otherwise (an
+#   unlinked Expense has none).
+def get_expense_projection(
+    db_session: Session,
+    expense_id: UUID,
+    user_id: UUID,
+) -> Optional[AccountTransactionModel]:
+    return (
+        db_session.query(AccountTransactionModel)
+        .filter(
+            AccountTransactionModel.expense_id == expense_id,
+            AccountTransactionModel.user_id == user_id,
+        )
+        .first()
+    )
+
+
+# Validates that a projection given to update_expense_projection or
+# delete_expense_projection is actually an Expense projection, before any
+# mutation or delete is issued. Exact mirror of
+# _validate_income_projection_for_mutation.
+# This function exists so those two functions guard against programmer
+# misuse structurally, not merely by convention: without this check, a
+# future internal caller could accidentally pass a direct
+# opening_balance/adjustment row, or an Income projection, and this
+# repository would silently mutate/delete a row it must never touch. This
+# is an internal invariant violation, not a user-facing business error -
+# it can only happen from a programming mistake inside this codebase,
+# never from any client request, so it deliberately raises a plain
+# ValueError rather than a new domain/HTTP error class.
+# Parameters:
+# - projection: the AccountTransactionModel a caller is about to mutate
+#   or delete.
+# Returns:
+# - None.
+# Raises:
+# - ValueError: projection is not an Expense projection (kind !=
+#   "expense" or expense_id is None).
+def _validate_expense_projection_for_mutation(
+    projection: AccountTransactionModel,
+) -> None:
+    if projection.kind != "expense" or projection.expense_id is None:
+        raise ValueError(
+            "update_expense_projection/delete_expense_projection may only "
+            "be called with an Expense projection (kind='expense', "
+            "expense_id set) - refusing to mutate/delete a row that is "
+            "not one."
+        )
+
+
+# Creates the one AccountTransaction projection row for a newly-linked
+# Expense. Exact mirror of create_income_projection, with direction
+# hardcoded to "debit" instead of "credit".
+# This function exists as the only way a kind="expense" row may be
+# created - it hardcodes kind="expense", direction="debit", and
+# description=None (Expense's own title/description/category/source stay
+# the single canonical copy of that text; see
+# account_transaction_models.py). Never commits by default so the caller
+# (expenses_service) can keep this insert inside the same
+# service-controlled transaction as the Expense row write and the owned
+# Account row lock it acquired first.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_id: the Account this Expense is being linked to.
+# - expense_id: the Expense this projection represents.
+# - user_id: authenticated user identifier that owns both resources.
+# - amount: the Expense's own amount at the moment of linking (never
+#   base_amount - the ledger reflects real cash movement in the
+#   Account's own currency).
+# - transaction_date: the Expense's own expense_date at the moment of
+#   linking.
+# - commit: whether the repository should commit the transaction
+#   immediately.
+# Returns:
+# - AccountTransactionModel instance saved/flushed in the current
+#   transaction.
+def create_expense_projection(
+    db_session: Session,
+    account_id: UUID,
+    expense_id: UUID,
+    user_id: UUID,
+    amount: Decimal,
+    transaction_date: date,
+    commit: bool = True,
+) -> AccountTransactionModel:
+    projection = AccountTransactionModel(
+        account_id=account_id,
+        user_id=user_id,
+        kind="expense",
+        direction="debit",
+        amount=amount,
+        transaction_date=transaction_date,
+        description=None,
+        expense_id=expense_id,
+    )
+
+    db_session.add(projection)
+
+    if commit:
+        db_session.commit()
+        db_session.refresh(projection)
+    else:
+        db_session.flush()
+
+    return projection
+
+
+# Synchronizes an existing Expense projection's account_id/amount/
+# transaction_date - the only three fields Expense synchronization is
+# ever allowed to change. Exact mirror of update_income_projection.
+# This function exists as the only way an existing kind="expense" row
+# may be mutated - there is deliberately no way to change kind,
+# direction, or description through it, keeping every other
+# AccountTransaction row (opening_balance, adjustment, income) genuinely
+# immutable by construction, not merely by convention:
+# _validate_expense_projection_for_mutation is called BEFORE any field is
+# touched, so passing a row that is not an Expense projection here raises
+# ValueError instead of silently mutating it. Passing None for a
+# parameter leaves that field unchanged - e.g. a same-Account amount/date
+# sync passes account_id=None, while a move passes the new account_id
+# alongside the current amount/transaction_date (harmless no-op writes
+# when those did not themselves change). Never commits by default, for
+# the same service-controlled-transaction reason as
+# create_expense_projection.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - projection: the already-resolved AccountTransactionModel to update
+#   (from get_expense_projection).
+# - account_id: new Account to move this projection to, or None to leave
+#   it on its current Account.
+# - amount: new amount, or None to leave it unchanged.
+# - transaction_date: new transaction date, or None to leave it unchanged.
+# - commit: whether the repository should commit the transaction
+#   immediately.
+# Returns:
+# - Updated AccountTransactionModel instance.
+# Raises:
+# - ValueError: projection is not an Expense projection - see
+#   _validate_expense_projection_for_mutation.
+def update_expense_projection(
+    db_session: Session,
+    projection: AccountTransactionModel,
+    account_id: Optional[UUID] = None,
+    amount: Optional[Decimal] = None,
+    transaction_date: Optional[date] = None,
+    commit: bool = True,
+) -> AccountTransactionModel:
+    _validate_expense_projection_for_mutation(projection)
+
+    if account_id is not None:
+        projection.account_id = account_id
+
+    if amount is not None:
+        projection.amount = amount
+
+    if transaction_date is not None:
+        projection.transaction_date = transaction_date
+
+    if commit:
+        db_session.commit()
+        db_session.refresh(projection)
+    else:
+        db_session.flush()
+
+    return projection
+
+
+# Deletes an Expense projection directly. Exact mirror of
+# delete_income_projection.
+# This function exists for DETACH only (Expense stays, its link to an
+# Account is removed) - it must never be used when the Expense itself is
+# also being deleted. Deleting a linked Expense relies on
+# ON DELETE CASCADE (expense_id -> expenses.id) to remove the projection
+# automatically, once the owning service has already locked the linked
+# Account row - see expenses_service.delete_expense. Calling this
+# function immediately before deleting the same Expense would merely
+# duplicate what CASCADE already does, without the lock-ordering
+# guarantee CASCADE alone cannot provide. Never commits by default, for
+# the same service-controlled-transaction reason as the other projection
+# functions.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - projection: the already-resolved AccountTransactionModel to delete.
+# - commit: whether the repository should commit the transaction
+#   immediately.
+# Returns:
+# - None.
+# Raises:
+# - ValueError: projection is not an Expense projection - see
+#   _validate_expense_projection_for_mutation.
+def delete_expense_projection(
+    db_session: Session,
+    projection: AccountTransactionModel,
+    commit: bool = True,
+) -> None:
+    _validate_expense_projection_for_mutation(projection)
+
+    db_session.delete(projection)
+
+    if commit:
+        db_session.commit()
+    else:
+        db_session.flush()
+
+
+# Returns every one of a user's Expense-to-Account links in a single
+# query. Exact mirror of get_income_account_links_for_user.
+# This function exists so a read path that lists multiple Expense records
+# at once (GET /expenses) never issues one projection lookup per Expense
+# - it mirrors get_ledger_balances_for_user's exact N+1-avoidance shape,
+# applied to relationship-resolution instead of balance-aggregation. An
+# Expense with no entry in the returned mapping is simply unlinked.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier to scope the lookup to.
+# Returns:
+# - Dict mapping expense_id to the account_id it is currently linked to,
+#   for every linked Expense the user owns.
+def get_expense_account_links_for_user(
+    db_session: Session,
+    user_id: UUID,
+) -> dict[UUID, UUID]:
+    rows = (
+        db_session.query(
+            AccountTransactionModel.expense_id,
+            AccountTransactionModel.account_id,
+        )
+        .filter(
+            AccountTransactionModel.user_id == user_id,
+            AccountTransactionModel.expense_id.isnot(None),
+        )
+        .all()
+    )
+
+    return {expense_id: account_id for expense_id, account_id in rows}

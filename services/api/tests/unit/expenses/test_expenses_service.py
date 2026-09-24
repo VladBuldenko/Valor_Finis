@@ -18,6 +18,15 @@ from app.modules.fx.fx_errors import FxRateUnavailableError
 from app.modules.fx.fx_schemas import FxRateResult
 
 
+# A minimal fake Session used across this file: real DB calls are always
+# mocked out via monkeypatched repository functions, but VF-017E's
+# update_expense/delete_expense now call db_session.commit()/refresh()
+# directly (mirroring income_service), so plain object() is no longer
+# enough - it needs those two no-op methods.
+def _fake_db_session() -> SimpleNamespace:
+    return SimpleNamespace(commit=lambda: None, refresh=lambda obj: None)
+
+
 def _make_existing_expense(
     currency: str = "EUR",
     expense_date: date = date(2026, 5, 7),
@@ -60,7 +69,7 @@ def test_service_create_expense_returns_expense_response(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     expense_id = uuid4()
     user_id = uuid4()
 
@@ -136,7 +145,7 @@ def test_service_create_expense_foreign_currency_resolves_snapshot(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     user_id = uuid4()
 
     expense_data = ExpenseCreate(
@@ -206,7 +215,7 @@ def test_service_create_expense_normalizes_fx_rate_before_computing_base_amount(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     user_id = uuid4()
 
     expense_data = ExpenseCreate(
@@ -274,15 +283,19 @@ def test_service_update_expense_normalizes_fx_rate_before_computing_base_amount(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     user_id = uuid4()
     existing = _make_existing_expense(
         currency="EUR", expense_date=date(2026, 5, 7), amount=Decimal("999.99"),
     )
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda **kwargs: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -299,8 +312,8 @@ def test_service_update_expense_normalizes_fx_rate_before_computing_base_amount(
     update_calls: list[dict] = []
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: update_calls.append(kwargs) or SimpleNamespace(
-            id=existing.id, user_id=user_id, category_id=None,
+        lambda db_session, expense_model, expense_data, **kwargs: update_calls.append(kwargs) or SimpleNamespace(
+            id=existing.id, user_id=existing.user_id, category_id=None,
             title=existing.title, amount=existing.amount, currency="USD",
             expense_date=existing.expense_date, description=existing.description,
             source=existing.source, created_at=existing.created_at, updated_at=existing.updated_at,
@@ -338,7 +351,7 @@ def test_service_create_expense_provider_failure_creates_no_expense(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     user_id = uuid4()
 
     expense_data = ExpenseCreate(
@@ -379,7 +392,7 @@ def test_service_get_expenses_returns_expense_responses_for_user(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     expected_db_session = db_session
 
     expense_id = uuid4()
@@ -422,6 +435,11 @@ def test_service_get_expenses_returns_expense_responses_for_user(
         "get_expenses",
         fake_get_expenses,
     )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository,
+        "get_expense_account_links_for_user",
+        lambda db_session, user_id: {},
+    )
 
     # Act
     expenses = expenses_service.get_expenses(
@@ -452,7 +470,7 @@ def test_service_update_expense_amount_only_reuses_snapshot(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(
         base_amount=Decimal("24.99"), fx_rate=Decimal("2"),
         fx_rate_date=date(2026, 5, 6), fx_source="ecb",
@@ -461,15 +479,19 @@ def test_service_update_expense_amount_only_reuses_snapshot(
     resolve_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.fx_service, "resolve_fx_rate",
         lambda *a, **k: resolve_calls.append((a, k)),
     )
 
-    def fake_update_expense(db_session, expense_id, expense_data, user_id, **kwargs):
+    def fake_update_expense(db_session, expense_model, expense_data, **kwargs):
         update_calls.append(kwargs)
         return SimpleNamespace(**{**existing.__dict__, **kwargs})
 
@@ -499,13 +521,17 @@ def test_service_update_expense_currency_change_re_resolves(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(currency="EUR", expense_date=date(2026, 5, 7))
     resolve_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -519,7 +545,7 @@ def test_service_update_expense_currency_change_re_resolves(
     monkeypatch.setattr(expenses_service.fx_service, "resolve_fx_rate", fake_resolve_fx_rate)
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: SimpleNamespace(
+        lambda db_session, expense_model, expense_data, **kwargs: SimpleNamespace(
             **{**existing.__dict__, **kwargs},
         ),
     )
@@ -544,13 +570,17 @@ def test_service_update_expense_date_change_re_resolves(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(currency="USD", expense_date=date(2026, 5, 7))
     resolve_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -564,7 +594,7 @@ def test_service_update_expense_date_change_re_resolves(
     monkeypatch.setattr(expenses_service.fx_service, "resolve_fx_rate", fake_resolve_fx_rate)
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: SimpleNamespace(
+        lambda db_session, expense_model, expense_data, **kwargs: SimpleNamespace(
             **{**existing.__dict__, **kwargs},
         ),
     )
@@ -590,13 +620,17 @@ def test_service_update_expense_currency_and_date_change_resolves_once(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(currency="EUR", expense_date=date(2026, 5, 7))
     resolve_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -610,7 +644,7 @@ def test_service_update_expense_currency_and_date_change_resolves_once(
     monkeypatch.setattr(expenses_service.fx_service, "resolve_fx_rate", fake_resolve_fx_rate)
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: SimpleNamespace(
+        lambda db_session, expense_model, expense_data, **kwargs: SimpleNamespace(
             **{**existing.__dict__, **kwargs},
         ),
     )
@@ -638,15 +672,19 @@ def test_service_update_expense_metadata_only_does_not_resolve(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(fx_rate=Decimal("2"), fx_source="ecb")
     base_currency_calls: list = []
     resolve_calls: list = []
     update_calls: list[dict] = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -657,7 +695,7 @@ def test_service_update_expense_metadata_only_does_not_resolve(
         lambda *a, **k: resolve_calls.append((a, k)),
     )
 
-    def fake_update_expense(db_session, expense_id, expense_data, user_id, **kwargs):
+    def fake_update_expense(db_session, expense_model, expense_data, **kwargs):
         update_calls.append(kwargs)
         return SimpleNamespace(**{**existing.__dict__, **kwargs})
 
@@ -691,7 +729,7 @@ def test_service_update_expense_legacy_unresolved_monetary_update_resolves(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(
         currency="USD", expense_date=date(2026, 5, 7),
         base_amount=None, base_currency=None, fx_rate=None, fx_rate_date=None, fx_source=None,
@@ -699,8 +737,12 @@ def test_service_update_expense_legacy_unresolved_monetary_update_resolves(
     resolve_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -715,7 +757,7 @@ def test_service_update_expense_legacy_unresolved_monetary_update_resolves(
 
     update_calls: list[dict] = []
 
-    def fake_update_expense(db_session, expense_id, expense_data, user_id, **kwargs):
+    def fake_update_expense(db_session, expense_model, expense_data, **kwargs):
         update_calls.append(kwargs)
         return SimpleNamespace(**{**existing.__dict__, **kwargs})
 
@@ -744,7 +786,7 @@ def test_service_update_expense_legacy_unresolved_metadata_update_stays_unresolv
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense(
         currency="USD",
         base_amount=None, base_currency=None, fx_rate=None, fx_rate_date=None, fx_source=None,
@@ -753,8 +795,12 @@ def test_service_update_expense_legacy_unresolved_metadata_update_stays_unresolv
     base_currency_calls: list = []
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.financial_settings_service, "get_base_currency",
@@ -767,7 +813,7 @@ def test_service_update_expense_legacy_unresolved_metadata_update_stays_unresolv
 
     update_calls: list[dict] = []
 
-    def fake_update_expense(db_session, expense_id, expense_data, user_id, **kwargs):
+    def fake_update_expense(db_session, expense_model, expense_data, **kwargs):
         update_calls.append(kwargs)
         return SimpleNamespace(**{**existing.__dict__, **kwargs})
 
@@ -798,7 +844,7 @@ def test_service_update_expense_validates_category_when_category_id_is_set(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense()
     category_id = uuid4()
 
@@ -815,8 +861,12 @@ def test_service_update_expense_validates_category_when_category_id_is_set(
         return SimpleNamespace(id=category_id, user_id=user_id)
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.categories_service,
@@ -825,7 +875,7 @@ def test_service_update_expense_validates_category_when_category_id_is_set(
     )
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: SimpleNamespace(
+        lambda db_session, expense_model, expense_data, **kwargs: SimpleNamespace(
             **{**existing.__dict__, **kwargs, "category_id": category_id},
         ),
     )
@@ -854,7 +904,7 @@ def test_service_update_expense_skips_category_validation_when_category_id_omitt
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
+    db_session = cast(Session, _fake_db_session())
     existing = _make_existing_expense()
 
     expense_data = ExpenseUpdate(title="Rewe groceries")
@@ -870,8 +920,12 @@ def test_service_update_expense_skips_category_validation_when_category_id_omitt
         return SimpleNamespace(id=category_id, user_id=user_id)
 
     monkeypatch.setattr(
-        expenses_service.expenses_repository, "get_expense_by_id",
+        expenses_service.expenses_repository, "get_expense_by_id_for_update",
         lambda db_session, expense_id, user_id: existing,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository, "get_expense_projection",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         expenses_service.categories_service,
@@ -880,7 +934,7 @@ def test_service_update_expense_skips_category_validation_when_category_id_omitt
     )
     monkeypatch.setattr(
         expenses_service.expenses_repository, "update_expense",
-        lambda db_session, expense_id, expense_data, user_id, **kwargs: SimpleNamespace(
+        lambda db_session, expense_model, expense_data, **kwargs: SimpleNamespace(
             **{**existing.__dict__, **kwargs},
         ),
     )
@@ -897,33 +951,51 @@ def test_service_update_expense_skips_category_validation_when_category_id_omitt
     assert validated_category_calls == []
 
 
-# Tests that the service deletes an expense by delegating to the repository.
-# This test exists to verify that the service passes db_session, expense_id,
-# and user_id through to the repository without additional logic.
+# Tests that the service deletes an expense by locking it, resolving its
+# (absent) projection, and delegating to the repository, committing once.
+# This test exists to verify the VF-017E lock-then-delete sequence for an
+# unlinked Expense: no Account is ever locked when there is no projection
+# to resolve.
 # Parameters:
 # - monkeypatch: pytest fixture used to replace repository behavior.
 # Returns:
-# - None. The test passes if the repository's delete_expense is called with the expected arguments.
+# - None. The test passes if the repository's delete_expense is called
+#   with the locked model and the session is committed exactly once.
 def test_service_delete_expense_calls_repository_delete(
     monkeypatch: MonkeyPatch,
 ) -> None:
     # Arrange
-    db_session = cast(Session, object())
-    expected_db_session = db_session
+    commit_calls: list[None] = []
+    db_session = cast(Session, SimpleNamespace(commit=lambda: commit_calls.append(None)))
     expense_id = uuid4()
-    expected_expense_id = expense_id
     user_id = uuid4()
-    expected_user_id = user_id
+    expense_model = SimpleNamespace(id=expense_id, user_id=user_id)
 
-    delete_calls: list[tuple[Session, UUID, UUID]] = []
+    locked_calls: list[tuple[UUID, UUID]] = []
+    projection_calls: list[tuple[UUID, UUID]] = []
+    delete_calls: list[tuple[Session, SimpleNamespace, bool]] = []
 
-    def fake_delete_expense(
-        db_session: Session,
-        expense_id: UUID,
-        user_id: UUID,
-    ) -> None:
-        delete_calls.append((db_session, expense_id, user_id))
+    def fake_get_expense_by_id_for_update(db_session, expense_id, user_id):
+        locked_calls.append((expense_id, user_id))
+        return expense_model
 
+    def fake_get_expense_projection(db_session, expense_id, user_id):
+        projection_calls.append((expense_id, user_id))
+        return None
+
+    def fake_delete_expense(db_session, expense_model, commit=True):
+        delete_calls.append((db_session, expense_model, commit))
+
+    monkeypatch.setattr(
+        expenses_service.expenses_repository,
+        "get_expense_by_id_for_update",
+        fake_get_expense_by_id_for_update,
+    )
+    monkeypatch.setattr(
+        expenses_service.account_transaction_repository,
+        "get_expense_projection",
+        fake_get_expense_projection,
+    )
     monkeypatch.setattr(
         expenses_service.expenses_repository,
         "delete_expense",
@@ -939,6 +1011,7 @@ def test_service_delete_expense_calls_repository_delete(
 
     # Assert
     assert result is None
-    assert delete_calls == [
-        (expected_db_session, expected_expense_id, expected_user_id)
-    ]
+    assert locked_calls == [(expense_id, user_id)]
+    assert projection_calls == [(expense_id, user_id)]
+    assert delete_calls == [(db_session, expense_model, False)]
+    assert commit_calls == [None]

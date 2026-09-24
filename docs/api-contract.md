@@ -264,6 +264,26 @@ DELETE
 
 204
 
+Account linkage (VF-017E): an Expense may optionally be linked to an
+Account via `account_id` on POST/PATCH. Expense remains the canonical
+record - linking it creates a synchronized AccountTransaction ledger
+projection (kind="expense", direction="debit") in the linked Account,
+which is how that Account's balance comes to reflect it (Account balance
+is always SUM(credits) - SUM(debits) over its account_transactions rows
+- see the Accounts section below). `account_id` has NO database column
+on expenses at all: the value returned on ExpenseResponse is derived
+from that projection at read time, never persisted on the Expense row
+itself. Linking is allowed only when Expense.currency exactly matches
+Account.currency (after normalization) - there is no FX conversion
+between Expense and Account, and the ledger always uses Expense.amount,
+never base_amount (base_amount is base-currency analytics truth, not the
+amount that actually left an Account). Attaching/detaching/moving an
+Expense's Account linkage never resolves or touches the Expense's own FX
+snapshot (below) - including for a legacy unresolved Expense, whose
+snapshot stays fully NULL through any number of linkage changes; only a
+genuine monetary field change (amount, currency, or expense_date, the
+pre-existing rule below) can ever trigger FX resolution.
+
 Create Expense
 
 POST /api/v1/expenses
@@ -277,7 +297,8 @@ Request:
   "currency": "EUR",
   "expense_date": "2026-08-09",
   "description": "Weekly shopping",
-  "source": "manual"
+  "source": "manual",
+  "account_id": null
 }
 
 Fields:
@@ -331,6 +352,14 @@ no
 
 max 30 characters, default manual
 
+account_id
+
+no
+
+optional Account to link this Expense to; the Account must belong to the
+authenticated user, must not be archived, and its currency must exactly
+match this Expense's currency
+
 If category_id is provided, the category must belong to the authenticated user.
 
 VF-014B5C: the server resolves a base-currency FX snapshot for every
@@ -357,6 +386,27 @@ At least one field is required.
 
 category_id may be set to null to make the expense uncategorized.
 
+`account_id` has three-state PATCH semantics (VF-017E), matching
+category_id's own convention exactly: absent from the request leaves the
+current linkage untouched; a UUID attaches (if currently unlinked) or
+moves (if already linked elsewhere); explicit `null` detaches. The PATCH
+is evaluated against its FINAL resulting state, not field-by-field in
+isolation - e.g. changing `currency` and `account_id` together in one
+request is validated against the combination that results, so an EUR
+Expense on an EUR Account can move to a USD Account while also changing
+to USD in the same request, as long as the final currency matches the
+final Account. There is no silent auto-detach: a currency change that
+would leave the Expense linked to a now-mismatched Account is rejected
+outright (422), never resolved by detaching on the client's behalf.
+
+Archived-Account rule: rejected only when the PATCH would add NEW
+activity to an Account - attaching, or moving INTO an archived Account
+(409, the existing "Archived account cannot receive new transactions."
+message). Amount/expense_date corrections to an Expense already linked
+to an Account that was archived afterward are allowed (this is
+maintaining existing history, not new activity), as is detaching from,
+deleting from, or moving OUT of an archived Account.
+
 Expense Response
 
 {
@@ -369,6 +419,7 @@ Expense Response
   "expense_date": "2026-08-09",
   "description": "Weekly shopping",
   "source": "manual",
+  "account_id": null,
   "base_amount": "35.50",
   "base_currency": "EUR",
   "fx_rate": "1.00000000",
@@ -377,6 +428,10 @@ Expense Response
   "created_at": "<datetime>",
   "updated_at": "<datetime>"
 }
+
+account_id is read-only and fully derived (VF-017E): Expense has no
+account_id database column at all, so this value is resolved from the
+AccountTransaction projection at read time - null means unlinked.
 
 FX snapshot fields (VF-014B5C, all read-only, optional, added by the
 server - never accepted as input):
@@ -1680,21 +1735,27 @@ Account Transaction Response
   "transaction_date": "2026-09-23",
   "description": null,
   "income_id": null,
+  "expense_id": null,
   "created_at": "2026-09-23T10:00:00Z"
 }
 
-`kind` is one of `opening_balance`, `adjustment`, or `income` (VF-017D
-adds `income` - an additive change to this Literal; clients that switch
-exhaustively on `kind` must be updated to tolerate the new value, it is
-not claimed to be transparent for every possible client). `income_id` is
-non-null only on a `kind="income"` row, and identifies the source Income
-this row is a synchronized projection of - null on every direct
-`opening_balance`/`adjustment` row. There is still no PATCH/DELETE
-endpoint for an individual transaction, for either direct or
-Income-backed rows: an `income`-kind row can be created/updated/deleted
-ONLY as a side effect of the corresponding Income create/PATCH/DELETE
-(see the Income section below) - direct rows remain immutable exactly as
-before.
+`kind` is one of `opening_balance`, `adjustment`, `income`, or `expense`
+(VF-017D added `income`, VF-017E adds `expense` - each an additive
+change to this Literal; clients that switch exhaustively on `kind` must
+be updated to tolerate each new value, it is not claimed to be
+transparent for every possible client). `income_id` is non-null only on
+a `kind="income"` row, and identifies the source Income this row is a
+synchronized projection of. `expense_id` is non-null only on a
+`kind="expense"` row, and identifies the source Expense this row is a
+synchronized projection of. Both are null on every direct
+`opening_balance`/`adjustment` row, and a row can never have both set at
+once. There is still no PATCH/DELETE endpoint for an individual
+transaction, for direct, Income-backed, or Expense-backed rows: an
+`income`-kind row can be created/updated/deleted ONLY as a side effect
+of the corresponding Income create/PATCH/DELETE (see the Income section
+below), and an `expense`-kind row ONLY as a side effect of the
+corresponding Expense create/PATCH/DELETE (see the Expenses section
+above) - direct rows remain immutable exactly as before.
 
 Transaction history is returned newest first, ordered by
 transaction_date DESC, then created_at DESC, then id DESC for
@@ -2013,6 +2074,7 @@ Important current domain mappings include:
 
 422  A foreign-currency income cannot be dated in the future.
 422  Income currency must match the account's currency to link them.
+422  Expense currency must match the account's currency to link them.
 422  Receipt file is empty.
 422  Receipt OCR processing failed.
 422  Required receipt confirmation data is missing.

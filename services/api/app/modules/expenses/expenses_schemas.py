@@ -64,9 +64,26 @@ class ExpenseCreate(ExpenseBase):
         Keeps invalid data away from service and database layers.
         The user_id is not accepted from the client because it must come
         from authentication data.
+
+        account_id (VF-017E) is deliberately NOT part of ExpenseBase: it
+        means writable linkage-intent here (omitted/null = create an
+        unlinked Expense, a UUID = create the Expense and its debit
+        AccountTransaction projection atomically), vs. a derived,
+        read-only value on ExpenseResponse - mirroring Income's own
+        VF-017D account_id split exactly.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Account to link this Expense to at creation time. Omitted "
+            "or null creates an unlinked Expense. When set, the linked "
+            "Account must be owned by the authenticated user, active, "
+            "and share this Expense's exact currency."
+        ),
+    )
 
 
 class ExpenseUpdate(BaseModel):
@@ -122,6 +139,16 @@ class ExpenseUpdate(BaseModel):
         max_length=30,
         description="Updated expense source.",
         examples=["manual"],
+    )
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Updated Account linkage (VF-017E). Field absent: linkage "
+            "unchanged. A UUID: attach (if currently unlinked) or move "
+            "(if currently linked to a different Account). Explicit "
+            "null: detach. Uses the same three-state PATCH convention as "
+            "category_id above."
+        ),
     )
 
     @field_validator("currency")
@@ -182,12 +209,29 @@ class ExpenseResponse(ExpenseBase):
         Keeps database model separated from public API contract. These
         fields are never accepted on ExpenseCreate/ExpenseUpdate - the
         client can only ever submit original transaction truth.
+
+        account_id (VF-017E) is fully derived at read time from this
+        Expense's AccountTransaction projection, if any - there is no
+        such column on the expenses table itself. Building this response
+        therefore requires _build_expense_response
+        (expenses_service.py), never a bare
+        ExpenseResponse.model_validate(expense_model) - see that
+        function's own docstring.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     user_id: UUID
+
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "The Account this Expense is currently linked to, derived "
+            "from its AccountTransaction projection. Read-only. Null "
+            "means unlinked."
+        ),
+    )
 
     base_amount: Optional[Decimal] = Field(
         default=None,

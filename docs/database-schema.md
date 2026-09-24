@@ -233,6 +233,16 @@ Purpose:
 
 Stores user financial expense records.
 
+This table still has no account_id column, even though an Expense can
+now be linked to an Account (VF-017E). Expense is the canonical record;
+its link to an Account is represented entirely by an AccountTransaction
+row (kind="expense") in account_transactions whose expense_id points
+back here - see 7.1 Account Transactions above, mirroring Income's own
+VF-017D design exactly. Storing account_id on both sides would create
+two independently-writable copies of the same fact; the public API's
+account_id (see docs/api-contract.md) is derived from that projection at
+read time, never persisted on expenses itself.
+
 Column
 
 Type
@@ -425,6 +435,16 @@ fx_rate_date, fx_source) are either all NULL or all NOT NULL. A partial
 snapshot (e.g. base_amount present but fx_rate_date missing) can never
 be stored.
 
+uq_expenses_id_user_id (VF-017E)
+
+Rule:
+
+UNIQUE(id, user_id) - composite-unique FK target, not a business-rule
+constraint by itself. Lets account_transactions carry a
+(expense_id, user_id) -> expenses(id, user_id) foreign key, so a
+cross-user Expense<->Account link is impossible to construct at the
+database level, not only the service level (see 7.1 above).
+
 Indexes
 
 user_id
@@ -455,6 +475,25 @@ excluded and counted the same way an unresolved row is. Budget Status
 (VF-014B3/B4) is unaffected by this - it still evaluates using
 expense.amount against the Budget's own currency, not base_amount; see
 "Budgets" below.
+
+Account linkage (VF-017E): allowed only when Expense.currency exactly
+matches Account.currency, after normalization - no FX conversion happens
+between Expense and Account, and the ledger always uses Expense.amount,
+never base_amount (base_amount is base-currency analytics truth, not the
+amount that actually left an Account). Linking is rejected (409, reusing
+the existing AccountArchivedError) when it would add NEW activity to an
+archived Account - creating, attaching, or moving INTO one - but
+amount/expense_date corrections to an Expense already linked to an
+Account archived afterward, and detaching/deleting/moving OUT of an
+archived Account, remain allowed; see 7.1 above for the exact locking
+order (Expense locked first, then the required Account row(s)) and
+docs/api-contract.md for the full PATCH semantics. Pure linkage
+operations (attach/detach/move/account_id-only PATCH) never call the FX
+provider and never touch the FX snapshot - including for a legacy
+unresolved Expense, whose snapshot stays fully NULL through any number
+of linkage changes; only a genuine monetary field change (amount,
+currency, or expense_date - the same pre-existing rule described above,
+completely independent of account_id) can ever trigger FX resolution.
 
 5. Budgets
 
@@ -1136,10 +1175,13 @@ Purpose:
 Ledger of balance-affecting events for an Account. VF-017B shipped two
 direct kinds: opening_balance (recorded once, at account creation, to
 represent a real pre-existing balance) and adjustment (a direct manual
-correction/reconciliation entry). VF-017D adds a third, source-backed
+correction/reconciliation entry). VF-017D added a third, source-backed
 kind: income - a synchronized projection of an Income row (see the
-income_id column below and 8. Income above). expense and transfer kinds
-remain deferred to a later slice.
+income_id column below and 8. Income above). VF-017E adds a fourth,
+source-backed kind: expense - a synchronized projection of an Expense
+row (see the expense_id column below and 4. Expenses above), symmetric
+to income but always a debit. transfer remains deferred to a later
+slice.
 
 This table is the only persisted source of an Account's balance: the
 accounts table has no balance column at all (see 7 above). Every public
@@ -1189,7 +1231,8 @@ VARCHAR(20)
 
 no
 
-opening_balance, adjustment (VF-017B), or income (VF-017D)
+opening_balance, adjustment (VF-017B), income (VF-017D), or expense
+(VF-017E)
 
 direction
 
@@ -1198,10 +1241,10 @@ VARCHAR(10)
 no
 
 credit or debit - kept separate from kind (unlike GoalTransaction, where
-type implies direction) so income (and a future expense/transfer kind)
-could reuse the same direction concept without restructuring this
-column. Every income-kind row is a credit, enforced by
-ck_account_transactions_income_linkage_valid below.
+type implies direction) so income and expense could reuse the same
+direction concept without restructuring this column. Every income-kind
+row is a credit and every expense-kind row is a debit, both enforced by
+ck_account_transactions_source_linkage_valid below.
 
 amount
 
@@ -1210,7 +1253,9 @@ NUMERIC(12,2)
 no
 
 Always positive; direction carries the sign. For an income-backed row,
-always synchronized to equal the source Income's own amount.
+always synchronized to equal the source Income's own amount; for an
+expense-backed row, always synchronized to equal the source Expense's
+own amount (never Expense.base_amount).
 
 transaction_date
 
@@ -1219,7 +1264,9 @@ DATE
 no
 
 The date this event actually happened. For an income-backed row, always
-synchronized to equal the source Income's received_at.
+synchronized to equal the source Income's received_at; for an
+expense-backed row, always synchronized to equal the source Expense's
+own expense_date.
 
 description
 
@@ -1227,9 +1274,10 @@ VARCHAR(500)
 
 yes
 
-Optional free-text note. Always NULL for an income-backed row - Income's
-own description/source remain the single canonical copy of that text
-(see 8. Income); the ledger row identifies its source via income_id
+Optional free-text note. Always NULL for an income-backed or
+expense-backed row - the source record's own description/title/source
+remain the single canonical copy of that text (see 4. Expenses / 8.
+Income); the ledger row identifies its source via income_id/expense_id
 instead of duplicating mutable text that would need its own
 synchronization.
 
@@ -1240,7 +1288,18 @@ UUID
 yes
 
 If this row is an Income projection, the source Income's id (VF-017D).
-NULL for direct opening_balance/adjustment rows.
+NULL for direct opening_balance/adjustment rows and for expense-backed
+rows.
+
+expense_id
+
+UUID
+
+yes
+
+If this row is an Expense projection, the source Expense's id
+(VF-017E). NULL for direct opening_balance/adjustment rows and for
+income-backed rows.
 
 created_at
 
@@ -1248,10 +1307,10 @@ TIMESTAMPTZ
 
 no
 
-Server timestamp. For an income-backed row, this is the projection's own
-creation time and is never reset when the row is later synchronized (an
-amount/date sync, or a move between Accounts, updates the existing row
-in place).
+Server timestamp. For an income- or expense-backed row, this is the
+projection's own creation time and is never reset when the row is later
+synchronized (an amount/date sync, or a move between Accounts, updates
+the existing row in place).
 
 Constraints
 
@@ -1261,20 +1320,26 @@ amount > 0
 
 ck_account_transactions_kind_valid
 
-kind IN ('opening_balance','adjustment','income')
+kind IN ('opening_balance','adjustment','income','expense')
 
 ck_account_transactions_direction_valid
 
 direction IN ('credit','debit')
 
-ck_account_transactions_income_linkage_valid
+ck_account_transactions_source_linkage_valid
 
-(kind = 'income' AND income_id IS NOT NULL AND direction = 'credit') OR
-(kind IN ('opening_balance','adjustment') AND income_id IS NULL) -
-VF-017D. The single constraint that makes an income-kind row and a
-direct row structurally indistinguishable-by-mistake: every income row
-identifies its source and is always a credit; every direct row has no
-source reference.
+(VF-017E, replaces VF-017D's income-only ck_account_transactions_income_linkage_valid)
+
+(kind = 'income' AND income_id IS NOT NULL AND expense_id IS NULL AND
+direction = 'credit') OR (kind = 'expense' AND expense_id IS NOT NULL
+AND income_id IS NULL AND direction = 'debit') OR (kind IN
+('opening_balance','adjustment') AND income_id IS NULL AND expense_id IS
+NULL) - the single constraint that makes an income-kind row, an
+expense-kind row, and a direct row structurally
+indistinguishable-by-mistake and mutually exclusive: since kind is a
+single scalar value, a row can satisfy at most one of the three
+branches, so "both income_id and expense_id populated" and every other
+invalid combination is structurally impossible.
 
 uq_account_transactions_one_opening_balance_per_account
 
@@ -1287,6 +1352,12 @@ uq_account_transactions_income_id
 UNIQUE(income_id) (VF-017D) - at most one AccountTransaction projection
 per Income, enforced at the database level. NULLs never collide, so
 every direct row is unaffected.
+
+uq_account_transactions_expense_id
+
+UNIQUE(expense_id) (VF-017E) - at most one AccountTransaction projection
+per Expense, enforced at the database level. NULLs never collide, so
+every direct row and every income-kind row is unaffected.
 
 fk_account_transactions_account_id_user_id
 
@@ -1308,6 +1379,19 @@ deletion when it has dependent history (accounts, goals); here the
 relationship is inverted - Income is canonical and owns its projection,
 so the projection must vanish with its source rather than block it.
 
+fk_account_transactions_expense_id_user_id
+
+FOREIGN KEY (expense_id, user_id) REFERENCES expenses(id, user_id) ON
+DELETE CASCADE (VF-017E). Composite ownership FK: expense_id must belong
+to the SAME user_id as this row - this is what makes a cross-user
+Expense<->Account link impossible at the database level, not only the
+service level. Exactly symmetric to fk_account_transactions_income_id_user_id
+(same CASCADE direction, same canonical-owns-its-projection rationale).
+Receipt's own, entirely independent expense_id -> expenses.id ON DELETE
+SET NULL FK (see 9. Receipts) is unaffected by this: both FK actions
+fire from the same Expense DELETE statement with no ordering conflict,
+since they target two different child tables.
+
 Indexes
 
 user_id
@@ -1317,17 +1401,26 @@ ordered access, and future balance aggregation
 Immutability: direct rows (opening_balance, adjustment) are append-only -
 there is no UPDATE/DELETE path or endpoint for either. Corrections are
 made with compensating adjustment entries, never edits - identical
-philosophy to GoalTransaction. Income-backed rows (kind="income") are the
-deliberate exception this section's earlier VF-017B text already
-anticipated: they are a synchronized projection of their source Income
-row, and may be created/updated/deleted ONLY through income_service,
-atomically with the Income row itself (see 8. Income) - never through a
-public AccountTransaction endpoint, which still exposes no PATCH/DELETE
-at all, for either kind of row. See account_transaction_repository.py's
-create_income_projection/update_income_projection/
-delete_income_projection - narrowly-scoped primitives that exist so no
-code path can accidentally make a direct row mutable by reusing
-something meant only for Income projections.
+philosophy to GoalTransaction. Income-backed rows (kind="income") and
+expense-backed rows (kind="expense") are the deliberate exceptions this
+section's earlier VF-017B text already anticipated: each is a
+synchronized projection of its source Income/Expense row, and may be
+created/updated/deleted ONLY through income_service/expenses_service
+respectively, atomically with the source row itself (see 4. Expenses /
+8. Income) - never through a public AccountTransaction endpoint, which
+still exposes no PATCH/DELETE at all, for any kind of row. See
+account_transaction_repository.py's create_income_projection/
+update_income_projection/delete_income_projection and their exact
+expense-projection counterparts (create_expense_projection/
+update_expense_projection/delete_expense_projection) - narrowly-scoped
+primitives that exist so no code path can accidentally make a direct row
+(or the wrong source's projection) mutable by reusing something meant
+only for a different source's projections. Each pair is guarded by its
+own internal validation helper
+(_validate_income_projection_for_mutation /
+_validate_expense_projection_for_mutation) that raises before any
+mutation or delete if the given row is not genuinely that source's
+projection.
 
 Concurrency: every write that can race against a lifecycle change (a new
 transaction, a currency change, a delete, an archive) locks the owned
@@ -1357,6 +1450,21 @@ ever also lock an Income row. FX resolution (which may perform real
 network I/O against ECB/NBU) always happens before any Account lock is
 acquired, in both create and update - an Account row lock must never be
 held across a network call. See income_service.py.
+
+Expense<->Account operations (VF-017E) follow the exact same discipline,
+substituting Expense for Income throughout: the Expense row is locked
+FIRST (expenses_repository.get_expense_by_id_for_update - a genuinely
+new lock this table introduces, since update_expense/delete_expense had
+no row lock at all before this slice), its current projection is
+resolved only after that lock is held, and only then are the required
+Account row(s) locked (ascending UUID order for a move). FX resolution
+happens before any Account lock in exactly the same way, and - the
+Expense-specific addition - pure linkage operations (attach/detach/move/
+account_id-only PATCH) never trigger FX resolution at all, since
+account_id is deliberately never a member of the monetary-fields set
+that decides whether the FX provider is called; this holds even for a
+legacy unresolved Expense, whose snapshot stays fully NULL through any
+number of linkage changes. See expenses_service.py.
 
 Opening-balance creation: unlike goal_transactions' migration-time
 backfill (a one-time historical event), account_transactions' single
@@ -1934,6 +2042,8 @@ income
 
 expenses
    │
+   ├──< account_transactions.expense_id  (VF-017E)
+   │
    └──< receipts.expense_id
 
 Delete behavior:
@@ -1958,8 +2068,9 @@ Account deleted
     ↓
 Rejected if any account_transactions reference the account (ON DELETE
 RESTRICT, VF-017B) - including account_transactions rows created by
-linking an Income (VF-017D); has_transactions_for_account is kind-
-agnostic, so this happens automatically with no Income-specific code.
+linking an Income (VF-017D) or an Expense (VF-017E);
+has_transactions_for_account is kind-agnostic, so this happens
+automatically with no Income/Expense-specific code.
 
 Income deleted
     ↓
@@ -1970,9 +2081,14 @@ with its source rather than blocking Income's own deletion.
 
 Expense deleted
     ↓
-Receipt.expense_id = NULL
+Its account_transactions projection row (if any) is deleted with it
+(ON DELETE CASCADE, VF-017E) - exactly symmetric to Income's own
+CASCADE. Independently, and from the same DELETE statement:
+Receipt.expense_id = NULL (ON DELETE SET NULL, unchanged since before
+VF-017E) - both FK actions fire together with no ordering conflict,
+since they target two different child tables.
 
-No dependent financial records are automatically deleted through these relationships, except a budget's own version history (deleted with it) and an Income's own AccountTransaction projection (deleted with it). A Goal or an Account with transaction history cannot be deleted at all.
+No dependent financial records are automatically deleted through these relationships, except a budget's own version history (deleted with it) and an Income's or Expense's own AccountTransaction projection (deleted with it). A Goal or an Account with transaction history cannot be deleted at all.
 
 12. Database-Enforced Invariants
 
@@ -2018,9 +2134,18 @@ Income's five FX snapshot columns are all NULL or all NOT NULL together
 At most one AccountTransaction with a given income_id (UNIQUE(income_id),
 VF-017D) - one Income can create at most one ledger projection
 
-An income-kind AccountTransaction always has income_id set and direction
-= credit; a direct (opening_balance/adjustment) row always has income_id
-NULL (VF-017D, single CHECK constraint)
+At most one AccountTransaction with a given expense_id
+(UNIQUE(expense_id), VF-017E) - one Expense can create at most one
+ledger projection
+
+An income-kind AccountTransaction always has income_id set, expense_id
+NULL, and direction = credit; an expense-kind AccountTransaction always
+has expense_id set, income_id NULL, and direction = debit; a direct
+(opening_balance/adjustment) row always has both income_id and
+expense_id NULL (VF-017E, single combined CHECK constraint,
+ck_account_transactions_source_linkage_valid, replacing VF-017D's
+income-only version) - the three branches are mutually exclusive by
+construction since kind is a single scalar value
 
 An AccountTransaction's account_id must belong to the same user_id as the
 row itself (composite FK, VF-017D) - a cross-user Account link is
@@ -2028,6 +2153,10 @@ impossible to construct at the database level
 
 An AccountTransaction's income_id, when set, must belong to the same
 user_id as the row itself (composite FK, VF-017D) - a cross-user Income
+link is impossible to construct at the database level
+
+An AccountTransaction's expense_id, when set, must belong to the same
+user_id as the row itself (composite FK, VF-017E) - a cross-user Expense
 link is impossible to construct at the database level
 
 A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
@@ -2098,6 +2227,35 @@ reverse of every other Account lifecycle operation's lock order, and
 necessary because "which Account is this Income currently linked to" is
 itself derived from a projection a concurrent request could change
 (VF-017D).
+
+Linking an Expense to an Account requires an exact currency match, after
+normalization (VF-017E) - no FX conversion happens between Expense and
+Account, and the ledger uses Expense.amount, never base_amount. No
+silent auto-detach: a currency change that would leave an Expense linked
+to a now-mismatched Account is rejected outright.
+
+Linking an Expense to an Account is rejected only when it would add NEW
+activity to an archived Account - creating, attaching, or moving INTO
+one (VF-017E, reuses AccountArchivedError). Amount/expense_date
+corrections to an Expense already linked to an Account archived
+afterward, and detaching/deleting/moving OUT of an archived Account,
+remain allowed.
+
+Updating or deleting a linked Expense locks the Expense row first
+(get_expense_by_id_for_update - a genuinely new lock this table
+introduces, VF-017E), then the required Account row(s) - the same
+reversed lock order Income uses, for the identical TOCTOU-avoidance
+reason.
+
+Pure Expense<->Account linkage operations (attach/detach/move/
+account_id-only PATCH) never trigger FX resolution - account_id is
+deliberately never a member of the monetary-fields set that decides
+whether the FX provider is called (VF-017E). This holds even for a
+legacy unresolved Expense (pre-VF-014B5C, all five FX snapshot columns
+NULL): its snapshot stays fully NULL through any number of linkage
+changes, and only a genuine monetary field change (amount, currency, or
+expense_date - the pre-existing rule, unrelated to linkage) can ever
+resolve it.
 
 Budget.end_date >= Budget.start_date
 
@@ -2221,7 +2379,8 @@ PostgreSQL
 │
 ├── expenses
 │   ├── PK id
-│   └── FK category_id → categories
+│   ├── FK category_id → categories
+│   └── UNIQUE id + user_id (VF-017E, composite FK target)
 │
 ├── budgets
 │   ├── PK id
@@ -2245,7 +2404,9 @@ PostgreSQL
 │   ├── FK account_id → accounts (ON DELETE RESTRICT)
 │   ├── FK (account_id, user_id) → accounts (id, user_id) (ON DELETE RESTRICT, VF-017D)
 │   ├── FK (income_id, user_id) → income (id, user_id) (ON DELETE CASCADE, VF-017D)
-│   └── UNIQUE income_id (VF-017D)
+│   ├── FK (expense_id, user_id) → expenses (id, user_id) (ON DELETE CASCADE, VF-017E)
+│   ├── UNIQUE income_id (VF-017D)
+│   └── UNIQUE expense_id (VF-017E)
 │
 ├── income
 │   ├── PK id
