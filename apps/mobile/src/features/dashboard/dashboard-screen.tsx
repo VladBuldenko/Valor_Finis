@@ -427,6 +427,15 @@ export function DashboardScreen() {
           )}
         </View>
 
+        {/* Navigation only (VF-017F) -- Accounts data is never fetched or
+            aggregated on this screen; see accounts-screen.tsx for the
+            actual Account list. */}
+        <Link href="/accounts" asChild>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Accounts</Text>
+          </Pressable>
+        </Link>
+
         <Link href="/expenses" asChild>
           <Pressable style={styles.button}>
             <Text style={styles.buttonText}>Expenses</Text>
