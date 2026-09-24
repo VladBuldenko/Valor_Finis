@@ -245,6 +245,17 @@ resource.id only
 
 This prevents one user from reading or modifying another user's data.
 
+FastAPI is the only business-data gateway: business tables are never
+queried through Supabase's Data API (PostgREST). Supabase Auth (session
+issuance/refresh, verified per-request against `/auth/v1/user`) and
+Supabase Storage (receipt files, via `/storage/v1/object/...`) are
+structurally independent of Data API table privileges. As of VF-SEC-01,
+anon/authenticated/service_role hold no privileges on any
+application-owned public table (see docs/database-schema.md §10.1 for
+the full posture and rationale) - this is a database-level hardening
+layered on top of, not a replacement for, the application-layer
+ownership check above, which remains mandatory regardless.
+
 7. Error Handling
 
 Business failures are represented as domain exceptions.
