@@ -3,7 +3,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +53,19 @@ class ExpenseModel(Base):
         fx_source: 'identity' | 'ecb' | 'nbu'.
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
+
+    Note (VF-017E): this table still has no account_id column, even
+    though an Expense can now be linked to an Account. Expense is the
+    canonical record; its link to an Account is represented entirely by
+    an AccountTransaction row (kind="expense") whose expense_id points
+    back here - mirroring Income's own VF-017D design exactly. Storing
+    account_id on both sides would create two independently-writable
+    copies of the same fact, the "two sources of business truth" this
+    design deliberately avoids. The public API still exposes a
+    read-only, derived account_id on ExpenseResponse - see
+    expenses_service.py's _build_expense_response and
+    account_transaction_repository.py's get_expense_projection/
+    get_expense_account_links_for_user.
     """
 
     __tablename__ = "expenses"
@@ -65,6 +87,11 @@ class ExpenseModel(Base):
             "AND fx_rate_date IS NOT NULL AND fx_source IS NOT NULL)",
             name="ck_expenses_fx_snapshot_all_or_none",
         ),
+        # Composite-unique FK target (VF-017E): lets account_transactions
+        # carry a (expense_id, user_id) -> expenses(id, user_id) foreign
+        # key, so a cross-user Expense<->Account link is impossible to
+        # construct at the database level, not only the service level.
+        UniqueConstraint("id", "user_id", name="uq_expenses_id_user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
