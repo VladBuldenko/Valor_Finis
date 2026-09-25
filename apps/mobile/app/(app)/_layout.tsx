@@ -82,6 +82,24 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="income"
+        options={{
+          title: "Income",
+        }}
+      />
+      <Stack.Screen
+        name="income/new"
+        options={{
+          title: "Add Income",
+        }}
+      />
+      <Stack.Screen
+        name="income/[id]/edit"
+        options={{
+          title: "Edit Income",
+        }}
+      />
+      <Stack.Screen
         name="goals"
         options={{
           title: "Goals",
