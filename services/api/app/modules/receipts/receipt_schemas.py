@@ -196,6 +196,16 @@ class ReceiptConfirmRequest(BaseModel):
     Why:
         OCR results can be incomplete or inaccurate, so the user
         must be able to correct detected values during confirmation.
+
+        account_id (VF-017I) is optional linkage intent for the created
+        Expense, with plain create semantics (confirmation is a one-shot
+        create, not a PATCH): omitted or null creates an unlinked
+        Expense, a UUID creates the Expense together with its debit
+        AccountTransaction in the same transaction. It is passed through
+        ExpenseCreate unchanged - expenses_service.create_expense alone
+        validates the Account (owned, active, exact currency match). No
+        Receipt column stores it; the link lives on the Expense's
+        AccountTransaction projection.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -203,6 +213,15 @@ class ReceiptConfirmRequest(BaseModel):
     category_id: Optional[UUID] = Field(
         default=None,
         description="Optional category assigned to the created expense.",
+    )
+    account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional Account to link the created expense to. Omitted or "
+            "null creates an unlinked expense. When set, the Account must "
+            "belong to the authenticated user, be active, and share the "
+            "expense's exact final currency."
+        ),
     )
     title: Optional[str] = Field(
         default=None,

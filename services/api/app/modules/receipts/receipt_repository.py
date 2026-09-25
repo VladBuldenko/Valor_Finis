@@ -83,6 +83,50 @@ def get_receipt_by_id(
 
     return receipt
 
+# Returns one receipt owned by the authenticated user, locking the row
+# with SELECT ... FOR UPDATE for the duration of the caller's transaction.
+# Mirrors expenses_repository.get_expense_by_id_for_update.
+# This function exists so receipt confirmation checks confirmability
+# ("processed", no expense_id yet) under a row lock (VF-017I). Without the
+# lock, two concurrent confirmations of the same receipt could both pass
+# that check and each create an Expense -- and, when an Account is linked,
+# each create a debit. With it, the second confirmation blocks until the
+# first commits or rolls back, then re-reads the committed row and is
+# rejected as already confirmed. populate_existing() makes the locked
+# read overwrite any copy of this receipt already held in the session's
+# identity map, so the confirmability check always sees the row as it was
+# when the lock was granted, never a stale earlier read. Callers must not
+# commit or release the session between this call and the write(s) it
+# guards.
+# Parameters:
+# - db_session: active SQLAlchemy session.
+# - receipt_id: requested receipt identifier.
+# - user_id: authenticated user identifier.
+# Returns:
+# - ReceiptModel instance owned by the user, locked for update.
+# Raises:
+# - ReceiptNotFoundError when the receipt does not exist or belongs to another user.
+def get_receipt_by_id_for_update(
+    db_session: Session,
+    receipt_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> ReceiptModel:
+    receipt: Optional[ReceiptModel] = (
+        db_session.query(ReceiptModel)
+        .filter(
+            ReceiptModel.id == receipt_id,
+            ReceiptModel.user_id == user_id,
+        )
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+
+    if receipt is None:
+        raise ReceiptNotFoundError()
+
+    return receipt
+
 # Updates an existing receipt owned by the authenticated user.
 # This function exists to persist receipt changes
 # with optional transaction control from the service layer.

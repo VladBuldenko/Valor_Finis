@@ -1436,7 +1436,7 @@ def test_confirm_receipt_creates_expense_and_confirms_receipt(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         get_receipt_mock,
     )
     monkeypatch.setattr(
@@ -1556,6 +1556,7 @@ def test_confirm_receipt_uses_confirmation_corrections(
     confirmed_receipt.expense_id = expense_id
 
     corrected_date = date(2026, 7, 31)
+    account_id = uuid.uuid4()
 
     created_expense = ExpenseResponse(
         id=expense_id,
@@ -1578,6 +1579,7 @@ def test_confirm_receipt_uses_confirmation_corrections(
         currency="eur",
         expense_date=corrected_date,
         description="Weekly groceries",
+        account_id=account_id,
     )
 
     create_expense_mock = MagicMock(
@@ -1586,7 +1588,7 @@ def test_confirm_receipt_uses_confirmation_corrections(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         MagicMock(return_value=receipt),
     )
     monkeypatch.setattr(
@@ -1629,6 +1631,9 @@ def test_confirm_receipt_uses_confirmation_corrections(
     assert expense_data.expense_date == corrected_date
     assert expense_data.description == "Weekly groceries"
     assert expense_data.source == "receipt"
+    # VF-017I: account_id is passed straight through to ExpenseCreate;
+    # Account validation stays inside expenses_service.create_expense.
+    assert expense_data.account_id == account_id
 
     assert result.expense == created_expense
     db_session.commit.assert_called_once_with()
@@ -1676,7 +1681,7 @@ def test_confirm_receipt_rejects_already_confirmed_receipt(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         MagicMock(return_value=receipt),
     )
     monkeypatch.setattr(
@@ -1740,7 +1745,7 @@ def test_confirm_receipt_rejects_unconfirmable_status(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         MagicMock(return_value=receipt),
     )
     monkeypatch.setattr(
@@ -1815,7 +1820,7 @@ def test_confirm_receipt_rejects_missing_required_data(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         MagicMock(return_value=receipt),
     )
     monkeypatch.setattr(
@@ -1889,7 +1894,7 @@ def test_confirm_receipt_rolls_back_when_receipt_update_fails(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         MagicMock(return_value=receipt),
     )
     monkeypatch.setattr(
