@@ -436,6 +436,14 @@ export function DashboardScreen() {
           </Pressable>
         </Link>
 
+        {/* Navigation only (VF-017G) -- Income is never fetched or
+            totaled on this screen; see income-screen.tsx. */}
+        <Link href="/income" asChild>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Income</Text>
+          </Pressable>
+        </Link>
+
         <Link href="/expenses" asChild>
           <Pressable style={styles.button}>
             <Text style={styles.buttonText}>Expenses</Text>
