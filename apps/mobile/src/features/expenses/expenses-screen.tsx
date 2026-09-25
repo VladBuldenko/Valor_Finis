@@ -12,20 +12,28 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
+import { getApiErrorMessage } from "../../api/api-error-message";
+import { AccountPicker } from "../accounts/account-picker";
+import { getAccounts } from "../accounts/account.service";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
-import { validateExpenseForm } from "./expense-validation";
+import { invalidateExpenseQueries } from "./expense-cache";
+import {
+  normalizeExpenseAmount,
+  validateExpenseForm,
+} from "./expense-validation";
 import {
   createExpense,
   getExpenses,
 } from "./expense.service";
+import type { ExpenseCreateInput } from "./expense.types";
 import { styles } from "./expenses.styles";
 
 function getCurrentLocalDate(): string {
@@ -44,12 +52,15 @@ export function ExpensesScreen() {
 
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
+  const [currency, setCurrency] = useState("EUR");
   const [expenseDate, setExpenseDate] = useState(
     getCurrentLocalDate,
   );
   const [description, setDescription] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] =
   useState<string | null>(null);
+  const [selectedAccountId, setSelectedAccountId] =
+    useState<string | null>(null);
 
   // Compact "tap to open" picker replaces the previous permanently-rendered
   // vertical list of category Buttons (see budget-create-screen.tsx / VF-007D
@@ -77,6 +88,19 @@ export function ExpensesScreen() {
     enabled: Boolean(session),
   });
 
+  // Same query key/data as the Accounts screen -- no separate Account
+  // request path. Used only to offer link destinations, never to compute
+  // or display balances.
+  const {
+    data: accounts = [],
+    isLoading: isAccountsLoading,
+    error: accountsError,
+  } = useQuery({
+    queryKey: ["accounts", session?.user.id],
+    queryFn: getAccounts,
+    enabled: Boolean(session),
+  });
+
   const selectedCategoryLabel =
     selectedCategoryId === null
       ? "Uncategorized"
@@ -86,58 +110,30 @@ export function ExpensesScreen() {
   const createExpenseMutation = useMutation({
     mutationFn: createExpense,
 
-    onSuccess: async () => {
+    onSuccess: async (createdExpense) => {
+      // Date, category, and currency stay for quick repeated entry; the
+      // Account resets to "No account" because a ledger link is
+      // financially significant and must never carry over to the next
+      // Expense by accident.
       setTitle("");
       setAmount("");
       setDescription("");
+      setSelectedAccountId(null);
 
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["expenses", session?.user.id],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: [
-            "analytics",
-            "monthly-summary",
-            session?.user.id,
-          ],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: [
-            "analytics",
-            "category-summary",
-            session?.user.id,
-          ],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: [
-            "analytics",
-            "budget-status",
-            session?.user.id,
-          ],
-        }),
-        // VF-015B/C/D: a new Expense changes historical/category trends
-        // and the current-month forecast too - the prefix match here
-        // covers every selected-period/count variant already cached.
-        queryClient.invalidateQueries({
-          queryKey: ["analytics", "spending-trend", session?.user.id],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["analytics", "category-trend", session?.user.id],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["analytics", "spending-forecast", session?.user.id],
-        }),
-      ]);
+      // The backend's returned account_id (not the already-reset form
+      // state) decides whether an Account ledger was touched.
+      await invalidateExpenseQueries(
+        queryClient,
+        session?.user.id,
+        createdExpense.account_id !== null,
+      );
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to create expense.";
-
-      Alert.alert("Create expense failed", message);
+      Alert.alert(
+        "Create expense failed",
+        getApiErrorMessage(mutationError, "Unable to create expense."),
+      );
     },
   });
 
@@ -148,14 +144,12 @@ export function ExpensesScreen() {
       return;
     }
 
-    const normalizedTitle = title.trim();
-    const normalizedAmount = amount.trim().replace(",", ".");
-    const normalizedDescription = description.trim();
-
     const validationError = validateExpenseForm({
       title,
       amount,
+      currency,
       expenseDate,
+      description,
     });
 
     if (validationError) {
@@ -163,13 +157,21 @@ export function ExpensesScreen() {
       return;
     }
 
-    createExpenseMutation.mutate({
+    const payload: ExpenseCreateInput = {
       category_id: selectedCategoryId,
-      title: normalizedTitle,
-      amount: normalizedAmount,
-      expense_date: expenseDate,
-      description: normalizedDescription || null,
-    });
+      title: title.trim(),
+      amount: normalizeExpenseAmount(amount),
+      currency: currency.trim().toUpperCase(),
+      expense_date: expenseDate.trim(),
+      description: description.trim() || null,
+    };
+
+    // "No account" omits account_id entirely -> an unlinked Expense.
+    if (selectedAccountId !== null) {
+      payload.account_id = selectedAccountId;
+    }
+
+    createExpenseMutation.mutate(payload);
   }
 
   return (
@@ -208,6 +210,19 @@ export function ExpensesScreen() {
               value={amount}
               onChangeText={setAmount}
               keyboardType="decimal-pad"
+            />
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Currency *</Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="EUR"
+              value={currency}
+              onChangeText={setCurrency}
+              autoCapitalize="characters"
+              maxLength={3}
             />
           </View>
 
@@ -251,7 +266,36 @@ export function ExpensesScreen() {
               placeholder="Optional note"
               value={description}
               onChangeText={setDescription}
+              maxLength={500}
             />
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Account</Text>
+
+            {/* A failed background refetch keeps the last loaded list, so
+                the notice is shown only when no Accounts are available at
+                all -- the picker (and any current selection) otherwise stays
+                visible, and nothing is ever linked invisibly. */}
+            {isAccountsLoading ? (
+              <ActivityIndicator style={styles.loader} />
+            ) : accountsError && accounts.length === 0 ? (
+              <Text style={styles.errorText}>
+                Unable to load accounts. You can still add this expense
+                without an account.
+              </Text>
+            ) : (
+              <AccountPicker
+                accounts={accounts}
+                selectedAccountId={selectedAccountId}
+                onChange={setSelectedAccountId}
+              />
+            )}
+
+            <Text style={styles.helperText}>
+              Optional — a linked account&apos;s currency must match this
+              expense&apos;s currency.
+            </Text>
           </View>
 
           <Pressable
