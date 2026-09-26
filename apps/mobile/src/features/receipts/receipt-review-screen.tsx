@@ -9,60 +9,35 @@ import {
   ActivityIndicator,
   Alert,
   Button,
-  SafeAreaView,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
+import { getApiErrorMessage } from "../../api/api-error-message";
+import { AccountPicker } from "../accounts/account-picker";
+import { getAccounts } from "../accounts/account.service";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
+import { invalidateExpenseQueries } from "../expenses/expense-cache";
+import { normalizeExpenseAmount } from "../expenses/expense-validation";
 import { validateReceiptConfirmForm } from "./receipt-validation";
 import {
   confirmReceipt,
   getReceiptById,
 } from "./receipt.service";
+import type { ReceiptConfirmInput } from "./receipt.types";
 
-/**
- * Invalidates every query family a confirmed receipt affects.
- * Matches the invalidation set used after manual expense create/update/
- * delete (see expenses-screen.tsx / expense-detail-screen.tsx), plus the
- * receipts family so a future receipts list stays consistent too.
- */
-function invalidateReceiptConfirmationQueries(
-  queryClient: ReturnType<typeof useQueryClient>,
-  userId: string | undefined,
-): Promise<unknown> {
-  return Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["receipts"] }),
-    queryClient.invalidateQueries({
-      queryKey: ["expenses", userId],
-    }),
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "monthly-summary", userId],
-    }),
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "category-summary", userId],
-    }),
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "budget-status", userId],
-    }),
-    // VF-015B/C/D: a confirmed receipt creates an Expense, which changes
-    // historical/category trends and the current-month forecast too - the
-    // prefix match here covers every selected-period/count variant already
-    // cached.
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "spending-trend", userId],
-    }),
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "category-trend", userId],
-    }),
-    queryClient.invalidateQueries({
-      queryKey: ["analytics", "spending-forecast", userId],
-    }),
-  ]);
-}
+const styles = StyleSheet.create({
+  // Lets the review form's ScrollView take the remaining height so the
+  // longer form (with the Account field) stays scrollable.
+  container: {
+    flex: 1,
+  },
+});
 
 export function ReceiptReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -90,12 +65,27 @@ export function ReceiptReviewScreen() {
     enabled: Boolean(session),
   });
 
+  // Same query key/data as the Accounts screen -- no separate Account
+  // request path. Used only to offer link destinations, never balances.
+  const {
+    data: accounts = [],
+    isLoading: isAccountsLoading,
+    error: accountsError,
+  } = useQuery({
+    queryKey: ["accounts", session?.user.id],
+    queryFn: getAccounts,
+    enabled: Boolean(session),
+  });
+
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState("");
   const [expenseDate, setExpenseDate] = useState("");
   const [description, setDescription] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] = useState<
+    string | null
+  >(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<
     string | null
   >(null);
 
@@ -116,24 +106,25 @@ export function ReceiptReviewScreen() {
     setExpenseDate(receipt.purchase_date_detected ?? "");
     setDescription("");
     setSelectedCategoryId(null);
+    setSelectedAccountId(null);
   }
 
   const confirmMutation = useMutation({
-    mutationFn: () =>
-      confirmReceipt(id, {
-        category_id: selectedCategoryId,
-        title: title.trim(),
-        amount: amount.trim().replace(",", "."),
-        currency: currency.trim().toUpperCase(),
-        expense_date: expenseDate,
-        description: description.trim() || null,
-      }),
+    mutationFn: (payload: ReceiptConfirmInput) => confirmReceipt(id, payload),
 
     onSuccess: async (result) => {
-      await invalidateReceiptConfirmationQueries(
-        queryClient,
-        session?.user.id,
-      );
+      // The confirmed receipt created an Expense, so the Expense/analytics
+      // set (plus the Account caches when the backend linked it -- decided
+      // from the returned expense, not the form) is refreshed through the
+      // shared helper; ["receipts"] also covers ["receipts","detail",id].
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["receipts"] }),
+        invalidateExpenseQueries(
+          queryClient,
+          session?.user.id,
+          result.expense.account_id !== null,
+        ),
+      ]);
 
       router.replace({
         pathname: "/expenses/[id]",
@@ -146,16 +137,16 @@ export function ReceiptReviewScreen() {
       // receipt first (backend-enforced). Refetch the receipt so the
       // screen switches to the "already confirmed" branch instead of
       // staying on a stale editable form the user could keep resubmitting.
+      // Other failures (e.g. an Account currency mismatch) leave the
+      // receipt processed, so the refetch keeps the form and its values.
       queryClient.invalidateQueries({
         queryKey: ["receipts", "detail", id],
       });
 
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to confirm receipt.";
-
-      Alert.alert("Confirm failed", message);
+      Alert.alert(
+        "Confirm failed",
+        getApiErrorMessage(mutationError, "Unable to confirm receipt."),
+      );
     },
   });
 
@@ -169,6 +160,7 @@ export function ReceiptReviewScreen() {
       amount,
       currency,
       expenseDate,
+      description,
     });
 
     if (validationError) {
@@ -176,7 +168,23 @@ export function ReceiptReviewScreen() {
       return;
     }
 
-    confirmMutation.mutate();
+    // One-shot create: the final form values are sent as-is (the backend
+    // falls back to OCR-detected data only for omitted fields).
+    const payload: ReceiptConfirmInput = {
+      category_id: selectedCategoryId,
+      title: title.trim(),
+      amount: normalizeExpenseAmount(amount),
+      currency: currency.trim().toUpperCase(),
+      expense_date: expenseDate.trim(),
+      description: description.trim() || null,
+    };
+
+    // "No account" omits account_id entirely -> an unlinked Expense.
+    if (selectedAccountId !== null) {
+      payload.account_id = selectedAccountId;
+    }
+
+    confirmMutation.mutate(payload);
   }
 
   if (isAuthLoading || isLoading) {
@@ -242,8 +250,8 @@ export function ReceiptReviewScreen() {
   }
 
   return (
-    <SafeAreaView>
-      <ScrollView>
+    <SafeAreaView style={styles.container}>
+      <ScrollView keyboardShouldPersistTaps="handled">
         <Text>Review receipt</Text>
 
         <Text>
@@ -314,7 +322,34 @@ export function ReceiptReviewScreen() {
           placeholder="Description (optional)"
           value={description}
           onChangeText={setDescription}
+          maxLength={500}
         />
+
+        <Text>Account</Text>
+
+        {/* A failed background refetch keeps the last loaded list, so the
+            notice is shown only when no Accounts are available at all --
+            in that state nothing was ever selectable, so the receipt is
+            confirmed unlinked and no selection is ever sent invisibly. */}
+        {isAccountsLoading ? (
+          <ActivityIndicator />
+        ) : accountsError && accounts.length === 0 ? (
+          <Text>
+            Unable to load accounts. You can still confirm this receipt
+            without an account.
+          </Text>
+        ) : (
+          <AccountPicker
+            accounts={accounts}
+            selectedAccountId={selectedAccountId}
+            onChange={setSelectedAccountId}
+          />
+        )}
+
+        <Text>
+          Optional — a linked account&apos;s currency must match this
+          expense&apos;s currency.
+        </Text>
 
         {confirmMutation.isPending ? (
           <ActivityIndicator />

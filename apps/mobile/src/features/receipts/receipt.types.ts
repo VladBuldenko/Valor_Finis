@@ -38,6 +38,11 @@ export type PickedReceiptImage = {
  * Optional corrections sent on confirmation. Matches the backend
  * `ReceiptConfirmRequest` contract -- every field is optional because a
  * value can come either from OCR-detected data or from this correction.
+ *
+ * account_id links the created Expense to an Account (create semantics):
+ * omitted creates an unlinked Expense, a UUID creates the Expense with
+ * its Account debit in the same backend transaction. The backend alone
+ * validates the Account (owned, active, exact currency match).
  */
 export type ReceiptConfirmInput = {
   category_id?: string | null;
@@ -46,6 +51,7 @@ export type ReceiptConfirmInput = {
   currency?: string;
   expense_date?: string;
   description?: string | null;
+  account_id?: string;
 };
 
 export type ReceiptConfirmResult = {

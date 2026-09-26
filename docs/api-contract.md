@@ -1030,7 +1030,7 @@ Confirm Receipt
 
 POST /api/v1/receipts/{receipt_id}/confirm
 
-Request fields are optional corrections to OCR output:
+Request fields are optional corrections to OCR output, plus an optional Account link for the created expense:
 
 {
   "category_id": null,
@@ -1038,8 +1038,22 @@ Request fields are optional corrections to OCR output:
   "amount": "24.99",
   "currency": "EUR",
   "expense_date": "2026-08-09",
-  "description": "Created from receipt"
+  "description": "Created from receipt",
+  "account_id": null
 }
+
+account_id (optional, create semantics):
+
+omitted or null → the created expense is unlinked
+UUID            → the created expense is linked to that account
+
+The account rules are the same as for POST /api/v1/expenses with account_id:
+
+- the account must belong to the authenticated user (otherwise 404 "Account not found.")
+- the account must be active (otherwise 409 "Archived account cannot receive new transactions.")
+- the account currency must exactly match the expense's final currency (otherwise 422 "Expense currency must match the account's currency to link them.")
+
+A linked confirmation also creates the expense's debit account transaction (kind "expense", direction "debit"). The receipt stores no account reference; the response's expense.account_id reports the link.
 
 For confirmation, the final resolved values must contain:
 
@@ -1056,11 +1070,15 @@ processed receipt
       ↓
 create expense
       ↓
+optional account debit (when account_id is set)
+      ↓
 link expense to receipt
       ↓
 receipt status = confirmed
 
-Expense creation and receipt confirmation are atomic.
+Expense creation, the optional account debit, and receipt confirmation are one atomic transaction: if any step fails (for example an account or FX error), no expense, no account transaction, and no receipt change are saved, and the receipt stays processed.
+
+Confirmation locks the receipt row before checking its status, so concurrent confirmations of the same receipt are serialized: exactly one succeeds and the other is rejected as already confirmed.
 
 Response:
 

@@ -187,29 +187,53 @@ def process_receipt(
 
     return map_receipt_to_response(processed_receipt)
 
-# Confirms a processed receipt and creates a linked expense.
+# Confirms a processed receipt and creates a linked expense, optionally
+# linked to an Account.
 # This function exists to atomically convert verified receipt data
 # into an expense and prevent partial database writes.
+#
+# Serialization (VF-017I): the receipt row is locked FIRST
+# (get_receipt_by_id_for_update) and only then checked for
+# confirmability, so a concurrent second confirmation of the same receipt
+# waits for this transaction, re-reads the committed row, and is rejected
+# as already confirmed -- never two Expenses, never two Account debits.
+#
+# Account linkage is passed straight through ExpenseCreate.account_id;
+# expenses_service.create_expense stays the sole authority on Account
+# ownership, archived status, exact currency match, Account row locking,
+# and the debit AccountTransaction projection. Lock order is therefore
+# Receipt -> Account (create_expense resolves FX before locking the
+# Account, so no Account lock is held across FX network I/O).
+#
+# Atomicity: create_expense(commit=False) and update_receipt(commit=False)
+# only flush; the single commit below covers the Expense, its optional
+# AccountTransaction, and the receipt update. Any failure rolls all of
+# them back and releases both locks.
 # Parameters:
 # - db_session: active SQLAlchemy session.
 # - receipt_id: receipt identifier.
-# - confirmation_data: optional user corrections for OCR-detected values.
+# - confirmation_data: optional user corrections for OCR-detected values,
+#   plus an optional account_id for the created Expense.
 # - user_id: authenticated user identifier.
 # Returns:
 # - ReceiptConfirmResponse containing the confirmed receipt
-#   and created expense.
+#   and created expense (with its derived account_id).
 # Raises:
 # - ReceiptNotFoundError when the receipt does not belong to the user.
 # - ReceiptAlreadyConfirmedError when the receipt was already confirmed.
 # - ReceiptConfirmationNotAllowedError when the receipt is not processed.
 # - ReceiptConfirmationDataMissingError when required expense data is missing.
+# - Any error raised by expenses_service.create_expense (e.g.
+#   AccountNotFoundError, AccountArchivedError,
+#   ExpenseAccountCurrencyMismatchError, CategoryNotFoundError, FX
+#   errors), after rolling back.
 def confirm_receipt(
     db_session: Session,
     receipt_id: uuid.UUID,
     confirmation_data: ReceiptConfirmRequest,
     user_id: uuid.UUID,
 ) -> ReceiptConfirmResponse:
-    receipt = receipt_repository.get_receipt_by_id(
+    receipt = receipt_repository.get_receipt_by_id_for_update(
         db_session=db_session,
         receipt_id=receipt_id,
         user_id=user_id,
@@ -254,6 +278,7 @@ def confirm_receipt(
         expense_date=expense_date,
         description=confirmation_data.description,
         source="receipt",
+        account_id=confirmation_data.account_id,
     )
 
     try:
