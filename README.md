@@ -259,14 +259,21 @@ Receipt confirmation and expense creation are performed atomically.
 
 Testing
 
+The test suite deletes all application data between tests, so it must run against a dedicated database whose name ends with _test (for example valor_test) — never the development database valor. pytest refuses to start otherwise.
+
+One-time setup of the local test database (from services/api):
+
+createdb -h localhost -U postgres valor_test
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test alembic upgrade head
+
 Run the complete backend test suite:
 
 cd services/api
-python -m pytest -v
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test python -m pytest -v
 
 Stop on the first failure:
 
-python -m pytest -x -v
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test python -m pytest -x -v
 
 The suite includes unit and integration tests for:
 
