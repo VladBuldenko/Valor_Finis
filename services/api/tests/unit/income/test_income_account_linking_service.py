@@ -10,6 +10,7 @@ from app.modules.accounts import account_repository, account_service, account_tr
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_schemas import AccountCreate, AccountUpdate
+from app.modules.fx.fx_schemas import FxRateResult
 from app.modules.income import income_repository, income_service
 from app.modules.income.income_errors import IncomeAccountCurrencyMismatchError
 from app.modules.income.income_models import IncomeModel
@@ -29,6 +30,31 @@ def _archive(db_session, user_id, account_id) -> None:
         db_session=db_session, account_id=account_id,
         account_data=AccountUpdate(status="archived"), user_id=user_id,
     )
+
+
+# Deterministic stand-in for fx_service.resolve_fx_rate (VF-CI-01).
+# This function exists so Account-linking tests that change an Income to a
+# foreign currency never reach the live ECB/NBU provider: update_income
+# deliberately resolves FX BEFORE locking/validating the Account (no
+# Account row lock is held across network I/O), so without this stand-in
+# those tests depended on external availability and could fail with a
+# provider error instead of exercising the linkage rule under test.
+# Same-currency conversions keep the real identity semantics; any foreign
+# pairing gets a fixed rate. FX resolution itself is covered by the fx
+# module's own tests. Mirrors the Expense account-linking tests' helper.
+# Parameters:
+# - original_currency: the Income's own currency code.
+# - base_currency: the user's base currency code.
+# - transaction_date: the received_at date the rate is resolved for.
+# - as_of: reference "today" (unused).
+# Returns:
+# - FxRateResult with rate 1 ("identity") for same-currency pairs, else
+#   rate 0.9 ("ecb").
+def _deterministic_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
+    if original_currency == base_currency:
+        return FxRateResult(rate=Decimal("1"), actual_rate_date=transaction_date, source="identity")
+
+    return FxRateResult(rate=Decimal("0.9"), actual_rate_date=transaction_date, source="ecb")
 
 
 # ------------------------------------------------------------------
@@ -603,14 +629,20 @@ def test_update_income_same_account_currency_change_matching_succeeds(
 # is rejected when the new currency no longer matches.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to provide a deterministic FX rate.
 # Returns:
 # - None. The test passes if IncomeAccountCurrencyMismatchError is
 #   raised, with no silent auto-detach.
 def test_update_income_same_account_currency_change_mismatched_rejected(
-    clean_database: None,
+    clean_database: None, monkeypatch: MonkeyPatch,
 ) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
+
+    # The EUR -> USD change resolves FX before the Account currency check.
+    monkeypatch.setattr(
+        income_service.fx_service, "resolve_fx_rate", _deterministic_resolve_fx_rate,
+    )
 
     try:
         account = _create_account(db_session, user_id, currency="EUR")
@@ -643,13 +675,19 @@ def test_update_income_same_account_currency_change_mismatched_rejected(
 # to USD succeeds because the final currency matches the final Account.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to provide a deterministic FX rate.
 # Returns:
 # - None. The test passes if the combined update succeeds.
 def test_update_income_currency_and_account_id_together_final_state_valid(
-    clean_database: None,
+    clean_database: None, monkeypatch: MonkeyPatch,
 ) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
+
+    # The EUR -> USD change resolves FX before the Account locks/checks.
+    monkeypatch.setattr(
+        income_service.fx_service, "resolve_fx_rate", _deterministic_resolve_fx_rate,
+    )
 
     try:
         account_a = _create_account(db_session, user_id, name="A", currency="EUR")
@@ -681,11 +719,19 @@ def test_update_income_currency_and_account_id_together_final_state_valid(
 # match at all.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to provide a deterministic FX rate.
 # Returns:
 # - None. The test passes if the combined update succeeds.
-def test_update_income_currency_and_detach_together_succeeds(clean_database: None) -> None:
+def test_update_income_currency_and_detach_together_succeeds(
+    clean_database: None, monkeypatch: MonkeyPatch,
+) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
+
+    # The EUR -> USD change resolves FX before the detach is applied.
+    monkeypatch.setattr(
+        income_service.fx_service, "resolve_fx_rate", _deterministic_resolve_fx_rate,
+    )
 
     try:
         account = _create_account(db_session, user_id, currency="EUR")
