@@ -6,7 +6,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from app.modules.fx import fx_ecb_provider
+from app.modules.fx import fx_ecb_provider, fx_service
+from app.modules.fx.fx_schemas import FxRateResult
 from tests.helpers import (
     auth_headers,
     create_budget,
@@ -37,6 +38,30 @@ def _mock_ecb(monkeypatch, rate: float, actual_date: str) -> MagicMock:
     get_mock = MagicMock(return_value=response)
     monkeypatch.setattr(fx_ecb_provider.httpx, "get", get_mock)
     return get_mock
+
+
+# Deterministic stand-in for fx_service.resolve_fx_rate (VF-CI-01).
+# This function exists for tests that create a foreign-currency Expense
+# only as analytics input (e.g. to prove it is excluded from a EUR
+# budget), not to test FX: creating that Expense through the API resolves
+# FX, which otherwise reached the live ECB provider and made these tests
+# depend on external availability. Patching the application FX boundary
+# keeps Expense creation a real API call while replacing only the external
+# provider. Same-currency conversions keep the real identity semantics; any
+# foreign pairing gets a fixed rate.
+# Parameters:
+# - original_currency: the Expense's own currency code.
+# - base_currency: the user's base currency code.
+# - transaction_date: the Expense date the rate is resolved for.
+# - as_of: reference "today" (unused).
+# Returns:
+# - FxRateResult with rate 1 ("identity") for same-currency pairs, else
+#   rate 0.9 ("ecb").
+def _deterministic_resolve_fx_rate(original_currency, base_currency, transaction_date, as_of):
+    if original_currency == base_currency:
+        return FxRateResult(rate=Decimal("1"), actual_rate_date=transaction_date, source="identity")
+
+    return FxRateResult(rate=Decimal("0.9"), actual_rate_date=transaction_date, source="ecb")
 
 
 # Computes the inclusive [start, end] bounds of the calendar month
@@ -2451,15 +2476,20 @@ def test_budget_status_endpoint_ownership_isolation(
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to provide a deterministic FX rate.
 # Returns:
 # - None. The test passes if only the EUR expense counts toward the EUR budget.
 def test_budget_status_endpoint_currency_mismatch_excluded(
     client: TestClient,
     clean_database: None,
+    monkeypatch,
 ) -> None:
     # Arrange
     user_id = str(uuid4())
     today = date.today()
+
+    # The USD expense is analytics input only; its creation resolves FX.
+    monkeypatch.setattr(fx_service, "resolve_fx_rate", _deterministic_resolve_fx_rate)
 
     create_budget_with(
         client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
@@ -2750,15 +2780,20 @@ def test_budget_status_endpoint_future_expense_does_not_affect_metrics(
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to provide a deterministic FX rate.
 # Returns:
 # - None. The test passes if metrics ignore the foreign-currency expense.
 def test_budget_status_endpoint_mixed_currency_expense_does_not_affect_metrics(
     client: TestClient,
     clean_database: None,
+    monkeypatch,
 ) -> None:
     # Arrange
     user_id = str(uuid4())
     today = date.today()
+
+    # The USD expense is analytics input only; its creation resolves FX.
+    monkeypatch.setattr(fx_service, "resolve_fx_rate", _deterministic_resolve_fx_rate)
 
     create_budget_with(
         client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
