@@ -176,24 +176,44 @@ posted transfer, consistent with adjustments.
 Service flow:
 
 1. Validate the request schema (section 23).
-2. **Idempotency fast path**: look up an existing transfer by
-   `(user_id, client_request_id)` without locks. If found, compare and return
-   replay (200) or conflict (409). No account business validation runs on
-   this path (section 10).
-3. Lock both Accounts `FOR UPDATE`, scoped by `user_id`, in ascending UUID
-   order. This happens for **both** planned and posted creates (reason in
-   section 11.4). A missing or foreign Account → 404.
-4. Validate: both Accounts `active` (else 409), same currency (else 422).
-5. Insert the canonical transfer (flush) with `currency` = the Accounts'
-   currency and the status/date fields from the table above.
-6. If posted: create both ledger projections with one repository primitive
+2. **Fast idempotency lookup** by `(user_id, client_request_id)`, without
+   locks. If a transfer is found: same original create payload → 200 with its
+   current state; different payload → 409. Current Account
+   ownership/status/currency business validation is **not** run
+   (section 10.3).
+3. If not found: lock both Accounts `FOR UPDATE`, scoped by `user_id`, in
+   ascending UUID order. This happens for **both** planned and posted creates
+   (reason in section 11.4). Locking is user-scoped, so a missing or foreign
+   Account simply cannot be locked; its 404 is reported in step 5, not here.
+4. **Second idempotency lookup** by `(user_id, client_request_id)`, performed
+   only after both Account locks are held. This lookup is required: another
+   request may have committed the same logical transfer while this request
+   was waiting for the Account locks. If found: same payload → 200 with the
+   current state; different payload → 409. Current Account business
+   validation is **not** run.
+5. Only if the second lookup is also empty: current Account business
+   validation — both Accounts exist and belong to the user (else 404), both
+   are `active` (else 409), same currency (else 422).
+6. Insert the canonical transfer (flush) with `currency` = the Accounts'
+   currency and the status/date fields from the table above; if posted,
+   create both ledger projections with one repository primitive
    (section 15).
 7. Commit once.
-8. If step 5 fails on the `(user_id, client_request_id)` unique constraint
-   (concurrent duplicate), roll back, reload the existing transfer, compare,
-   and return 200 or 409 (section 10).
+8. **Final race defense:** if the insert in step 6 fails on
+   `uq_account_transfers_user_id_client_request_id` (another request with the
+   same key still reached INSERT — for example one using different Accounts
+   and therefore not serialized by the same Account locks), roll back, reload
+   the existing transfer, compare, and return 200 or 409 (section 10.5). The
+   database UNIQUE invariant stays in place and is never bypassed.
 
-Response: `201 Created` with `AccountTransferResponse`.
+**Idempotent replay semantics take precedence over current Account lifecycle
+state once the logical transfer already exists.** Example: a transfer is
+created successfully; an Account is archived afterward; an exact retry with
+the same `client_request_id` and the same payload still returns 200 with the
+existing transfer (resolved in step 2 or step 4), never 409
+`AccountArchivedError`.
+
+Response: `201 Created` with `AccountTransferResponse` (200 for a replay).
 
 ---
 
@@ -235,6 +255,10 @@ Service flow:
    ledger rows.
 
 `planned_date` is never modified by posting.
+
+Validation precedence: because step 1 runs before the transfer lookup, an
+invalid or future `effective_date` produces 422 even when the transfer does
+not exist (404) or is already posted (409).
 
 Response: `200 OK` with `AccountTransferResponse` (status `posted`).
 
@@ -305,7 +329,9 @@ Same `client_request_id` and the same original create payload:
 - No response cache: the current representation is returned.
 - **Account business validation is not rerun.** The operation already
   happened. If an Account was archived after the original create, the
-  identical replay still returns the existing transfer, not 409.
+  identical replay still returns the existing transfer, not 409. This holds
+  whether the existing transfer is found by the fast lookup or by the second
+  lookup after the Account locks (section 7, steps 2 and 4).
 - No reclassification: a retry that arrives after midnight still returns the
   record classified at original create time.
 
@@ -318,6 +344,13 @@ Same `client_request_id` and the same original create payload:
 | `amount` | `amount`, as Decimal equality (`"300"` equals `"300.00"`) |
 | `transfer_date` | `COALESCE(planned_date, effective_date)` |
 | `description` | `description`, after schema normalization |
+
+Description normalization: existing schemas (Income, Expense, adjustment)
+apply no description normalization beyond `max_length`, so no canonical
+project rule exists. Whether the transfer create schema normalizes
+`description` (for example trimming or blank → null) is an explicit VF-018C
+implementation decision. Either way the comparison uses the value the schema
+produces and stores, so it stays deterministic.
 
 `COALESCE(planned_date, effective_date)` always reconstructs the original
 request date because `planned_date` is immutable and an immediately posted
@@ -335,16 +368,25 @@ Same `client_request_id`, different payload:
 
 ### 10.5 Concurrent duplicate create
 
-Two requests with the same key can both miss the fast-path lookup. The
-second INSERT then fails on `uq_account_transfers_user_id_client_request_id`.
+Two requests with the same key can both miss the fast lookup (section 7,
+step 2). Two layers resolve this:
 
-- The repository catches `IntegrityError`, reads
-  `error.orig.diag.constraint_name` (existing pattern in
-  `budget_repository.py`), and raises an internal signal.
-- The service rolls back (releasing Account locks), reloads the existing
-  transfer by `(user_id, client_request_id)`, compares, and returns 200 or
-  409.
-- Never a 500.
+- **Second lookup under Account locks (step 4).** Identical-payload
+  duplicates target the same two Accounts, so the later request waits for the
+  earlier one's Account locks, then finds the committed transfer in the
+  second lookup and returns 200 — without rerunning Account business
+  validation, even if an Account was archived in the meantime.
+- **UNIQUE constraint (step 8), the final defense.** Requests with the same
+  key but different Accounts are not serialized by the same Account locks and
+  can both reach INSERT. The second INSERT then fails on
+  `uq_account_transfers_user_id_client_request_id`:
+  - the repository catches `IntegrityError`, reads
+    `error.orig.diag.constraint_name` (existing pattern in
+    `budget_repository.py`), and raises an internal signal;
+  - the service rolls back (releasing Account locks), reloads the existing
+    transfer by `(user_id, client_request_id)`, compares, and returns 200 or
+    409;
+  - never a 500.
 
 ### 10.6 After deletion — accepted residual MVP risk
 
@@ -385,12 +427,16 @@ A transfer is never silently posted into or out of an archived Account.
 ### 11.2 Currency change
 
 An Account referenced by any **planned** transfer (as source or destination)
-cannot change currency → 409 `AccountReferencedByPlannedTransferError`.
+cannot **actually** change currency → 409
+`AccountReferencedByPlannedTransferError`.
 
 The planned amount is expressed in that currency; changing it would make the
 plan meaningless. The composite currency FK (section 20) already blocks the
 change at the database level; without the service check `update_account`
-would fail with a raw `IntegrityError` (500).
+would fail with a raw `IntegrityError` (500). A same-value currency update
+(no actual change, including a different casing normalized by the schema)
+keeps existing behavior and is not rejected merely because a planned transfer
+exists. The protection algorithm is in section 11.3.
 
 ### 11.3 Account deletion
 
@@ -401,14 +447,38 @@ check, FK RESTRICT would surface as a 500 (planned transfers have no ledger
 rows, so the existing `has_transactions_for_account` check does not see
 them).
 
-Check order inside `update_account` / `delete_account`, under the existing
-Account `FOR UPDATE` lock:
+**Protection algorithm** — applies to Account DELETE and to an **actual**
+currency change (`delete_account` / `update_account`):
 
-1. existing ledger-history check → existing errors
-   (`AccountCurrencyImmutableError` / `AccountDeletionNotAllowedError`);
-2. then the planned-reference check → `AccountReferencedByPlannedTransferError`.
+1. Lock the Account `FOR UPDATE` first (existing
+   `get_account_by_id_for_update` pattern).
+2. Existing ledger-history check → existing errors
+   (`AccountCurrencyImmutableError` / `AccountDeletionNotAllowedError`). A
+   posted transfer always implies ledger rows, so it is caught here.
+3. **Before issuing the Account DELETE or currency UPDATE**, while the
+   Account lock is still held, check with a plain read whether any
+   **planned** transfer references the Account as source or destination. If
+   one does → 409 `AccountReferencedByPlannedTransferError`.
+4. Only when no planned reference exists may the DELETE / currency UPDATE
+   proceed.
 
-A posted transfer always implies ledger rows, so it is caught by step 1.
+Rules:
+
+- The planned-reference check is a **read**. The Account lifecycle path never
+  takes `FOR UPDATE` (or any explicit lock) on `account_transfers` rows.
+- The FK is the last line of defense only. The service never relies on FK
+  enforcement to discover a planned reference during the write. Doing so
+  would create a reverse lock dependency: while the Account lock is held,
+  PostgreSQL's FK enforcement on an Account DELETE or referenced-key UPDATE
+  row-locks the referencing `account_transfers` rows (`FOR KEY SHARE`),
+  giving Account → Transfer. Transfer deletion takes Transfer → Account
+  (section 9). The pre-write check avoids that inversion and returns a
+  controlled 409 instead of `IntegrityError`/500.
+- Archive (`status='archived'`) and other non-currency metadata updates do
+  **not** run the planned-reference lookup; archiving stays allowed
+  (section 11.1).
+- A same-value currency update does not run the lookup either and keeps
+  existing behavior (section 11.2).
 
 ### 11.4 Why create locks Accounts even for planned transfers
 
@@ -608,8 +678,10 @@ Level 2: Account rows — always in ascending UUID order
 | Transfer create (planned or posted) | Accounts ascending |
 | Transfer post | Transfer `FOR UPDATE` → Accounts ascending |
 | Transfer delete | Transfer `FOR UPDATE` → Accounts ascending |
-| Idempotent replay | none (read only) |
-| Account update / archive / delete | one Account; `account_transfers` is **read** under that lock, never locked |
+| Idempotent replay — fast lookup (section 7, step 2) | none (read only) |
+| Idempotent replay — second lookup (section 7, step 4) | Account locks from step 3 are already held; released on return |
+| Account DELETE / actual currency change | one Account; planned references in `account_transfers` are **read** under that lock before the write, never locked (section 11.3) |
+| Account archive / other metadata updates | one Account; `account_transfers` is not queried |
 | Existing Income/Expense/Receipt paths (unchanged) | canonical row → Account(s) ascending |
 
 All existing lock-taking paths already follow this hierarchy
@@ -627,6 +699,11 @@ in Python in every path, so the order is consistent across callers.
 - Implicit FK locks (`FOR KEY SHARE` on referenced Accounts during INSERT)
   are taken by a transaction that already holds `FOR UPDATE` on those
   Accounts. Every other writer also locks the Account first.
+- In the reverse direction, the Account lifecycle path must never make
+  PostgreSQL's FK enforcement row-lock `account_transfers` rows while it
+  holds an Account lock. The pre-write planned-reference check (section 11.3)
+  guarantees that an Account DELETE / currency UPDATE is issued only when no
+  referencing transfer exists.
 - This is a design argument, not a proof that no PostgreSQL deadlock can ever
   occur. It must be verified by real-thread concurrency tests (section 25).
   A detected deadlock would surface as an unhandled 500, so the ordering is
@@ -642,13 +719,15 @@ in Python in every path, so the order is consistent across callers.
 | C4 | Post ∥ delete of the same transfer | Either posted-then-deleted (balances restored) or deleted-then-404; never orphan ledger rows |
 | C5 | Post ∥ archive source (and separately destination) | Either posted then archived, or 409 with the transfer still planned and zero rows |
 | C6 | Post T1 (A→B) ∥ post T2 (B→A) | Both succeed, no deadlock |
-| C7 | Transfer create/post ∥ Income or Expense move across the same Accounts | Both succeed, no deadlock, exact balances |
-| C8 | Planned create ∥ currency change of a fresh Account | Either plan created + currency change 409, or currency changed + plan 422; never 500 |
+| C7 | Transfer create ∥ Income or Expense move across the same Accounts | Both succeed, no deadlock, exact balances |
+| C8 | Planned create A→B (A and B both EUR, A fresh with no history) ∥ actual currency change of A to USD (B stays EUR) | Either plan created first + currency change 409, or currency changed first + plan 422 (currency mismatch); never 500. The currency change must produce a mismatch: if the new currency still matched B, creating the plan would validly succeed |
 | C9 | Planned create ∥ deletion of a fresh Account | Either plan created + delete 409, or Account deleted + plan 404; never 500 |
 | C10 | Planned delete ∥ Account delete | Clean 409 or 204 outcomes; never 500 |
-| C11 | Same `client_request_id` + same payload, concurrently | Exactly one transfer; one 201 and one 200 |
+| C11 | Same `client_request_id` + same payload, concurrently | Exactly one transfer; one 201 and one 200 (the later request resolved by the second lookup after the Account locks) |
 | C12 | Same `client_request_id`, different Accounts, concurrently | One 201 and one 409 via the IntegrityError path; never 500 |
 | C13 | Posted create ∥ archive of either Account | Either created then archived, or 409 with nothing written |
+| C14 | Same `client_request_id` + same payload, concurrently, while a third request archives one of the Accounts after the first create commits | Exactly one transfer; the duplicate returns 200 (second lookup), never 409 `AccountArchivedError` |
+| C15 | Transfer post ∥ Income or Expense move across the same Accounts | Both succeed, no deadlock, exact balances |
 
 ---
 
@@ -770,7 +849,7 @@ docstring, in the style of `811506d8afd2` / `7dd404d0d20e`.
 ### 20.6 No triggers
 
 No trigger, deferred constraint trigger, or generated-column FK is
-introduced. Both alternatives were evaluated and rejected as new schema
+introduced. These alternatives were evaluated and rejected as new schema
 patterns with marginal benefit (section 21).
 
 ### 20.7 Test infrastructure implication
@@ -794,7 +873,7 @@ after `AccountTransactionModel` and before `AccountModel`.
 | At most one debit and one credit row per transfer | DB UNIQUE `(transfer_id, direction)` |
 | A transfer row is never also an Income/Expense row | DB linkage CHECK |
 | Projection ownership matches the transfer | DB composite FK `(transfer_id, user_id)` |
-| One create per `(user_id, client_request_id)` | DB UNIQUE |
+| One create per `(user_id, client_request_id)` | Service fast lookup + second lookup under Account locks; DB UNIQUE as the final race defense |
 | `planned_date > today` at create; `effective_date <= today` | Service (depends on server date; not expressible as an immutable CHECK) |
 | **Planned transfer has zero ledger rows** | Service: `create_transfer_projections` guard on `status == 'posted'`, called only from posted create and post |
 | **Posted transfer has exactly two correct rows** (debit on source, credit on destination, amount = transfer.amount, transaction_date = effective_date) | Service atomicity + single two-row primitive + no per-row update/delete primitive; supported by DB uniqueness/linkage and integrity tests |
@@ -997,7 +1076,7 @@ twice across an assertion boundary.
 - `source == destination` → 422.
 - Missing `client_request_id` → 422.
 - Extra fields (`currency`, `status`, `user_id`, `kind`, `planned_date`,
-  `effective_date`) → 422.
+  `effective_date`, `posted_at`) → 422.
 - Description > 500 → 422.
 - Post body: extra fields rejected; empty body accepted.
 
@@ -1016,6 +1095,8 @@ twice across an assertion boundary.
   `planned_date` preserved, rows dated `effective_date` (not `planned_date`),
   balances updated, visible in history.
 - Future `effective_date` → 422; transfer stays planned with zero rows.
+- Validation precedence: future `effective_date` on a missing or
+  already-posted transfer → 422 (section 8).
 - Already posted → 409.
 - Foreign or missing transfer → 404.
 - Source archived / destination archived → 409; stays planned, zero rows,
@@ -1040,7 +1121,10 @@ twice across an assertion boundary.
   409, nothing written.
 - `"300"` vs `"300.00"` treated as identical.
 - Same UUID used by two users → two independent 201s.
-- Concurrent duplicates (C11, C12).
+- Concurrent duplicates (C11, C12), including the duplicate-plus-archive race
+  (C14).
+- Identical replay found by the second lookup (after the Account locks) does
+  not rerun Account business validation.
 - Retry after DELETE creates a new transfer (documented accepted behavior).
 - Direct INSERT violating `UNIQUE(user_id, client_request_id)`.
 
@@ -1052,9 +1136,11 @@ twice across an assertion boundary.
 - Retry → 404.
 
 ### 25.7 Account lifecycle interaction
-- Account delete / currency change while referenced by a planned transfer →
-  409 `AccountReferencedByPlannedTransferError` (never 500); allowed after the
-  planned transfer is deleted.
+- Account delete / actual currency change while referenced by a planned
+  transfer → 409 `AccountReferencedByPlannedTransferError` (never 500);
+  allowed after the planned transfer is deleted.
+- Same-value currency update on an Account referenced by a planned transfer
+  → accepted as a no-op (existing behavior).
 - Archive while referenced by a planned transfer → allowed; the transfer
   stays planned.
 - Account with a posted transfer → existing 409 history errors; allowed again
@@ -1089,7 +1175,7 @@ twice across an assertion boundary.
   created.
 
 ### 25.11 Concurrency
-- C1–C13 (section 19.3), including post/post, post/delete, opposite-direction
+- C1–C15 (section 19.3), including post/post, post/delete, opposite-direction
   transfers, and interaction with Income moves.
 
 ### 25.12 Migration / security
@@ -1207,8 +1293,8 @@ previous slice is merged. Nothing below is implemented yet.
 |---|---|
 | **VF-018A** | This contract document. |
 | **VF-018B** | Schema/domain foundation: `account_transfer_models.py`; the migration (section 20), including the guarded REVOKE; repository primitives (transfer create/read/lock/delete, `create_transfer_projections` with the status guard); AccountTransaction transfer linkage in the model (`transfer_id`, kind, CHECKs) and in `AccountTransactionResponse` (`kind` accepts `transfer`, `transfer_id` exposed — so history never breaks once a transfer row can exist); model registration; `clean_database` update; DB constraint tests; migration/security tests; `docs/database-schema.md`. No endpoints. Requires a production backup before deployment and the section 22 checklist. |
-| **VF-018C** | Create (planned + posted, with idempotency), list, delete; planned-reference Account protections (section 11) — these must ship together with the first ability to create a planned transfer; `counterparty_account_id` history read model; service/router/idempotency tests; concurrency C1, C2, C7–C13; analytics non-impact and balance-sum tests; `docs/api-contract.md` and `docs/architecture.md` updates. |
-| **VF-018D** | Manual posting endpoint (`POST /{id}/post`); posting concurrency C3–C6; documentation updates. |
+| **VF-018C** | Create (planned + posted, with idempotency), list, delete; planned-reference Account protections (section 11) — these must ship together with the first ability to create a planned transfer; `counterparty_account_id` history read model; service/router/idempotency tests; create/delete/Account-lifecycle concurrency C1, C2, C7–C14; analytics non-impact and balance-sum tests; `docs/api-contract.md` and `docs/architecture.md` updates. |
+| **VF-018D** | Manual posting endpoint (`POST /{id}/post`); posting-specific concurrency C3–C6 and C15; documentation updates. |
 | **VF-018E** | Mobile planned/posted transfers (section 26). |
 | Later | Planner, projected balance, user timezone, planned Income/Expense, scheduler, recurring transfers — each only after separate approval. |
 
