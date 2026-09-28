@@ -282,17 +282,20 @@ cd services/api
 .venv/bin/alembic current
 .venv/bin/alembic upgrade head
 
+# tests: ALWAYS target the dedicated test database explicitly
 # targeted
-.venv/bin/python -m pytest tests/<relevant-path> -q
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test .venv/bin/python -m pytest tests/<relevant-path> -q
 
 # full regression
-.venv/bin/python -m pytest -q
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test .venv/bin/python -m pytest -q
 
 # local API
 .venv/bin/uvicorn app.main:app --reload
 ```
 
 Backend `tests/unit` and `tests/integration` currently use real PostgreSQL. "Unit" means layer-focused, not DB-mocked.
+
+Test database safety: the suite deletes all application data between tests. Never run pytest against the development database `valor` (the `.env` default) or any non-test database. `tests/conftest.py` fails closed unless the effective database name ends with `_test`; do not bypass it. Migrate the test database with the same explicit `DATABASE_URL` (`... alembic upgrade head`).
 
 Mobile:
 

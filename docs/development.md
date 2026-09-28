@@ -260,9 +260,18 @@ domain error mapping
 authentication
 transaction-sensitive operations
 
+Test database:
+
+The suite deletes all application data between tests, so it must run against a dedicated database whose name ends with _test (for example valor_test), never the development database valor. tests/conftest.py enforces this: pytest aborts with a usage error before any test runs if DATABASE_URL points anywhere else.
+
+One-time setup (from services/api):
+
+createdb -h localhost -U postgres valor_test
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test alembic upgrade head
+
 Before completing backend work:
 
-python -m pytest -x -v
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test python -m pytest -x -v
 
 The local green test suite is the primary development check.
 
