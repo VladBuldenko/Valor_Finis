@@ -1609,19 +1609,19 @@ GET
 
 200
 
-VF-017B scope: an Account represents where real money is held - checking,
-savings, or cash. Credit cards, debt/liability accounts, investment
-accounts, account-to-account transfers, Income, Expense <-> Account
-integration, and Goal <-> Account movement are all explicitly NOT part of
-this slice. There is no GET /api/v1/accounts/{account_id} endpoint -
-mobile detail screens resolve a single account from the list response,
-matching the established Goals pattern.
+An Account represents where real money is held - checking, savings, or
+cash. Credit cards, debt/liability accounts, investment accounts,
+account-to-account transfers, and Goal <-> Account movement are not
+implemented. Income and Expense can optionally be linked to an Account
+(VF-017D / VF-017E) - see the Income and Expenses sections. There is no
+GET /api/v1/accounts/{account_id} endpoint - mobile detail screens
+resolve a single account from the list response, matching the
+established Goals pattern.
 
 Account != Budget: a Budget is a spending limit/allocation and has no
-relationship to Account cash, in this slice or any future one. An
-Account's spending never feeds Budget analytics differently based on
-whether an Expense happens to be linked to an Account - that link does
-not exist yet at all.
+relationship to Account cash, now or in any future slice. Whether an
+Expense is linked to an Account never changes how it feeds Budget
+analytics.
 
 Balance model: current_balance is READ-ONLY on every Account endpoint. It
 is not accepted by POST /api/v1/accounts or PATCH
