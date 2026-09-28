@@ -105,9 +105,15 @@ class ReceiptUpdate(BaseModel):
         description="Merchant name detected by OCR.",
         examples=["Lidl"],
     )
+    # Same NUMERIC(12,2) limits as ExpenseCreate.amount (VF-API-01): a
+    # stored detected total becomes the Expense amount when confirmation
+    # omits a corrected amount, so it must never hold a value ExpenseCreate
+    # would reject later inside confirm_receipt.
     total_amount_detected: Optional[Decimal] = Field(
         default=None,
         gt=0,
+        max_digits=12,
+        decimal_places=2,
         description="Total amount detected by OCR.",
         examples=["24.99"],
     )
@@ -230,9 +236,15 @@ class ReceiptConfirmRequest(BaseModel):
         description="Corrected expense title or merchant name.",
         examples=["LIDL"],
     )
+    # amount/description use the same limits as ExpenseCreate
+    # (NUMERIC(12,2), VARCHAR(500)) because confirm_receipt builds an
+    # ExpenseCreate from them (VF-API-01): out-of-range corrections are
+    # rejected here with 422 instead of failing inside the service.
     amount: Optional[Decimal] = Field(
         default=None,
         gt=0,
+        max_digits=12,
+        decimal_places=2,
         description="Corrected receipt total amount.",
         examples=["24.99"],
     )
@@ -250,6 +262,7 @@ class ReceiptConfirmRequest(BaseModel):
     )
     description: Optional[str] = Field(
         default=None,
+        max_length=500,
         description="Optional description for the created expense.",
         examples=["Created from receipt scan."],
     )
