@@ -1,423 +1,233 @@
 🗺 Roadmap — Valor Finis
 
-This document describes the current project status and the planned development direction for Valor Finis.
+This document describes the current project state and the current development direction for Valor Finis.
 
-The roadmap is intentionally focused on major product milestones rather than small implementation tasks.
+It focuses on major product milestones rather than small implementation tasks. The direction below reflects today's priorities; it is not an immutable long-term promise.
 
 1. Current Status
 
-Backend MVP        ✅ Complete
-Testing            ✅ Complete
-Docker             ✅ Complete
-CI                 ✅ Complete
-Documentation      ✅ Complete
-Production setup   ⏳ Next
-Web client         ⏳ Planned
-Mobile client      ⏳ Planned
+Backend (FastAPI modular monolith)        ✅ Implemented, deployed in production
+Mobile client (Expo / React Native)       ✅ Implemented for the core finance flows
+Financial ledger / money-flow foundation  ✅ Implemented
+Account Transfers                         ⏳ Next — specification/discovery first
+Goal ↔ Account semantics                  ⏳ Requires product discovery
+Web client                                Later
 
-The current backend provides a stable foundation for client integration.
+Valor Finis has moved beyond a CRUD MVP into a financial ledger / money-flow foundation. It is not feature-complete.
 
-It is not yet considered production-ready until production authentication, deployment, and end-to-end verification are completed.
+2. Implemented Foundation
 
-2. Completed Backend Milestones
+2.1 Backend Platform
 
-Core Finance
+FastAPI modular monolith (Router → Service → Repository → SQLAlchemy → PostgreSQL)
 
-Expenses     ✅
-Categories   ✅
-Budgets      ✅
-Goals        ✅
-Analytics    ✅
+PostgreSQL + SQLAlchemy 2 + Alembic (every schema change is a versioned migration)
 
-Implemented capabilities include:
+Supabase Auth integration (Authorization: Bearer <token>); AUTH_MODE is required and fails closed; development X-User-Id auth is local/test-only
 
-user-scoped financial data;
+Production deployment: the backend runs on Render, with Supabase-hosted PostgreSQL, Auth, and receipt Storage; production schema changes are applied through Alembic
 
-expense CRUD;
+Security hardening: Supabase Data API (PostgREST) access to application tables is revoked (VF-SEC-01); FastAPI is the only business-data gateway
 
-category CRUD;
+Centralized domain-error → HTTP mapping
 
-case-insensitive category uniqueness;
+Historical FX snapshots and base-currency analytics (ECB / NBU providers)
 
-protected default categories;
+API/database validation parity: request schemas reject values the storage columns cannot hold exactly (e.g. amounts beyond NUMERIC(12,2), descriptions over 500 characters) with 422 instead of silent rounding or a 500
 
-budget CRUD;
+2.2 Quality and CI
 
-duplicate budget protection;
+GitHub Actions backend CI: PostgreSQL 16 → Python 3.9 → Alembic upgrade head → pytest
 
-goal CRUD;
+Test database safety: pytest refuses to run unless the database name ends with _test (e.g. valor_test), because the suite deletes application data
 
-financial validation;
+Deterministic tests: business tests never depend on live ECB/NBU availability (the FX resolution boundary is replaced where FX is not under test; provider tests use mocked HTTP)
 
-spending analytics;
+Concurrency tests for ledger and lifecycle races (row locking)
 
-budget status analytics;
+2.3 Finance Domain
 
-goal progress analytics.
+Expenses — CRUD, categories, historical FX snapshot, optional Account link (debit projection)
 
-Receipt Flow
+Categories — CRUD, case-insensitive uniqueness, protected defaults, hide instead of delete when referenced by a budget
 
-Receipt CRUD                 ✅
-Receipt upload               ✅
-File validation              ✅
-Local receipt storage        ✅
-OCR foundation               ✅
-OCR processing               ✅
-Receipt parsing              ✅
-Receipt confirmation         ✅
-Expense creation from receipt ✅
-Atomic confirmation flow     ✅
+Budgets v2 — weekly/monthly/yearly periods, versioned history (BudgetVersion), calendar-aware budget status, pace/projection/risk metrics
 
-Current receipt lifecycle:
+Goals v2 — GoalTransaction ledger (opening balance, contributions, withdrawals); balance is ledger-derived and never negative; overfunding allowed; archive instead of delete once history exists
 
-uploaded
-   ↓
-processing
-   ↓
-processed
-   ↓
-confirmed
+Accounts — checking/savings/cash; AccountTransaction ledger (opening balance, manual adjustments, income and expense projections); balance is ledger-derived and may be negative; archive instead of delete once history exists
 
-Failure path:
+Income — salary/freelance/refund/gift/other, historical FX snapshot, optional Account link (credit projection)
 
-processing
-   ↓
-failed
+Receipts — upload, storage (local or Supabase Storage), OCR, parsing, confirmation into an Expense with an optional Account link; confirmation is atomic and serialized per receipt
 
-Authentication
+2.4 Analytics v2
 
-Development auth       ✅
-Supabase auth support  ✅
-User ownership rules   ✅
-Auth error handling    ✅
+Monthly and category summaries in the user's base currency
 
-Development mode:
+Spending trend and category trend
 
-X-User-Id
+Current-month spending forecast (expense-only)
 
-Supabase mode:
+Budget status with period metrics (pace, projection, risk)
 
-Authorization: Bearer <token>
+Goal progress
 
-Production Supabase end-to-end verification is still pending.
+Income is not yet part of any analytics endpoint; there is no cash-flow or net-income analytics yet.
 
-API Consistency
+2.5 Mobile Client (apps/mobile)
 
-Versioned API routes           ✅
-Pydantic request validation    ✅
-PATCH update contracts         ✅
-Centralized domain errors      ✅
-Consistent HTTP responses      ✅
+Expo SDK 57, Expo Router, TanStack Query, TypeScript (strict)
 
-Current API prefix:
+Supabase email/password sign-in; protected routes
 
-/api/v1
+Dashboard
 
-Database
+Expenses — create/edit/delete, currency, optional Account link
 
-PostgreSQL              ✅
-SQLAlchemy              ✅
-Alembic                 ✅
-Fresh DB migrations     ✅
-Constraints / indexes   ✅
+Categories and Budgets management
 
-Current persisted entities:
+Goals — funding (contributions/withdrawals), transaction history, archived goals
 
-categories
-expenses
-budgets
-goals
-receipts
+Analytics
 
-The full migration chain can rebuild the schema from an empty PostgreSQL database.
+Accounts — active/archived lists, create with optional opening balance, detail with transaction history, manual adjustments, edit, archive/reactivate, delete when no history
 
-Testing
+Income — list/create/edit/delete with optional Account link
 
-Unit tests          ✅
-Integration tests   ✅
-Database tests      ✅
-Auth tests          ✅
-Receipt flow tests  ✅
-Error mapping tests ✅
+Receipts — upload, review, and confirmation with an optional Account link
 
-The backend test suite is part of the Definition of Done for backend changes.
+2.6 Receipts Status
 
-Docker
+Receipt upload, OCR, and confirmation are implemented and remain available. Further Receipt/OCR expansion is deferred for now and is not the next product milestone. This is a prioritization decision, not a technical deprecation.
 
-FastAPI container        ✅
-PostgreSQL container     ✅
-Database healthcheck     ✅
-Automatic migrations     ✅
-Persistent DB volume     ✅
-Receipt upload volume    ✅
+3. Financial Model
 
-Local startup:
+These distinctions are part of the product and must be preserved:
 
-docker compose up --build
+ACCOUNT
+= a real-world place where money exists (checking, savings, cash)
+= balance derived from its AccountTransaction ledger
+= balance may be negative
 
-Continuous Integration
+INCOME
+= money received
+= may optionally project a credit into an Account
 
-GitHub Actions backend CI is implemented.
+EXPENSE
+= money spent
+= may optionally project a debit into an Account
 
-Pipeline:
+BUDGET
+= a spending allocation / limit
+= NOT stored cash
 
-Push / Pull Request
+GOAL
+= an aspirational savings target
+= has its own GoalTransaction ledger
+= currently NOT connected to any Account or other cash source
+
+Income and Expense are the canonical records; their AccountTransaction rows are synchronized projections. GoalTransaction and AccountTransaction are separate ledgers.
+
+4. Current Product Phase
+
+Financial ledger / money-flow foundation
+
+Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Goals track savings progress on their own ledger. The next work extends how money moves between Accounts.
+
+5. Next Milestone — Account Transfers
+
+Status: not implemented. The next step is specification/discovery, before any implementation.
+
+Likely initial direction:
+
+Account A
+   debit
+      ↓
+Transfer
+      ↓
+   credit
+Account B
+
+The initial scope should preferably be same-currency transfers only, unless discovery decides otherwise.
+
+Planned sequence:
+
+Account Transfers discovery/specification
         ↓
-PostgreSQL 16
+Account Transfers backend
         ↓
-Python 3.9
+Account Transfers mobile
+
+6. After Transfers — Goal ↔ Account Semantics
+
+Goals are not connected to Accounts today. Before any cash integration, product discovery must answer an open question:
+
+Is funding a Goal:
+
+1. moving actual money out of an Account into a real destination, or
+
+2. earmarking money that remains physically in the Account?
+
+This is not decided. Goal funding from Accounts is not implemented and must not be assumed.
+
+7. Later Capabilities
+
+These are product opportunities, not current commitments:
+
+true cash-flow analytics
+
+net income
+
+savings rate
+
+consolidated account activity
+
+recurring transactions
+
+notifications
+
+web client
+
+advanced receipt automation
+
+8. Current Development Direction
+
+Current implemented finance foundation
         ↓
-Install dependencies
+Documentation/state synchronization
         ↓
-Alembic migrations
+Account Transfers discovery/specification
         ↓
-pytest
-
-Current status:
-
-Backend CI ✅
-
-3. Documentation
-
-Core project documentation is now established.
-
-README.md                 ✅
-docs/architecture.md      ✅
-docs/api-contract.md      ✅
-docs/database-schema.md   ✅
-docs/roadmap.md           ✅
-
-Documentation should evolve together with architecture and public API changes.
-
-4. Next Milestone — Production Readiness
-
-The next stage is to verify the backend outside the local development environment.
-
-4.1 Supabase End-to-End Verification
-
-Create/configure Supabase project
+Account Transfers backend
         ↓
-Configure production auth environment
+Account Transfers mobile
         ↓
-Obtain real access token
+Goal/Account semantics discovery
         ↓
-Call protected Valor API endpoint
+possible Goal cash/earmarking integration
         ↓
-Verify CurrentUser resolution
+cash-flow / financial overview
         ↓
-Verify ownership behavior
+later product capabilities
 
-Goal:
+Mobile remains the primary client. The web client comes later and is not the immediate next client milestone.
 
-Real Supabase user
-        ↓
-Bearer token
-        ↓
-Valor API
-        ↓
-User-scoped data
+9. Known Follow-ups
 
-This closes the gap between implemented authentication support and real production authentication usage.
+Production is deployed and hardened, but operational and security work is ongoing, for example:
 
-4.2 Production Environment Configuration
+credential rotation
 
-Prepare production-safe configuration for:
+additional production hardening
 
-DATABASE_URL
-AUTH_MODE
-SUPABASE_URL
-SUPABASE_PUBLISHABLE_KEY
-RECEIPT_STORAGE_DRIVER
-receipt storage settings
+authentication/password security settings where applicable
 
-Development-only authentication must not be used in production.
+Receipt/OCR edge-case handling (deferred together with further Receipt work)
 
-Secrets must be stored in deployment environment configuration, not in Git.
+10. Engineering Principles
 
-4.3 Backend Deployment
-
-Deploy the FastAPI backend to a production environment.
-
-Deployment must verify:
-
-container build
-database connectivity
-Alembic migrations
-environment variables
-health endpoint
-authentication
-receipt storage
-API availability
-
-Expected production flow:
-
-Internet
-   ↓
-HTTPS
-   ↓
-Valor API
-   ↓
-PostgreSQL
-
-4.4 Production Smoke Test
-
-After deployment, verify at minimum:
-
-GET /health
-authentication
-create category
-create expense
-create budget
-create goal
-upload receipt
-process receipt
-confirm receipt
-analytics
-
-The production environment should not be considered ready until the main business flow works end-to-end.
-
-5. Web Client
-
-After the backend is deployed and production authentication works, begin the web client.
-
-Planned location:
-
-apps/web/
-
-Primary stack:
-
-Next.js
-TypeScript
-
-Initial goals:
-
-authentication
-dashboard
-expenses
-categories
-budgets
-goals
-receipts
-analytics
-
-The web client must consume the existing backend contract instead of recreating business rules.
-
-Preferred integration direction:
-
-FastAPI
-   ↓
-OpenAPI
-   ↓
-generated / typed API client
-   ↓
-Next.js
-
-6. Mobile Client
-
-Planned location:
-
-apps/mobile/
-
-Primary stack:
-
-React Native
-Expo
-TypeScript
-
-Main mobile goals:
-
-authentication
-expense tracking
-receipt capture/upload
-budget overview
-goal tracking
-analytics
-
-The mobile client should use the same backend API contract as the web client.
-
-7. Monorepo Direction
-
-Target project structure:
-
-Valor_Finis/
-├── apps/
-│   ├── web/
-│   └── mobile/
-│
-├── services/
-│   └── api/
-│
-├── packages/
-│   ├── api-client/
-│   └── ui/
-│
-├── docs/
-├── .github/workflows/
-└── docker-compose.yml
-
-The repository may contain multiple independently deployed applications.
-
-one repository
-    ≠
-one deployment
-
-8. Future Engineering Improvements
-
-The following are possible future improvements, not current requirements.
-
-They should only be introduced when real usage justifies them.
-
-API
-
-pagination
-filtering
-sorting
-API client generation
-API version evolution
-
-Observability
-
-structured logging
-error tracking
-metrics
-distributed tracing if needed
-
-Performance
-
-query optimization
-indexes based on real usage
-caching where measurable
-background processing
-
-Receipt Processing
-
-external OCR provider
-asynchronous OCR
-queue / worker architecture
-cloud object storage
-retry policies
-
-Security
-
-production auth hardening
-rate limiting
-security headers
-dependency scanning
-SAST / DAST
-
-Testing
-
-frontend unit tests
-web E2E tests
-mobile E2E tests
-production smoke tests
-performance tests
-
-9. Architecture Evolution
-
-Valor Finis should continue as a modular application unless real requirements justify extracting services.
-
-Preferred evolution:
+Keep the modular monolith until a concrete requirement justifies extracting a component:
 
 Modular Monolith
         ↓
@@ -429,89 +239,6 @@ Identify operational need
         ↓
 Extract only necessary components
 
-Possible future extraction candidates may include:
-
-OCR workers
-notification processing
-heavy analytics
-
-but only when independent scaling, failure isolation, infrastructure needs, or team ownership provide a concrete reason.
-
-10. Product Development Order
-
-Current high-level order:
-
-Backend MVP                    ✅
-        ↓
-Backend tests                  ✅
-        ↓
-Docker                         ✅
-        ↓
-CI                             ✅
-        ↓
-Documentation                  ✅
-        ↓
-Supabase production E2E        ⏳
-        ↓
-Backend deployment             ⏳
-        ↓
-Web client                     ⏳
-        ↓
-Mobile client                  ⏳
-        ↓
-Real user feedback
-        ↓
-Iterative product development
-
-11. Definition of Production-Ready Backend
-
-The backend can be considered production-ready when:
-
-production database works
-all migrations apply successfully
-Supabase authentication works end-to-end
-development auth is disabled
-HTTPS endpoint is deployed
-health check works
-main CRUD flows work
-receipt flow works
-CI is green
-production smoke test passes
-secrets are stored safely
-basic logging is available
-
-Production-ready does not mean feature-complete.
-
-It means the backend can safely support real client usage.
-
-12. Long-Term Product Direction
-
-Valor Finis should evolve from a finance tracking backend into a complete personal finance product.
-
-Potential long-term capabilities:
-
-smart expense categorization
-recurring expenses
-advanced budgeting
-financial insights
-receipt automation
-multi-currency support
-notifications
-forecasting
-machine-learning-assisted insights
-
-These are product opportunities, not current commitments.
-
-They should be prioritized based on actual user needs and validated usage.
-
-13. Final Rule
+Possible future extraction candidates (OCR workers, notification processing, heavy analytics) are considered only when independent scaling, failure isolation, or operational needs provide a concrete reason.
 
 Build the next layer only when the current layer is working in real usage.
-
-The immediate next milestone is:
-
-Production Supabase verification
-        ↓
-Backend deployment
-        ↓
-Client in

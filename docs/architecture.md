@@ -4,35 +4,39 @@ This document describes the current architecture of Valor Finis and the rules th
 
 1. Architecture Overview
 
-Valor Finis is designed as a modular monorepo.
-
-The current implemented core is a FastAPI backend. Web and mobile clients can be added as separate applications in the same repository and consume the backend through its public API.
+Valor Finis is a modular monorepo with a FastAPI backend and an Expo / React Native mobile client. Mobile is the primary client; a web client is planned for later.
 
 Valor_Finis/
-├── apps/                  # Web / mobile clients
+├── apps/
+│   └── mobile/            # Expo / React Native client
 ├── services/
 │   └── api/               # FastAPI backend
 ├── docs/                  # Project documentation
 ├── .github/workflows/     # CI
 └── docker-compose.yml     # Local infrastructure
 
-The repository boundary is not the deployment boundary. Web, mobile, and API components may be built and deployed independently.
+The repository boundary is not the deployment boundary. The mobile app and the API are built and deployed independently.
 
 2. System Context
 
-Web / Mobile Client
+Mobile Client (Expo)
         │
-        │ HTTP + JSON
+        ├── Supabase Auth ── sign-in / session only
+        │
+        │ HTTP + JSON (Authorization: Bearer <access_token>)
         ↓
-   Valor API
-     FastAPI
+   Valor API (FastAPI)
         │
-        ├── Supabase Auth
+        ├── Supabase Auth ── verifies the bearer token per request
         │
-        ├── Receipt storage / OCR flow
+        ├── Receipt storage (local or Supabase Storage) / OCR
+        │
+        ├── FX providers (ECB / NBU) ── historical rates at write time
         │
         ↓
    PostgreSQL
+
+In production the backend runs on Render, and PostgreSQL, Auth, and receipt Storage are provided by Supabase.
 
 The backend is the source of truth for:
 
@@ -42,13 +46,15 @@ authentication and authorization;
 
 resource ownership;
 
-persistence;
+persistence and ledger balances;
+
+FX snapshots;
 
 receipt processing;
 
 analytics.
 
-Clients should not duplicate backend business rules.
+Clients must not duplicate backend business rules or financial calculations.
 
 3. Backend Architecture
 
@@ -110,13 +116,15 @@ UPDATE;
 
 DELETE;
 
-user-scoped database queries.
+user-scoped database queries;
+
+row locking (SELECT ... FOR UPDATE) where a service needs serialization.
 
 Repositories do not know about HTTP.
 
 Schemas
 
-Pydantic schemas define API input and output contracts.
+Pydantic schemas define API input and output contracts. Request schemas mirror storage limits (for example NUMERIC(12,2) amounts and VARCHAR lengths) so invalid input is rejected with 422 before it reaches the database.
 
 Models
 
@@ -124,7 +132,7 @@ SQLAlchemy models define persistence structure, relationships, indexes, and data
 
 4. Backend Modules
 
-The current backend is divided by business capability:
+The backend is divided by business capability:
 
 app/modules/
 ├── auth/
@@ -132,6 +140,10 @@ app/modules/
 ├── expenses/
 ├── budgets/
 ├── goals/
+├── accounts/
+├── income/
+├── financial_settings/
+├── fx/
 ├── receipts/
 └── analytics/
 
@@ -144,29 +156,39 @@ Supported modes:
 development → X-User-Id
 supabase    → Authorization: Bearer <token>
 
-Development authentication is intended only for local development and tests.
+AUTH_MODE is required and fails closed. Development authentication is intended only for local development and tests.
 
 Categories
 
-Owns spending category rules, including:
-
-user ownership;
-
-case-insensitive uniqueness;
-
-protection of default categories.
+Owns spending category rules: user ownership, case-insensitive uniqueness, protected default categories, and hiding categories that are referenced by budgets.
 
 Expenses
 
-Owns financial expense records and category relationships.
+Owns expense records (money spent), their category relationship, their historical FX snapshot, and the optional Account link (a synchronized debit projection in the Account ledger).
 
 Budgets
 
-Owns spending limits and duplicate-budget rules.
+Owns spending limits: weekly/monthly/yearly periods, versioned budget history (BudgetVersion), and duplicate-budget rules. A Budget is an allocation, never stored cash.
 
 Goals
 
-Owns financial goals and amount validation.
+Owns savings goals and their GoalTransaction ledger (opening balance, contributions, withdrawals). A Goal's balance is derived from its ledger. Goals are not connected to Accounts.
+
+Accounts
+
+Owns Accounts (checking, savings, cash) and the AccountTransaction ledger: opening balance, manual adjustments, and the Income/Expense projections. An Account's balance is derived from its ledger and may be negative.
+
+Income
+
+Owns income records (money received), their historical FX snapshot, and the optional Account link (a synchronized credit projection in the Account ledger).
+
+Financial Settings
+
+Internal module holding per-user financial settings, currently the base currency (EUR by default). It has no public API.
+
+FX
+
+Resolves historical exchange rates (ECB, NBU) into the user's base currency at write time. Identity conversions never call a provider.
 
 Receipts
 
@@ -174,7 +196,7 @@ Owns:
 
 upload metadata;
 
-local file storage coordination;
+storage coordination (local or Supabase Storage);
 
 OCR processing;
 
@@ -182,15 +204,65 @@ parsed receipt data;
 
 receipt status transitions;
 
-confirmation into an expense.
+confirmation into an Expense (optionally linked to an Account).
 
 Analytics
 
-Reads financial data and returns derived summaries such as spending, budget status, and goal progress.
+Reads financial data and returns derived summaries: monthly and category summaries in base currency, spending and category trends, the current-month spending forecast, budget status with period metrics, and goal progress. Analytics is read-only and expense-oriented; Income is not yet part of analytics.
 
-Analytics should remain read-oriented and should not become the owner of transactional financial data.
+5. Financial Ledger Architecture
 
-5. Module Boundaries
+Valor Finis keeps two separate append-only ledgers. They are not the same ledger and they are not connected.
+
+Account
+   ↓
+AccountTransaction ledger
+   ↓
+derived Account balance (SUM(credits) − SUM(debits); may be negative)
+
+Goal
+   ↓
+GoalTransaction ledger
+   ↓
+derived Goal balance (never negative)
+
+Neither Account nor Goal stores a balance column. Balances are always computed from ledger rows at read time.
+
+Income and Expense ↔ Account
+
+Income
+   ↓
+optional linked AccountTransaction credit (kind "income")
+   ↓
+Account
+
+Expense
+   ↓
+optional linked AccountTransaction debit (kind "expense")
+   ↓
+Account
+
+Income and Expense are the canonical records. Their AccountTransaction is a synchronized projection:
+
+the link lives on the projection row (account_transactions.income_id / expense_id); there is no account_id column on income or expenses;
+
+creating, correcting (amount/date), moving, detaching, or deleting the canonical record updates the projection in the same database transaction;
+
+linking requires the record's currency to exactly match the Account's currency — the ledger uses the record's own amount, never its base-currency value;
+
+an archived Account cannot receive new linked activity, but existing links can be corrected, detached, or moved out.
+
+Direct Account ledger entries (opening balance and manual adjustments) are immutable; corrections are made with a compensating adjustment. An Account with ledger history cannot be deleted, only archived; its currency becomes immutable once history exists.
+
+Concurrency
+
+Lifecycle and linkage operations lock the affected rows with SELECT ... FOR UPDATE. Canonical rows are locked before Account rows, and FX resolution (external network I/O) happens before any Account row lock is taken, so no Account lock is held across a network call.
+
+Not yet implemented
+
+Account-to-account transfers (the next milestone, pending specification) and any Goal ↔ Account movement or earmarking (pending product discovery).
+
+6. Module Boundaries
 
 Modules may collaborate through services or clearly defined repository operations when required, but business ownership must remain explicit.
 
@@ -201,21 +273,25 @@ Receipt confirmation
         ↓
 Receipt Service
         │
-        ├── validates receipt state
+        ├── locks and validates the receipt
         │
-        ├── prepares ExpenseCreate
+        ├── prepares ExpenseCreate (optionally with account_id)
         │
         ↓
 Expenses Service
         │
+        ├── validates the Account link (ownership, active, currency)
+        │
+        ├── writes the Expense and its debit projection
+        │
         ↓
-Expense Repository
+Expense / AccountTransaction repositories
 
-The receipts module coordinates the workflow, while the expenses module remains responsible for creating a valid expense.
+The receipts module coordinates the workflow, while the expenses module remains responsible for creating a valid expense and its ledger projection.
 
 Avoid circular dependencies and direct cross-module database manipulation where a domain service already owns that behavior.
 
-6. Authentication and Ownership
+7. Authentication and Ownership
 
 Authentication identifies the current user before business operations are executed.
 
@@ -256,7 +332,33 @@ the full posture and rationale) - this is a database-level hardening
 layered on top of, not a replacement for, the application-layer
 ownership check above, which remains mandatory regardless.
 
-7. Error Handling
+8. Mobile Client Architecture
+
+apps/mobile is an Expo SDK 57 / React Native app using Expo Router, TanStack Query, and strict TypeScript.
+
+Expo route / screen
+        ↓
+feature service
+        ↓
+src/api/api-client.ts (adds the Supabase access token)
+        ↓
+Valor API (FastAPI)
+
+Rules:
+
+Supabase is used for authentication only (email/password sign-in, session). Business data is never read or written through the Supabase Data API — all finance CRUD goes through FastAPI.
+
+Routes are thin; feature code lives in src/features/<feature>.
+
+The auth context owns only the session; routes behind sign-in are protected.
+
+TanStack Query owns server state; component state owns form/UI state. Mutations invalidate only the affected query families (for example, a linked Income/Expense change also refreshes the Account list and transaction history).
+
+Money values stay strings end to end; the app never uses floating-point arithmetic for financial values.
+
+Balances, FX, currency matching, and archived-Account rules are decided by the backend and surfaced through its error messages.
+
+9. Error Handling
 
 Business failures are represented as domain exceptions.
 
@@ -285,7 +387,7 @@ This keeps routers small and prevents repetitive HTTP error mapping across modul
 
 Authentication-specific failures may still originate from the authentication dependency because they belong directly to the HTTP authentication boundary.
 
-8. Database Architecture
+10. Database Architecture
 
 Valor Finis uses:
 
@@ -300,31 +402,46 @@ Main persisted entities:
 categories
 expenses
 budgets
+budget_versions
 goals
+goal_transactions
+accounts
+account_transactions
+income
 receipts
+user_financial_settings
 
 Important relationships:
 
 Category
    ├── Expense
-   └── Budget
+   └── Budget ── BudgetVersion
 
-Receipt
-   └── Expense
+Goal ── GoalTransaction
 
-Important invariants should be protected at both application and database levels when appropriate.
+Account ── AccountTransaction
+              ├── Income  (optional projection)
+              └── Expense (optional projection)
+
+Receipt ── Expense
+
+Important invariants are protected at both application and database levels when appropriate.
 
 Examples:
 
-positive financial amounts;
+positive financial amounts stored as NUMERIC (never float);
 
-foreign keys;
+foreign keys and composite ownership keys;
 
 unique category names per user;
 
-duplicate budget prevention.
+duplicate budget prevention;
 
-9. Database Migrations
+at most one Account projection per Income/Expense.
+
+See docs/database-schema.md for the full schema.
+
+11. Database Migrations
 
 Alembic is the only supported mechanism for schema evolution.
 
@@ -346,7 +463,7 @@ the full migration chain must work from an empty database;
 
 production schema changes must not depend on manual SQL steps.
 
-10. Receipt Processing Architecture
+12. Receipt Processing Architecture
 
 Receipt processing is a multi-step workflow:
 
@@ -364,9 +481,9 @@ Parse detected values
   ↓
 Processed receipt
   ↓
-User confirmation
+User confirmation (optional Account)
   ↓
-Create expense
+Create expense (+ optional Account debit)
   ↓
 Confirmed receipt
 
@@ -390,11 +507,14 @@ The receipt can later be processed again when its state allows it.
 
 Confirmation Transaction
 
-Receipt confirmation and expense creation form one transaction boundary.
+Receipt confirmation, expense creation, and the optional Account debit form one transaction boundary.
 
 BEGIN
 
+lock receipt row (SELECT ... FOR UPDATE)
+verify the receipt is still confirmable
 create expense
+create Account debit projection (when account_id is given)
 update receipt → confirmed
 link receipt → expense
 
@@ -404,9 +524,11 @@ On failure:
 
 ROLLBACK
 
-This prevents a receipt from being confirmed without its expense, or an expense from being created while receipt confirmation fails.
+The receipt row lock serializes concurrent confirmations of the same receipt, so a receipt can never produce two expenses or two debits. This prevents a receipt from being confirmed without its expense, or an expense from being created while receipt confirmation fails.
 
-11. Configuration
+Further Receipt/OCR expansion is deferred; the existing flow remains implemented.
+
+13. Configuration
 
 Runtime configuration is environment-based.
 
@@ -419,6 +541,9 @@ SUPABASE_PUBLISHABLE_KEY
 RECEIPT_STORAGE_DRIVER
 RECEIPT_UPLOAD_DIR
 RECEIPT_MAX_FILE_SIZE_MB
+RECEIPT_OCR_DRIVER
+
+The mobile app reads EXPO_PUBLIC_API_URL and its public Supabase settings from its own environment.
 
 Rules:
 
@@ -428,9 +553,9 @@ secrets never belong in Git;
 
 .env.example documents required configuration;
 
-unsupported authentication modes should fail fast.
+unsupported authentication modes fail fast.
 
-12. Local Infrastructure
+14. Local Infrastructure
 
 Docker Compose provides a reproducible local environment:
 
@@ -458,13 +583,15 @@ db:5432
 
 Persistent Docker volumes keep database data and receipt uploads between normal container restarts.
 
-13. Continuous Integration
+The mobile app runs separately through the Expo development server and talks to the configured API URL.
+
+15. Continuous Integration
 
 GitHub Actions validates backend changes.
 
 Push / Pull Request
         ↓
-PostgreSQL 16
+PostgreSQL 16 (valor_test)
         ↓
 Python 3.9
         ↓
@@ -478,23 +605,23 @@ A migration failure or test failure makes the workflow fail.
 
 CI is part of the architecture because it continuously verifies that the application can be reconstructed from source code and migrations.
 
-14. Testing Architecture
+16. Testing Architecture
 
-The backend uses two primary test levels.
+The backend uses two primary test levels, both against a real PostgreSQL database ("unit" means layer-focused, not DB-mocked).
 
 Unit Tests
 
-Validate isolated business behavior.
+Validate focused business behavior.
 
 Typical targets:
 
 service rules;
 
+schemas and validation;
+
 parsers;
 
 authentication helpers;
-
-validation;
 
 exception mappings.
 
@@ -512,9 +639,17 @@ Repository
  ↓
 PostgreSQL
 
-Integration tests must verify ownership, API contracts, persistence, and important failure scenarios.
+Integration tests must verify ownership, API contracts, persistence, ledger balances, and important failure scenarios, including atomic rollback and concurrency (row-lock) races.
 
-15. Scaling Strategy
+Test safety and determinism:
+
+pytest refuses to run unless the database name ends with _test, because the suite deletes all application data;
+
+business tests never depend on live ECB/NBU availability — the FX resolution boundary is replaced where FX is not under test, and provider tests use mocked HTTP responses.
+
+Mobile changes are verified with TypeScript type-checking, linting, and targeted manual device checks; mobile automated E2E testing is deferred.
+
+17. Scaling Strategy
 
 Valor Finis should remain a modular application until a concrete requirement justifies extracting infrastructure or services.
 
@@ -532,7 +667,7 @@ Possible future candidates could include OCR workers or asynchronous processing,
 
 Do not introduce microservices, queues, caching, or distributed infrastructure only because they are considered modern.
 
-16. Architectural Rules
+18. Architectural Rules
 
 The following rules are considered part of the project architecture:
 
@@ -550,6 +685,12 @@ Database changes always use Alembic.
 
 Important invariants are enforced close to the data.
 
+Money is Decimal / NUMERIC on the backend and a string on the client — never float.
+
+Balances are derived from ledgers, never stored.
+
+Income and Expense are canonical; their Account ledger entries are projections kept in sync in the same transaction.
+
 Cross-module collaboration must preserve module ownership.
 
 Receipt confirmation must remain atomic.
@@ -558,35 +699,44 @@ Infrastructure complexity is added only when requirements justify it.
 
 Tests and CI protect architectural behavior.
 
-Web and mobile clients consume the backend through the API contract.
+Clients consume the backend through the API contract.
 
-17. Current Architecture Status
+19. Current Architecture Status
 
-Backend modular structure        ✅
-PostgreSQL persistence           ✅
-Alembic migrations               ✅
-Development authentication       ✅
-Supabase authentication support  ✅
-Centralized error handling       ✅
-Receipt upload / OCR flow        ✅
-Atomic receipt confirmation      ✅
-Docker environment               ✅
-Automated backend CI             ✅
-Web client                       planned
-Mobile client                    planned
-Production deployment            planned
+Backend modular structure             ✅
+PostgreSQL persistence                ✅
+Alembic migrations                    ✅
+Supabase authentication (fail-closed) ✅
+Supabase Data API hardening           ✅
+Centralized error handling            ✅
+FX snapshots / base-currency analytics ✅
+Goal ledger (GoalTransaction)         ✅
+Account ledger (AccountTransaction)   ✅
+Income / Expense Account projections  ✅
+Receipt upload / OCR flow             ✅
+Atomic, serialized receipt confirmation ✅
+Docker environment                    ✅
+Automated backend CI                  ✅
+Test database safety guard            ✅
+Production backend deployment         ✅
+Mobile client                         ✅ core finance flows
+Account transfers                     next (specification pending)
+Goal ↔ Account semantics              pending product discovery
+Web client                            later
 
-18. Direction
+Production operational and security hardening is ongoing.
+
+20. Direction
 
 The next architecture steps are:
 
-Documentation
+Account Transfers specification
       ↓
-Production Supabase verification
+Account Transfers backend + mobile
       ↓
-Backend deployment
+Goal ↔ Account semantics discovery
       ↓
-Web / Mobile integration
+cash-flow / financial overview
       ↓
 Evolution based on real usage
 
