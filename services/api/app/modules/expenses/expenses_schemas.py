@@ -37,14 +37,23 @@ class ExpenseBase(BaseModel):
 
     Why:
         Prevents duplication between create and response schemas.
+
+        amount and description mirror the expenses table's own storage
+        limits (VF-API-01): amount is NUMERIC(12,2) - at most 12 digits,
+        2 of them decimal - and description is VARCHAR(500). Enforcing
+        them here rejects out-of-range input with a 422 at the API
+        boundary instead of letting PostgreSQL silently round extra
+        decimals or fail on overflow/length. Stored values always satisfy
+        these limits, so ExpenseResponse (which inherits them) is
+        unaffected.
     """
 
     category_id: Optional[UUID] = None
     title: str = Field(..., min_length=1, max_length=120)
-    amount: Decimal = Field(..., gt=0)
+    amount: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(default="EUR", min_length=3, max_length=3)
     expense_date: Date
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=500)
     source: str = Field(default="manual", max_length=30)
 
     @field_validator("currency")
@@ -111,9 +120,13 @@ class ExpenseUpdate(BaseModel):
         description="Updated expense title.",
         examples=["Updated groceries"],
     )
+    # amount/description limits match ExpenseBase and the expenses table
+    # (NUMERIC(12,2), VARCHAR(500)) - see ExpenseBase (VF-API-01).
     amount: Optional[Decimal] = Field(
         default=None,
         gt=0,
+        max_digits=12,
+        decimal_places=2,
         description="Updated expense amount.",
         examples=["35.50"],
     )
@@ -131,6 +144,7 @@ class ExpenseUpdate(BaseModel):
     )
     description: Optional[str] = Field(
         default=None,
+        max_length=500,
         description="Updated optional expense description.",
         examples=["Updated description"],
     )

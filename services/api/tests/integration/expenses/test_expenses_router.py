@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.helpers import auth_headers, create_category, create_expense
@@ -692,3 +693,217 @@ def test_update_expense_endpoint_keeps_category_when_field_is_omitted(
     assert response.status_code == 200, response.text
     assert response.json()["title"] == "Updated groceries"
     assert response.json()["category_id"] == category["id"]
+
+
+# --- VF-API-01: API rejects values the expenses table cannot store --------
+# amount is NUMERIC(12,2) and description is VARCHAR(500). Amounts are sent
+# as JSON strings so the exact decimal text reaches the API.
+
+
+# Returns a valid POST /api/v1/expenses body with selected fields overridden.
+# Parameters:
+# - overrides: field values replacing the defaults.
+# Returns:
+# - The JSON request body.
+def _expense_payload(**overrides) -> dict:
+    payload = {
+        "category_id": None,
+        "title": "Lidl groceries",
+        "amount": "24.99",
+        "currency": "EUR",
+        "expense_date": "2026-05-07",
+        "description": "Weekly groceries",
+        "source": "manual",
+    }
+    payload.update(overrides)
+    return payload
+
+
+# Tests that POST rejects amounts NUMERIC(12,2) cannot store exactly -
+# too many digits or more than 2 decimal places - with 422 and persists
+# nothing (no silent database rounding, no overflow error).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - amount: invalid amount text.
+# Returns:
+# - None. The test passes if the API returns 422 and no expense exists.
+@pytest.mark.parametrize("amount", ["10000000000.00", "1.001"])
+def test_create_expense_endpoint_rejects_amount_outside_numeric_limits(
+    client: TestClient,
+    clean_database: None,
+    amount: str,
+) -> None:
+    user_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(amount=amount),
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    expenses_response = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+
+    assert expenses_response.status_code == 200
+    assert expenses_response.json() == []
+
+
+# Tests that POST rejects a description longer than 500 characters with
+# 422 and persists nothing.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 422 and no expense exists.
+def test_create_expense_endpoint_rejects_description_over_max_length(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(description="x" * 501),
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    expenses_response = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+
+    assert expenses_response.json() == []
+
+
+# Tests that POST accepts the exact storage limits - the largest
+# NUMERIC(12,2) amount and a 500-character description - and stores them
+# unchanged.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 201 with the exact values.
+def test_create_expense_endpoint_accepts_values_at_storage_limits(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    description = "x" * 500
+
+    response = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(amount="9999999999.99", description=description),
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["amount"] == "9999999999.99"
+    assert response.json()["description"] == description
+
+
+# Tests that PATCH rejects amounts NUMERIC(12,2) cannot store exactly
+# with 422 and leaves the existing expense unchanged.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - amount: invalid amount text.
+# Returns:
+# - None. The test passes if the API returns 422 and the amount is unchanged.
+@pytest.mark.parametrize("amount", ["10000000000.00", "1.001"])
+def test_update_expense_endpoint_rejects_amount_outside_numeric_limits(
+    client: TestClient,
+    clean_database: None,
+    amount: str,
+) -> None:
+    user_id = str(uuid4())
+    created = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(),
+        headers=auth_headers(user_id),
+    ).json()
+
+    response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"amount": amount},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    stored = client.get("/api/v1/expenses", headers=auth_headers(user_id)).json()
+
+    assert len(stored) == 1
+    assert stored[0]["amount"] == "24.99"
+    assert stored[0]["updated_at"] == created["updated_at"]
+
+
+# Tests that PATCH rejects a description longer than 500 characters with
+# 422 and leaves the existing description unchanged.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the API returns 422 and the description is unchanged.
+def test_update_expense_endpoint_rejects_description_over_max_length(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    created = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(),
+        headers=auth_headers(user_id),
+    ).json()
+
+    response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"description": "x" * 501},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    stored = client.get("/api/v1/expenses", headers=auth_headers(user_id)).json()
+
+    assert stored[0]["description"] == "Weekly groceries"
+    assert stored[0]["updated_at"] == created["updated_at"]
+
+
+# Tests that PATCH still accepts the exact storage limits and an explicit
+# null description (which clears the note).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if both updates return 200 with the expected values.
+def test_update_expense_endpoint_accepts_limits_and_null_description(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    created = client.post(
+        "/api/v1/expenses",
+        json=_expense_payload(),
+        headers=auth_headers(user_id),
+    ).json()
+    description = "x" * 500
+
+    limits_response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"amount": "9999999999.99", "description": description},
+        headers=auth_headers(user_id),
+    )
+
+    assert limits_response.status_code == 200, limits_response.text
+    assert limits_response.json()["amount"] == "9999999999.99"
+    assert limits_response.json()["description"] == description
+
+    clear_response = client.patch(
+        f"/api/v1/expenses/{created['id']}",
+        json={"description": None},
+        headers=auth_headers(user_id),
+    )
+
+    assert clear_response.status_code == 200, clear_response.text
+    assert clear_response.json()["description"] is None

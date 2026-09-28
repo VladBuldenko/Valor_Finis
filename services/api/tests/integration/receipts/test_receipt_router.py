@@ -2391,3 +2391,118 @@ def test_confirm_receipt_endpoint_linked_rolls_back_when_receipt_update_fails(
     _assert_confirmation_left_no_partial_writes(
         client, user_id, receipt["id"], account["id"], "100.00",
     )
+
+
+# --- VF-API-01: receipt inputs follow the Expense storage limits ----------
+# confirm_receipt builds an ExpenseCreate from the corrected amount /
+# description or from the stored detected total. These inputs now share the
+# Expense limits (NUMERIC(12,2), VARCHAR(500)), so out-of-range values are
+# rejected at request validation with 422 instead of failing inside the
+# service with a 500.
+
+
+# Asserts that a receipt is still processed/unlinked and no Expense exists.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier as string.
+# - receipt_id: receipt identifier.
+# Returns:
+# - None.
+def _assert_receipt_still_processed_without_expense(
+    client: TestClient,
+    user_id: str,
+    receipt_id: str,
+) -> None:
+    receipt_response = client.get(
+        f"/api/v1/receipts/{receipt_id}",
+        headers=auth_headers(user_id),
+    )
+
+    assert receipt_response.json()["status"] == "processed"
+    assert receipt_response.json()["expense_id"] is None
+
+    expenses_response = client.get("/api/v1/expenses", headers=auth_headers(user_id))
+
+    assert expenses_response.json() == []
+
+
+# Verifies that a corrected amount with more than 2 decimal places is
+# rejected with 422 (previously it reached ExpenseCreate inside
+# confirm_receipt) and leaves the receipt unconfirmed.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_amount_outside_expense_limits(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+    receipt = _create_processed_receipt(client, user_id)
+
+    response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={"amount": "1.001"},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    _assert_receipt_still_processed_without_expense(client, user_id, receipt["id"])
+
+
+# Verifies that a corrected description longer than 500 characters is
+# rejected with 422 and leaves the receipt unconfirmed.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_confirm_receipt_endpoint_rejects_description_over_expense_limit(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+    receipt = _create_processed_receipt(client, user_id)
+
+    response = client.post(
+        f"/api/v1/receipts/{receipt['id']}/confirm",
+        json={"description": "x" * 501},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    _assert_receipt_still_processed_without_expense(client, user_id, receipt["id"])
+
+
+# Verifies that a detected total the Expense amount column cannot store is
+# rejected when written to the receipt, so it can never reach ExpenseCreate
+# through a confirmation that omits a corrected amount.
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that isolates database state.
+# Returns:
+# - None.
+def test_update_receipt_endpoint_rejects_total_amount_detected_outside_expense_limits(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid.uuid4())
+    receipt = _create_processed_receipt(client, user_id, amount="24.99")
+
+    response = client.patch(
+        f"/api/v1/receipts/{receipt['id']}",
+        json={"total_amount_detected": "1.001"},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 422, response.text
+
+    stored = client.get(
+        f"/api/v1/receipts/{receipt['id']}",
+        headers=auth_headers(user_id),
+    ).json()
+
+    assert stored["total_amount_detected"] == "24.99"

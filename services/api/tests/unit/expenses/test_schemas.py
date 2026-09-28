@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseResponse
+from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseResponse, ExpenseUpdate
 
 
 # Tests that valid expense input is accepted by the schema.
@@ -187,3 +187,176 @@ def test_expense_response_contains_database_and_user_fields() -> None:
     assert expense.source == "manual"
     assert expense.created_at == created_at
     assert expense.updated_at == updated_at
+
+
+# --- VF-API-01: schema limits match the expenses table ---------------------
+# amount is NUMERIC(12,2) (max 12 digits, 2 of them decimal, so at most 10
+# before the decimal point) and description is VARCHAR(500). Financial
+# values are Decimals built from strings, never floats.
+
+MAX_VALID_AMOUNT = Decimal("9999999999.99")
+
+
+# Builds valid ExpenseCreate input with selected fields overridden.
+# Parameters:
+# - overrides: field values replacing the defaults.
+# Returns:
+# - A dict accepted by ExpenseCreate unless an override is invalid.
+def _expense_create_data(**overrides) -> dict:
+    data = {
+        "category_id": None,
+        "title": "Lidl groceries",
+        "amount": Decimal("24.99"),
+        "currency": "EUR",
+        "expense_date": date(2026, 5, 7),
+        "description": None,
+        "source": "manual",
+    }
+    data.update(overrides)
+    return data
+
+
+# Returns the Pydantic error types raised for a single invalid field.
+# Parameters:
+# - error_info: pytest ExceptionInfo wrapping a ValidationError.
+# Returns:
+# - Set of error "type" values.
+def _error_types(error_info) -> set:
+    return {error["type"] for error in error_info.value.errors()}
+
+
+# Tests that ExpenseCreate accepts the largest NUMERIC(12,2) amount.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the amount is accepted unchanged.
+def test_expense_create_accepts_amount_at_numeric_limit() -> None:
+    expense = ExpenseCreate(**_expense_create_data(amount=MAX_VALID_AMOUNT))
+
+    assert expense.amount == MAX_VALID_AMOUNT
+
+
+# Tests that ExpenseCreate rejects an amount with more digits than
+# NUMERIC(12,2) can store.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a digit-limit error.
+def test_expense_create_rejects_amount_exceeding_numeric_digits() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseCreate(**_expense_create_data(amount=Decimal("10000000000.00")))
+
+    assert _error_types(error_info) & {"decimal_max_digits", "decimal_whole_digits"}
+
+
+# Tests that ExpenseCreate rejects an amount with more than 2 decimal
+# places instead of letting the database round it.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a decimal-places error.
+def test_expense_create_rejects_amount_with_more_than_two_decimal_places() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseCreate(**_expense_create_data(amount=Decimal("1.001")))
+
+    assert "decimal_max_places" in _error_types(error_info)
+
+
+# Tests that ExpenseCreate accepts a description of exactly 500 characters.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the description is accepted unchanged.
+def test_expense_create_accepts_description_at_max_length() -> None:
+    description = "x" * 500
+
+    expense = ExpenseCreate(**_expense_create_data(description=description))
+
+    assert expense.description == description
+
+
+# Tests that ExpenseCreate rejects a description longer than VARCHAR(500).
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a length error.
+def test_expense_create_rejects_description_over_max_length() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseCreate(**_expense_create_data(description="x" * 501))
+
+    assert "string_too_long" in _error_types(error_info)
+
+
+# Tests that ExpenseUpdate accepts the largest NUMERIC(12,2) amount.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the amount is accepted unchanged.
+def test_expense_update_accepts_amount_at_numeric_limit() -> None:
+    update = ExpenseUpdate(amount=MAX_VALID_AMOUNT)
+
+    assert update.amount == MAX_VALID_AMOUNT
+
+
+# Tests that ExpenseUpdate rejects an amount with more digits than
+# NUMERIC(12,2) can store.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a digit-limit error.
+def test_expense_update_rejects_amount_exceeding_numeric_digits() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseUpdate(amount=Decimal("10000000000.00"))
+
+    assert _error_types(error_info) & {"decimal_max_digits", "decimal_whole_digits"}
+
+
+# Tests that ExpenseUpdate rejects an amount with more than 2 decimal
+# places.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a decimal-places error.
+def test_expense_update_rejects_amount_with_more_than_two_decimal_places() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseUpdate(amount=Decimal("1.001"))
+
+    assert "decimal_max_places" in _error_types(error_info)
+
+
+# Tests that ExpenseUpdate accepts a description of exactly 500 characters.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the description is accepted unchanged.
+def test_expense_update_accepts_description_at_max_length() -> None:
+    description = "x" * 500
+
+    update = ExpenseUpdate(description=description)
+
+    assert update.description == description
+
+
+# Tests that ExpenseUpdate rejects a description longer than VARCHAR(500).
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if ValidationError reports a length error.
+def test_expense_update_rejects_description_over_max_length() -> None:
+    with pytest.raises(ValidationError) as error_info:
+        ExpenseUpdate(description="x" * 501)
+
+    assert "string_too_long" in _error_types(error_info)
+
+
+# Tests that an explicit description=None is still accepted on update,
+# which is how a client clears an existing note.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if description is set (in model_fields_set) to None.
+def test_expense_update_accepts_explicit_null_description() -> None:
+    update = ExpenseUpdate.model_validate({"description": None})
+
+    assert update.description is None
+    assert "description" in update.model_fields_set

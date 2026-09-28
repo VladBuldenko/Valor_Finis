@@ -325,7 +325,9 @@ amount
 
 yes
 
-must be greater than 0
+greater than 0, up to 12 digits with 2 decimal places (NUMERIC(12,2):
+at most 9999999999.99); more decimal places or digits are rejected with
+422, never rounded
 
 currency
 
@@ -344,7 +346,7 @@ description
 
 no
 
-optional
+optional or null, max 500 characters (longer is rejected with 422)
 
 source
 
@@ -383,6 +385,10 @@ Example:
 }
 
 At least one field is required.
+
+amount and description follow the same limits as on create (amount up to
+12 digits with 2 decimal places; description max 500 characters);
+description may be set to null to clear it.
 
 category_id may be set to null to make the expense uncategorized.
 
