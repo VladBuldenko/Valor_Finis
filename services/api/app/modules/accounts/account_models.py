@@ -64,6 +64,18 @@ class AccountModel(Base):
         # key, so a cross-user Income<->Account link is impossible to
         # construct at the database level, not only the service level.
         UniqueConstraint("id", "user_id", name="uq_accounts_id_user_id"),
+        # Composite-unique FK target (VF-018B): lets account_transfers
+        # carry (account_id, user_id, currency) -> accounts(id, user_id,
+        # currency) foreign keys, so a Transfer's source and destination
+        # are guaranteed at the database level to share one owner and one
+        # currency (the Transfer's own), and a referenced Account's
+        # currency cannot change underneath an existing Transfer.
+        UniqueConstraint(
+            "id",
+            "user_id",
+            "currency",
+            name="uq_accounts_id_user_id_currency",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
