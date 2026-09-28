@@ -13,6 +13,7 @@ expenses
 budgets
 goals
 accounts
+account_transfers
 income
 receipts
 
@@ -117,6 +118,23 @@ erDiagram
         DATE received_at
         VARCHAR source
         VARCHAR description
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
+    ACCOUNT_TRANSFERS {
+        UUID id PK
+        UUID user_id
+        UUID client_request_id
+        UUID source_account_id FK
+        UUID destination_account_id FK
+        NUMERIC amount
+        VARCHAR currency
+        VARCHAR status
+        DATE planned_date
+        DATE effective_date
+        VARCHAR description
+        TIMESTAMPTZ posted_at
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -1132,6 +1150,17 @@ ck_accounts_status_valid
 
 status IN ('active','archived')
 
+uq_accounts_id_user_id
+
+UNIQUE(id, user_id) (VF-017D) - composite FK target for
+account_transactions
+
+uq_accounts_id_user_id_currency
+
+UNIQUE(id, user_id, currency) (VF-018B) - composite FK target for
+account_transfers' currency-bearing source/destination foreign keys (see
+7.2 below)
+
 Indexes
 
 user_id
@@ -1150,13 +1179,22 @@ transaction history - once any AccountTransaction row exists, an actual
 currency change is rejected at the application level (see 7.1 below).
 This mirrors Goal's currency-immutability rule exactly and for the same
 reason: AccountTransaction rows do not store their own currency.
+Independently, an Account referenced by any account_transfers row
+(planned or posted) cannot change currency at the database level: the
+transfer's composite foreign keys include currency (VF-018B, see 7.2
+below). A planned transfer has no ledger rows, so the application-level
+history check above does not see it; the controlled 409 for Accounts
+referenced by planned transfers is part of VF-018C and is not implemented
+yet - no public endpoint can create a transfer before VF-018C.
 
 Safe deletion: an Account with any transaction history cannot be
 hard-deleted through the application (account_service.delete_account
 rejects it before attempting the delete). An Account with no transaction
 history deletes normally. This is an application-level control, not a
 database constraint - see 7.1 below for the FK that backs it as
-defense-in-depth.
+defense-in-depth. An Account referenced by any account_transfers row is
+also protected by that table's ON DELETE RESTRICT foreign keys (VF-018B,
+see 7.2 below).
 
 Archiving: PATCH status="archived" remains possible regardless of
 transaction history. An archived Account's balance and full history stay
@@ -1180,8 +1218,12 @@ kind: income - a synchronized projection of an Income row (see the
 income_id column below and 8. Income above). VF-017E adds a fourth,
 source-backed kind: expense - a synchronized projection of an Expense
 row (see the expense_id column below and 4. Expenses above), symmetric
-to income but always a debit. transfer remains deferred to a later
-slice.
+to income but always a debit. VF-018B adds a fifth, source-backed kind:
+transfer - one of the two projections of a posted AccountTransfer (see
+the transfer_id column below and 7.2 Account Transfers): a debit on the
+source Account or a credit on the destination Account. As of VF-018B the
+transfer schema and repository foundation exist, but no public endpoint
+creates transfers yet (VF-018C/D).
 
 This table is the only persisted source of an Account's balance: the
 accounts table has no balance column at all (see 7 above). Every public
@@ -1231,8 +1273,8 @@ VARCHAR(20)
 
 no
 
-opening_balance, adjustment (VF-017B), income (VF-017D), or expense
-(VF-017E)
+opening_balance, adjustment (VF-017B), income (VF-017D), expense
+(VF-017E), or transfer (VF-018B)
 
 direction
 
@@ -1244,7 +1286,9 @@ credit or debit - kept separate from kind (unlike GoalTransaction, where
 type implies direction) so income and expense could reuse the same
 direction concept without restructuring this column. Every income-kind
 row is a credit and every expense-kind row is a debit, both enforced by
-ck_account_transactions_source_linkage_valid below.
+ck_account_transactions_source_linkage_valid below. A transfer-kind row
+may be either: the source-side projection is the debit and the
+destination-side projection the credit.
 
 amount
 
@@ -1301,6 +1345,18 @@ If this row is an Expense projection, the source Expense's id
 (VF-017E). NULL for direct opening_balance/adjustment rows and for
 income-backed rows.
 
+transfer_id
+
+UUID
+
+yes
+
+If this row is an AccountTransfer projection, the source transfer's id
+(VF-018B). NULL for every other kind. For a transfer-kind row, amount
+always equals the transfer's amount, transaction_date its
+effective_date, and description is NULL (the transfer's own description
+is the single canonical copy).
+
 created_at
 
 TIMESTAMPTZ
@@ -1320,7 +1376,7 @@ amount > 0
 
 ck_account_transactions_kind_valid
 
-kind IN ('opening_balance','adjustment','income','expense')
+kind IN ('opening_balance','adjustment','income','expense','transfer')
 
 ck_account_transactions_direction_valid
 
@@ -1328,18 +1384,22 @@ direction IN ('credit','debit')
 
 ck_account_transactions_source_linkage_valid
 
-(VF-017E, replaces VF-017D's income-only ck_account_transactions_income_linkage_valid)
+(VF-017E, replaces VF-017D's income-only ck_account_transactions_income_linkage_valid;
+VF-018B adds the transfer branch)
 
 (kind = 'income' AND income_id IS NOT NULL AND expense_id IS NULL AND
-direction = 'credit') OR (kind = 'expense' AND expense_id IS NOT NULL
-AND income_id IS NULL AND direction = 'debit') OR (kind IN
+transfer_id IS NULL AND direction = 'credit') OR (kind = 'expense' AND
+expense_id IS NOT NULL AND income_id IS NULL AND transfer_id IS NULL AND
+direction = 'debit') OR (kind = 'transfer' AND transfer_id IS NOT NULL
+AND income_id IS NULL AND expense_id IS NULL) OR (kind IN
 ('opening_balance','adjustment') AND income_id IS NULL AND expense_id IS
-NULL) - the single constraint that makes an income-kind row, an
-expense-kind row, and a direct row structurally
-indistinguishable-by-mistake and mutually exclusive: since kind is a
-single scalar value, a row can satisfy at most one of the three
-branches, so "both income_id and expense_id populated" and every other
-invalid combination is structurally impossible.
+NULL AND transfer_id IS NULL) - the single constraint that makes income,
+expense, transfer, and direct rows mutually exclusive: since kind is a
+single scalar value, a row can satisfy at most one of the four branches,
+so "more than one source id populated" and every other invalid
+combination is structurally impossible. The transfer branch leaves
+direction free, since each posted transfer has one debit and one credit
+projection.
 
 uq_account_transactions_one_opening_balance_per_account
 
@@ -1358,6 +1418,14 @@ uq_account_transactions_expense_id
 UNIQUE(expense_id) (VF-017E) - at most one AccountTransaction projection
 per Expense, enforced at the database level. NULLs never collide, so
 every direct row and every income-kind row is unaffected.
+
+uq_account_transactions_transfer_id_direction
+
+UNIQUE(transfer_id, direction) (VF-018B) - at most one debit and at most
+one credit projection per transfer. NULL transfer_id values never
+collide, so every non-transfer row is unaffected. This does NOT by itself
+guarantee that a posted transfer has exactly two projections (nor that a
+planned one has none) - see 7.2 below.
 
 fk_account_transactions_account_id_user_id
 
@@ -1392,11 +1460,22 @@ SET NULL FK (see 9. Receipts) is unaffected by this: both FK actions
 fire from the same Expense DELETE statement with no ordering conflict,
 since they target two different child tables.
 
+fk_account_transactions_transfer_id_user_id
+
+FOREIGN KEY (transfer_id, user_id) REFERENCES account_transfers(id,
+user_id) ON DELETE CASCADE (VF-018B). Composite ownership FK: transfer_id
+must belong to the SAME user_id as this row, at the database level. ON
+DELETE CASCADE follows the Income/Expense precedent: the canonical
+transfer owns its projections, so deleting a posted transfer removes
+both of them in the same statement.
+
 Indexes
 
 user_id
 (account_id, transaction_date) - per-account transaction history,
 ordered access, and future balance aggregation
+(transfer_id, direction) - via uq_account_transactions_transfer_id_direction
+(VF-018B)
 
 Immutability: direct rows (opening_balance, adjustment) are append-only -
 there is no UPDATE/DELETE path or endpoint for either. Corrections are
@@ -1420,7 +1499,14 @@ own internal validation helper
 (_validate_income_projection_for_mutation /
 _validate_expense_projection_for_mutation) that raises before any
 mutation or delete if the given row is not genuinely that source's
-projection.
+projection. Transfer-backed rows (kind="transfer", VF-018B) can be
+created ONLY through account_transaction_repository.
+create_transfer_projections, which creates both sides of a posted
+transfer in one call, derives every value from the canonical transfer,
+and refuses (ValueError, _validate_transfer_for_projection_creation) a
+transfer that is not posted. There is no update or delete primitive for
+transfer rows at all: they are removed only by ON DELETE CASCADE when
+the canonical transfer is deleted.
 
 Concurrency: every write that can race against a lifecycle change (a new
 transaction, a currency change, a delete, an archive) locks the owned
@@ -1473,6 +1559,235 @@ atomically with the Account row itself, whenever a client provides a
 non-zero opening_balance on POST /api/v1/accounts. No migration backfill
 exists for this table - accounts is a brand-new table with no
 pre-existing balance to migrate from.
+
+7.2 Account Transfers
+
+Table:
+
+account_transfers
+
+Purpose:
+
+Canonical record of money moving between two Accounts owned by the same
+user, in the same currency (VF-018B; approved contract in
+docs/modules/account-transfers.md). A transfer is not Income or Expense
+and never inflates either. It is either planned (expected in the future,
+no ledger effect) or posted (happened, reflected in the ledger by two
+account_transactions projections - see 7.1 above).
+
+Scope as of VF-018B: this table, its constraints, the ledger linkage in
+7.1, and the repository primitives exist. The public Transfer API (create,
+list, post, delete), the create idempotency algorithm, and the Account
+lifecycle protections for planned references are NOT implemented yet
+(VF-018C/D) - no client path can create a transfer today.
+
+Column
+
+Type
+
+Nullable
+
+Notes
+
+id
+
+UUID
+
+no
+
+Primary key
+
+user_id
+
+UUID
+
+no
+
+Owner of the transfer and of both Accounts. Denormalized, no FK
+
+client_request_id
+
+UUID
+
+no
+
+Client-generated create idempotency key, unique per user
+
+source_account_id
+
+UUID
+
+no
+
+Account the money leaves. Composite FK with user_id and currency (see
+Constraints)
+
+destination_account_id
+
+UUID
+
+no
+
+Account the money enters. Always different from source_account_id
+
+amount
+
+NUMERIC(12,2)
+
+no
+
+Always positive
+
+currency
+
+VARCHAR(3)
+
+no
+
+Shared currency of both Accounts, server-derived. Same-currency only
+(no FX transfers)
+
+status
+
+VARCHAR(10)
+
+no
+
+planned or posted. No server default - always set by the service
+
+planned_date
+
+DATE
+
+yes
+
+Original expected date. Set only when the transfer was created as
+planned; never changes, including after posting
+
+effective_date
+
+DATE
+
+yes
+
+Accounting date on which the money is considered actually moved - the
+transaction_date of both ledger projections. Set when posted
+
+description
+
+VARCHAR(500)
+
+yes
+
+Optional note. The single canonical copy of the text (projections keep
+description NULL)
+
+posted_at
+
+TIMESTAMPTZ
+
+yes
+
+Technical timestamp of the change to posted (not an accounting date)
+
+created_at
+
+TIMESTAMPTZ
+
+no
+
+Server timestamp
+
+updated_at
+
+TIMESTAMPTZ
+
+no
+
+Updated automatically
+
+There is no persisted transfer_date column: the future create request's
+single transfer_date field is classified by the service into either
+planned_date (future) or effective_date (today or past).
+
+Constraints
+
+ck_account_transfers_amount_positive
+
+amount > 0
+
+ck_account_transfers_distinct_accounts
+
+source_account_id <> destination_account_id
+
+ck_account_transfers_status_valid
+
+status IN ('planned','posted')
+
+ck_account_transfers_lifecycle_consistent
+
+(status = 'planned' AND planned_date IS NOT NULL AND effective_date IS
+NULL AND posted_at IS NULL) OR (status = 'posted' AND effective_date IS
+NOT NULL AND posted_at IS NOT NULL) - planned_date is deliberately
+unconstrained for posted rows, so both an immediately posted transfer
+(planned_date NULL) and a planned-then-posted transfer (planned_date
+kept) are valid
+
+uq_account_transfers_id_user_id
+
+UNIQUE(id, user_id) - composite FK target for
+account_transactions.(transfer_id, user_id)
+
+uq_account_transfers_user_id_client_request_id
+
+UNIQUE(user_id, client_request_id) - at most one transfer per client
+request per user; the database foundation for create idempotency. The
+same key used by two different users does not collide
+
+fk_account_transfers_source_account
+
+FOREIGN KEY (source_account_id, user_id, currency) REFERENCES
+accounts(id, user_id, currency) ON DELETE RESTRICT
+
+fk_account_transfers_destination_account
+
+FOREIGN KEY (destination_account_id, user_id, currency) REFERENCES
+accounts(id, user_id, currency) ON DELETE RESTRICT
+
+Both foreign keys reference the same transfer.currency column, so source,
+destination, and transfer currencies can never diverge, both Accounts
+must belong to the transfer's user, a referenced Account cannot be
+deleted, and a referenced Account's currency cannot change (NO ACTION on
+referenced-key update) - all at the database level.
+
+Indexes
+
+source_account_id
+destination_account_id
+(user_id, client_request_id) - via the unique constraint above; also
+serves list-by-user queries
+
+Ledger relationship: a planned transfer has zero account_transactions
+rows and never affects current Account balances. A posted transfer has
+exactly two: a kind="transfer" debit on source_account_id and a
+kind="transfer" credit on destination_account_id, both with the
+transfer's amount and transaction_date = effective_date. The database
+guarantees at most one debit and one credit per transfer
+(uq_account_transactions_transfer_id_direction) and correct linkage
+(ck_account_transactions_source_linkage_valid, composite ownership FK).
+"Exactly two rows when posted, none when planned" cannot be expressed
+without triggers (none are used) and is a service-level atomicity
+invariant: create_transfer_projections is the only way to create
+transfer rows, creates both at once, and refuses a planned transfer;
+the service paths that call it (posted create, manual post) arrive in
+VF-018C/D.
+
+Deletion: deleting a transfer removes its projections via ON DELETE
+CASCADE (see 7.1). Transfers use hard delete - no reversal entity.
+
+Security: account_transfers is the first business table created after
+VF-SEC-01; its creation migration (1edb74dc96d8) also explicitly revokes
+all privileges on it from the Supabase Data API roles - see 10.1.
 
 8. Income
 
@@ -1974,8 +2289,9 @@ reads or writes, so this posture does not change backend behavior.
 
 As of migration edcfdf3f7114 (VF-SEC-01), the Supabase Data API roles -
 anon, authenticated, and service_role - have no table privileges at all
-on the 12 application-owned public tables (the 11 business tables in
-this document plus alembic_version). Data API access to any of them now
+on the 12 application-owned public tables that existed at that migration
+(the 11 business tables of that time plus alembic_version;
+account_transfers, added later, is covered below). Data API access to any of them now
 requires an explicit future security review and an explicit, narrowly-
 scoped GRANT - never a blanket re-opening.
 
@@ -1993,6 +2309,16 @@ this migration also strips the postgres role's default privileges for
 future tables/sequences/functions from anon/authenticated/service_role,
 so a new table does not silently inherit broad Data API access the way
 existing tables previously did.
+
+account_transfers (VF-018B, migration 1edb74dc96d8) is the first
+business table created after VF-SEC-01. Rather than relying only on the
+inherited default-privilege change, its creation migration explicitly
+revokes all privileges on public.account_transfers from anon,
+authenticated, and service_role, using the same pg_roles-guarded
+statements as VF-SEC-01 (a no-op on local/CI PostgreSQL, where those
+roles do not exist). Verifying has_table_privilege for those roles in
+production is part of the VF-018B deployment checklist and has not been
+performed as part of local development.
 
 Row-Level Security (RLS) is deliberately NOT enabled as part of this
 posture: once these roles hold no table privileges, the tables are
@@ -2034,7 +2360,15 @@ goals
 
 accounts
    │
-   └──< account_transactions.account_id
+   ├──< account_transactions.account_id
+   │
+   ├──< account_transfers.source_account_id       (VF-018B)
+   │
+   └──< account_transfers.destination_account_id  (VF-018B)
+
+account_transfers
+   │
+   └──< account_transactions.transfer_id  (VF-018B)
 
 income
    │
@@ -2070,7 +2404,17 @@ Rejected if any account_transactions reference the account (ON DELETE
 RESTRICT, VF-017B) - including account_transactions rows created by
 linking an Income (VF-017D) or an Expense (VF-017E);
 has_transactions_for_account is kind-agnostic, so this happens
-automatically with no Income/Expense-specific code.
+automatically with no Income/Expense-specific code. Also rejected at the
+database level if any account_transfers row references the account as
+source or destination (ON DELETE RESTRICT, VF-018B) - including a planned
+transfer, which has no account_transactions rows. The controlled
+application-level 409 for that case arrives in VF-018C.
+
+AccountTransfer deleted
+    ↓
+Its account_transactions projection rows (two for a posted transfer,
+none for a planned one) are deleted with it (ON DELETE CASCADE,
+VF-018B) - the transfer is canonical and owns its projections.
 
 Income deleted
     ↓
@@ -2088,7 +2432,7 @@ Receipt.expense_id = NULL (ON DELETE SET NULL, unchanged since before
 VF-017E) - both FK actions fire together with no ordering conflict,
 since they target two different child tables.
 
-No dependent financial records are automatically deleted through these relationships, except a budget's own version history (deleted with it) and an Income's or Expense's own AccountTransaction projection (deleted with it). A Goal or an Account with transaction history cannot be deleted at all.
+No dependent financial records are automatically deleted through these relationships, except a budget's own version history (deleted with it), an Income's or Expense's own AccountTransaction projection (deleted with it), and an AccountTransfer's own projections (deleted with it). A Goal or an Account with transaction history cannot be deleted at all, and an Account referenced by any transfer cannot be deleted either.
 
 12. Database-Enforced Invariants
 
@@ -2159,11 +2503,38 @@ An AccountTransaction's expense_id, when set, must belong to the same
 user_id as the row itself (composite FK, VF-017E) - a cross-user Expense
 link is impossible to construct at the database level
 
+A transfer-kind AccountTransaction always has transfer_id set and
+income_id/expense_id NULL, and every income, expense, and direct row has
+transfer_id NULL (VF-018B, same combined CHECK)
+
+At most one debit and at most one credit AccountTransaction per transfer
+(UNIQUE(transfer_id, direction), VF-018B)
+
+An AccountTransaction's transfer_id, when set, must belong to the same
+user_id as the row itself (composite FK, VF-018B)
+
+AccountTransfer.amount > 0
+AccountTransfer.source_account_id <> destination_account_id
+AccountTransfer.status is one of planned/posted
+AccountTransfer status/date consistency: planned has planned_date and no
+effective_date/posted_at; posted has effective_date and posted_at
+(VF-018B, ck_account_transfers_lifecycle_consistent)
+
+At most one AccountTransfer per (user_id, client_request_id) (VF-018B)
+
+An AccountTransfer's source and destination Accounts must belong to the
+transfer's user_id and have the transfer's currency (composite FKs
+including currency, VF-018B) - cross-user and cross-currency transfers
+are impossible to construct at the database level, and a referenced
+Account's currency cannot change
+
 A category still referenced by a budget cannot be deleted (ON DELETE RESTRICT)
 
 A goal still referenced by a goal_transactions row cannot be deleted (ON DELETE RESTRICT)
 
 An account still referenced by an account_transactions row cannot be deleted (ON DELETE RESTRICT)
+
+An account still referenced by an account_transfers row cannot be deleted (ON DELETE RESTRICT, VF-018B)
 
 These constraints protect data even if an application-layer validation path is bypassed.
 
@@ -2256,6 +2627,13 @@ NULL): its snapshot stays fully NULL through any number of linkage
 changes, and only a genuine monetary field change (amount, currency, or
 expense_date - the pre-existing rule, unrelated to linkage) can ever
 resolve it.
+
+A planned AccountTransfer has zero ledger projections and a posted one
+has exactly two (source debit, destination credit) - a service-level
+atomicity invariant, not a database constraint (VF-018B). Its
+foundation exists: create_transfer_projections creates both rows at
+once and refuses a planned transfer. The service paths that create and
+post transfers (VF-018C/D) do not exist yet.
 
 Budget.end_date >= Budget.start_date
 
@@ -2397,7 +2775,8 @@ PostgreSQL
 │
 ├── accounts
 │   ├── PK id
-│   └── UNIQUE id + user_id (VF-017D, composite FK target)
+│   ├── UNIQUE id + user_id (VF-017D, composite FK target)
+│   └── UNIQUE id + user_id + currency (VF-018B, composite FK target)
 │
 ├── account_transactions
 │   ├── PK id
@@ -2405,8 +2784,17 @@ PostgreSQL
 │   ├── FK (account_id, user_id) → accounts (id, user_id) (ON DELETE RESTRICT, VF-017D)
 │   ├── FK (income_id, user_id) → income (id, user_id) (ON DELETE CASCADE, VF-017D)
 │   ├── FK (expense_id, user_id) → expenses (id, user_id) (ON DELETE CASCADE, VF-017E)
+│   ├── FK (transfer_id, user_id) → account_transfers (id, user_id) (ON DELETE CASCADE, VF-018B)
 │   ├── UNIQUE income_id (VF-017D)
-│   └── UNIQUE expense_id (VF-017E)
+│   ├── UNIQUE expense_id (VF-017E)
+│   └── UNIQUE transfer_id + direction (VF-018B)
+│
+├── account_transfers (VF-018B)
+│   ├── PK id
+│   ├── FK (source_account_id, user_id, currency) → accounts (id, user_id, currency) (ON DELETE RESTRICT)
+│   ├── FK (destination_account_id, user_id, currency) → accounts (id, user_id, currency) (ON DELETE RESTRICT)
+│   ├── UNIQUE id + user_id (composite FK target)
+│   └── UNIQUE user_id + client_request_id
 │
 ├── income
 │   ├── PK id
