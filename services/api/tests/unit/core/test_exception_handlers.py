@@ -9,6 +9,9 @@ from app.core.exception_handlers import (
     handle_domain_error,
     register_exception_handlers,
 )
+from app.modules.accounts.account_transfer_errors import (
+    AccountTransferNotFoundError,
+)
 from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
     BudgetNotFoundError,
@@ -58,6 +61,11 @@ from app.modules.receipts.receipt_errors import (
         "expected_detail",
     ),
     [
+        (
+            AccountTransferNotFoundError,
+            status.HTTP_404_NOT_FOUND,
+            "Account transfer not found.",
+        ),
         (
             CategoryAlreadyExistsError,
             status.HTTP_409_CONFLICT,
