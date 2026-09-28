@@ -215,7 +215,7 @@ Mobile remains the primary client. The web client comes later and is not the imm
 
 9. Known Follow-ups
 
-Production is deployed and hardened, but operational and security work is ongoing, for example:
+Production is deployed and has received hardening, while additional operational and security hardening remains ongoing, for example:
 
 credential rotation
 

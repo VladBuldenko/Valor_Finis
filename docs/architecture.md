@@ -15,7 +15,7 @@ Valor_Finis/
 ├── .github/workflows/     # CI
 └── docker-compose.yml     # Local infrastructure
 
-The repository boundary is not the deployment boundary. The mobile app and the API are built and deployed independently.
+The repository boundary is not the deployment boundary. The mobile app and the API can be built and deployed independently.
 
 2. System Context
 
@@ -212,7 +212,11 @@ Reads financial data and returns derived summaries: monthly and category summari
 
 5. Financial Ledger Architecture
 
-Valor Finis keeps two separate append-only ledgers. They are not the same ledger and they are not connected.
+Valor Finis keeps two separate ledgers. They are not the same ledger and they are not connected.
+
+GoalTransaction rows are append-only.
+
+In the AccountTransaction ledger, direct entries such as opening balances and manual adjustments are immutable, while Income/Expense projection rows are synchronized with their canonical records and may be updated, moved to another Account, or removed together with them (on detach or when the canonical record is deleted).
 
 Account
    ↓
@@ -419,9 +423,10 @@ Category
 
 Goal ── GoalTransaction
 
-Account ── AccountTransaction
-              ├── Income  (optional projection)
-              └── Expense (optional projection)
+Account ── AccountTransaction (opening balance, adjustments, projections)
+
+Income  ── optional synchronized AccountTransaction credit ── Account
+Expense ── optional synchronized AccountTransaction debit  ── Account
 
 Receipt ── Expense
 
