@@ -269,3 +269,46 @@ def has_planned_transfers_for_account(
     )
 
     return first_transfer_id is not None
+
+
+# Moves an already-locked planned AccountTransfer to posted and flushes.
+# This function exists as the only way a transfer's lifecycle fields
+# change after creation (VF-018D manual posting): it sets status, the
+# chosen effective_date, and posted_at, and deliberately never touches
+# planned_date, which must keep the original expected date forever (it is
+# also what create idempotency compares against). There is no generic
+# update primitive - no other field of a transfer is ever mutable. The
+# caller must have locked the transfer (get_account_transfer_by_id_for_
+# update) and its Accounts, and must create the ledger projections in the
+# same transaction right after this flush (create_transfer_projections
+# requires status="posted"), then commit once; a rollback restores the
+# planned state. Refusing a non-planned transfer here is a programming
+# invariant (the service checks status first), so it raises ValueError,
+# matching the other repository mutation guards.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - transfer_model: the locked planned AccountTransferModel.
+# - effective_date: accounting date on which the money moved.
+# - posted_at: technical timestamp of the transition.
+# Returns:
+# - The same AccountTransferModel, flushed with its posted state.
+# Raises:
+# - ValueError: transfer_model is not planned.
+def mark_locked_account_transfer_posted(
+    db_session: Session,
+    transfer_model: AccountTransferModel,
+    effective_date: date,
+    posted_at: datetime,
+) -> AccountTransferModel:
+    if transfer_model.status != "planned":
+        raise ValueError(
+            "mark_locked_account_transfer_posted may only be called with a "
+            "planned AccountTransfer - refusing to re-post a posted transfer."
+        )
+
+    transfer_model.status = "posted"
+    transfer_model.effective_date = effective_date
+    transfer_model.posted_at = posted_at
+    db_session.flush()
+
+    return transfer_model

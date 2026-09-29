@@ -74,3 +74,43 @@ class AccountTransferClientRequestIdTakenError(Exception):
     """
 
     pass
+
+
+class AccountTransferAlreadyPostedError(Exception):
+    """
+    Raised when manual posting is requested for a transfer that is not
+    planned (VF-018D).
+
+    What:
+        Represents a rejected planned -> posted transition in the accounts
+        module.
+
+    Why:
+        planned -> posted is the only transition and it happens at most
+        once. Posting is deliberately not idempotent (it has no request
+        key): a repeated post - e.g. a retry after a lost response - gets a
+        409 and the client refetches the transfer, which already shows
+        posted. It never creates a second pair of ledger projections.
+    """
+
+    pass
+
+
+class AccountTransferEffectiveDateInFutureError(Exception):
+    """
+    Raised when manual posting names an effective_date after the server
+    date (VF-018D).
+
+    What:
+        Represents an invalid posting date in the accounts module.
+
+    Why:
+        effective_date becomes the transaction_date of both ledger
+        projections, and the posted ledger must never contain a
+        future-dated transfer row. This single rule replaces any "not yet
+        due" restriction: posting before or after planned_date is allowed.
+        It is checked before the transfer is looked up, so it takes
+        precedence over 404/409.
+    """
+
+    pass

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.modules.accounts.account_transfer_schemas import (
     AccountTransferCreate,
+    AccountTransferPost,
     AccountTransferResponse,
 )
 
@@ -196,3 +197,23 @@ def test_account_transfer_response_shapes() -> None:
 def test_account_transfer_response_rejects_unknown_status() -> None:
     with pytest.raises(ValidationError):
         AccountTransferResponse(**_response_values(status="cancelled"))
+
+
+# Tests the manual posting body (VF-018D): effective_date is optional
+# (an empty body parses to None, which the service turns into today), a
+# date parses, and any other field is rejected. The "not in the future"
+# rule needs the server date and is enforced by the service, not here.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if each body validates or fails as expected.
+def test_account_transfer_post_body() -> None:
+    assert AccountTransferPost.model_validate({}).effective_date is None
+    assert AccountTransferPost.model_validate({"effective_date": None}).effective_date is None
+    assert AccountTransferPost.model_validate(
+        {"effective_date": "2026-10-18"}
+    ).effective_date == date(2026, 10, 18)
+
+    for extra in ({"status": "posted"}, {"posted_at": "2026-10-18T10:00:00Z"}, {"planned_date": "2026-10-18"}):
+        with pytest.raises(ValidationError):
+            AccountTransferPost.model_validate(extra)
