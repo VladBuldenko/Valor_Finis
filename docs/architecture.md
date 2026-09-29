@@ -278,6 +278,8 @@ list: planned and posted transfers, stored state only.
 
 hard delete: removes the transfer and, if posted, both projections (ON DELETE CASCADE). Archived Accounts never block it.
 
+manual posting (VF-018D): POST /api/v1/account-transfers/{id}/post moves a planned transfer to posted with an effective_date (default: server today, never in the future, before or after planned_date). In one transaction it locks the transfer, then both Accounts in ascending id order, requires the transfer to be planned (else 409) and both Accounts active (else 409, transfer stays planned), marks it posted (planned_date kept), creates both projections dated effective_date, and commits once. The transfer row lock plus the one-way planned -> posted status make a transfer post at most once; posting has no idempotency key.
+
 Account lifecycle guard: an Account referenced by a planned transfer cannot be deleted or actually change currency (409); archiving stays allowed. Posted transfers are covered by the existing ledger-history rules.
 
 History read model: each transfer row in Account history carries transfer_id and a read-only counterparty_account_id resolved in the same query (no per-row lookup).
@@ -288,11 +290,11 @@ Concurrency
 
 Lifecycle and linkage operations lock the affected rows with SELECT ... FOR UPDATE. Canonical rows are locked before Account rows, and FX resolution (external network I/O) happens before any Account row lock is taken, so no Account lock is held across a network call.
 
-Whenever two Accounts are locked (an Income/Expense move, a transfer create or delete) they are locked in ascending id order, so operations over the same pair in opposite directions cannot lock them in opposite orders. Transfer delete locks the transfer row first, then its Accounts. Account delete and currency change lock only the Account and read planned-transfer references without locking them, before writing, so the Account path never takes transfer row locks. This removes the known lock-order cycles; it is verified by concurrency tests rather than claimed as a proof that no deadlock can ever occur.
+Whenever two Accounts are locked (an Income/Expense move, a transfer create, post, or delete) they are locked in ascending id order, so operations over the same pair in opposite directions cannot lock them in opposite orders. Transfer post and delete lock the transfer row first, then its Accounts. Account delete and currency change lock only the Account and read planned-transfer references without locking them, before writing, so the Account path never takes transfer row locks. This removes the known lock-order cycles; it is verified by concurrency tests rather than claimed as a proof that no deadlock can ever occur.
 
 Not yet implemented
 
-Manual posting of a planned Account Transfer (VF-018D), transfers in the mobile client (VF-018E), any automatic scheduler for planned transfers, and any Goal ↔ Account movement or earmarking (pending product discovery). A planned transfer stays planned until it is posted.
+Transfers in the mobile client (VF-018E), any automatic scheduler for planned transfers, and any Goal ↔ Account movement or earmarking (pending product discovery). A planned transfer stays planned until it is posted manually.
 
 6. Module Boundaries
 
@@ -753,7 +755,7 @@ Automated backend CI                  ✅
 Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
-Account transfers (create/list/delete) ✅ backend; manual posting next
+Account transfers (create/list/delete/post) ✅ backend; mobile next
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -763,8 +765,6 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Account Transfers manual posting (VF-018D)
-      ↓
 Account Transfers mobile (VF-018E)
       ↓
 Goal ↔ Account semantics discovery

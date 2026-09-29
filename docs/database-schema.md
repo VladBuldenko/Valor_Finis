@@ -1579,7 +1579,9 @@ Scope: this table, its constraints, and the ledger linkage in 7.1 exist
 (VF-018B). Create (with the create idempotency algorithm), list, and hard
 delete through /api/v1/account-transfers, and the Account lifecycle
 protections for planned references, exist as of VF-018C. Manual posting of
-a planned transfer is not implemented yet (VF-018D).
+a planned transfer (POST /api/v1/account-transfers/{id}/post, VF-018D)
+moves it to posted, sets effective_date and posted_at, keeps planned_date,
+and creates both projections in the same transaction.
 
 Column
 
@@ -1779,8 +1781,8 @@ guarantees at most one debit and one credit per transfer
 without triggers (none are used) and is a service-level atomicity
 invariant: create_transfer_projections is the only way to create
 transfer rows, creates both at once, and refuses a planned transfer.
-It is called from the immediately posted create path (VF-018C) and will
-be called from manual posting (VF-018D).
+It is called from the immediately posted create path (VF-018C) and from
+manual posting (VF-018D).
 
 Deletion: deleting a transfer removes its projections via ON DELETE
 CASCADE (see 7.1). Transfers use hard delete - no reversal entity.
@@ -2634,8 +2636,9 @@ has exactly two (source debit, destination credit) - a service-level
 atomicity invariant, not a database constraint (VF-018B). Its
 foundation exists: create_transfer_projections creates both rows at
 once and refuses a planned transfer. The immediately posted create path
-uses it in one transaction with the canonical row (VF-018C); manual
-posting (VF-018D) does not exist yet.
+uses it in one transaction with the canonical row (VF-018C), and manual
+posting (VF-018D) uses it in one transaction with the planned -> posted
+transition.
 
 Budget.end_date >= Budget.start_date
 

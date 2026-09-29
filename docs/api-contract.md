@@ -1837,6 +1837,12 @@ DELETE
 
 204
 
+POST
+
+/api/v1/account-transfers/{transfer_id}/post
+
+200
+
 An Account Transfer moves the user's own money from one of their
 Accounts to another, in the same currency. It is not Income or Expense:
 transfers never create Income/Expense rows and never affect expense-based
@@ -1844,10 +1850,9 @@ analytics or budgets. The approved domain contract is
 docs/modules/account-transfers.md.
 
 There is no GET /api/v1/account-transfers/{transfer_id} (clients resolve
-a transfer from the list), no PATCH (a correction is delete + create),
-and no manual posting endpoint yet - posting a planned transfer is future
-work (VF-018D). There is no automatic scheduler: a planned transfer stays
-planned until it is posted.
+a transfer from the list) and no PATCH (a correction is delete + create).
+There is no automatic scheduler: a planned transfer stays planned until
+it is posted manually (see Post Transfer below).
 
 Lifecycle:
 
@@ -1997,6 +2002,52 @@ transfer's own date - effective_date once posted, otherwise
 planned_date - descending, then created_at DESC, then id DESC. No
 filters or pagination. A planned transfer whose planned_date has passed
 is returned as stored (still planned).
+
+Post Transfer
+
+POST /api/v1/account-transfers/{transfer_id}/post
+
+Manually moves a planned transfer to posted (VF-018D). Success is 200
+with the transfer's posted state.
+
+Request body (optional):
+
+{
+  "effective_date": "2026-10-18"
+}
+
+The body may be omitted entirely, sent as {}, or carry effective_date
+(null is treated as omitted). Any other field is rejected with 422.
+
+effective_date is the accounting date on which the money actually moved;
+it becomes the transaction_date of both ledger rows. When omitted it is
+the server date. It may be before, on, or after the transfer's
+planned_date - there is no "not yet due" rule - but never in the future.
+
+Rules, in this order:
+
+422 "Transfer effective date cannot be in the future." - effective_date
+is after the server date. This is checked BEFORE the transfer is looked
+up, so it takes precedence over 404/409 (even for a missing transfer).
+
+404 "Account transfer not found." - missing or another user's transfer.
+
+409 "Account transfer has already been posted." - the transfer is not
+planned. Posting happens at most once and is not idempotent: a retried
+post (e.g. after a lost response) gets 409, and the client refetches the
+list to see the posted state. There is no client_request_id for posting.
+
+409 "Archived account cannot receive new transactions." - the source or
+destination Account is archived. The transfer stays planned with no
+ledger rows; it can still be deleted, or posted after the Account is
+reactivated.
+
+On success, in one database transaction: status becomes posted,
+effective_date and posted_at are set, planned_date keeps its original
+value, and exactly two ledger rows are created (debit on the source
+Account, credit on the destination Account). There is no insufficient-
+funds check. Replaying the original create request of a transfer that was
+posted this way returns 200 with its current posted state.
 
 Delete Transfer
 
@@ -2316,6 +2367,7 @@ Important current domain mappings include:
 409  Archived account cannot receive new transactions.
 409  Account is referenced by planned transfers. Delete them first.
 409  client_request_id has already been used for a different transfer.
+409  Account transfer has already been posted.
 409  Receipt cannot be processed in its current status.
 409  Receipt cannot be confirmed in its current status.
 409  Receipt has already been confirmed.
@@ -2327,6 +2379,7 @@ Important current domain mappings include:
 422  Income currency must match the account's currency to link them.
 422  Expense currency must match the account's currency to link them.
 422  Transfer source and destination accounts must use the same currency.
+422  Transfer effective date cannot be in the future.
 422  Receipt file is empty.
 422  Receipt OCR processing failed.
 422  Required receipt confirmation data is missing.
