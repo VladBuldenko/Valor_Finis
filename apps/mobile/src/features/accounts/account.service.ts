@@ -67,8 +67,9 @@ export async function deleteAccount(accountId: string): Promise<void> {
 /**
  * Returns an account's full transaction history, newest first (the
  * backend's own ordering -- never re-sorted client-side). Includes
- * opening_balance, adjustment, and any synchronized income/expense
- * projection rows.
+ * opening_balance, adjustment, any synchronized income/expense projection
+ * rows, and the rows of posted transfers (with transfer_id and
+ * counterparty_account_id).
  */
 export async function getAccountTransactions(
   accountId: string,

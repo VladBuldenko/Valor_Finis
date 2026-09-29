@@ -54,25 +54,33 @@ export type AccountUpdateInput = {
 };
 
 // Mirrors backend AccountTransactionResponse's `kind` field
-// (services/api/app/modules/accounts/account_transaction_schemas.py).
-// opening_balance is created only via Account creation; income/expense are
-// synchronized projections from other modules (VF-017D/E) -- a client can
-// never create any of these three directly (see
+// (services/api/app/modules/accounts/account_transaction_schemas.py) --
+// all five kinds. Only adjustment is client-created (see
 // AccountTransactionCreateInput below, which has no kind field at all).
+// opening_balance is created only via Account creation; income/expense are
+// synchronized projections from other modules (VF-017D/E); transfer rows
+// are the two projections (source debit, destination credit) of a posted
+// AccountTransfer, created and removed only by the transfer endpoints
+// (VF-018C/D).
 export type AccountTransactionKind =
   | "opening_balance"
   | "adjustment"
   | "income"
-  | "expense";
+  | "expense"
+  | "transfer";
 
 // Mirrors backend AccountTransactionResponse. amount is always positive;
 // direction (not kind) carries the sign -- unlike GoalTransaction, which
 // has no separate direction column and infers sign from `type`, every
 // AccountTransaction row states its own sign explicitly via `direction`.
-// income_id/expense_id are mutually exclusive and both null for direct
-// (opening_balance/adjustment) rows. There is no updated_at -- transaction
-// rows are immutable/append-only, and there is no PATCH/DELETE endpoint
-// for them at all. Money fields stay JSON strings -- never parse them for
+// income_id/expense_id/transfer_id identify the source of a projection row;
+// at most one is set, and all are null for direct (opening_balance/
+// adjustment) rows. counterparty_account_id is set only on transfer rows:
+// the backend-resolved OTHER Account of the transfer (the destination on
+// the source's debit row, the source on the destination's credit row) --
+// never inferred on the client. There is no updated_at -- transaction rows
+// are immutable/append-only, and there is no PATCH/DELETE endpoint for
+// them at all. Money fields stay JSON strings -- never parse them for
 // display or arithmetic, only render the exact string the backend returns.
 export type AccountTransaction = {
   id: string;
@@ -85,6 +93,8 @@ export type AccountTransaction = {
   description: string | null;
   income_id: string | null;
   expense_id: string | null;
+  transfer_id: string | null;
+  counterparty_account_id: string | null;
   created_at: string;
 };
 
