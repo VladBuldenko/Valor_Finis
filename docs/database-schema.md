@@ -1183,9 +1183,9 @@ Independently, an Account referenced by any account_transfers row
 (planned or posted) cannot change currency at the database level: the
 transfer's composite foreign keys include currency (VF-018B, see 7.2
 below). A planned transfer has no ledger rows, so the application-level
-history check above does not see it; the controlled 409 for Accounts
-referenced by planned transfers is part of VF-018C and is not implemented
-yet - no public endpoint can create a transfer before VF-018C.
+history check above does not see it, so account_service additionally
+rejects an actual currency change of an Account referenced by a planned
+transfer with a controlled 409 before the UPDATE is issued (VF-018C).
 
 Safe deletion: an Account with any transaction history cannot be
 hard-deleted through the application (account_service.delete_account
@@ -1221,9 +1221,9 @@ row (see the expense_id column below and 4. Expenses above), symmetric
 to income but always a debit. VF-018B adds a fifth, source-backed kind:
 transfer - one of the two projections of a posted AccountTransfer (see
 the transfer_id column below and 7.2 Account Transfers): a debit on the
-source Account or a credit on the destination Account. As of VF-018B the
-transfer schema and repository foundation exist, but no public endpoint
-creates transfers yet (VF-018C/D).
+source Account or a credit on the destination Account. Transfers are
+created through POST /api/v1/account-transfers (VF-018C); an immediately
+posted create writes both projections, a planned create writes none.
 
 This table is the only persisted source of an Account's balance: the
 accounts table has no balance column at all (see 7 above). Every public
@@ -1575,11 +1575,11 @@ and never inflates either. It is either planned (expected in the future,
 no ledger effect) or posted (happened, reflected in the ledger by two
 account_transactions projections - see 7.1 above).
 
-Scope as of VF-018B: this table, its constraints, the ledger linkage in
-7.1, and the repository primitives exist. The public Transfer API (create,
-list, post, delete), the create idempotency algorithm, and the Account
-lifecycle protections for planned references are NOT implemented yet
-(VF-018C/D) - no client path can create a transfer today.
+Scope: this table, its constraints, and the ledger linkage in 7.1 exist
+(VF-018B). Create (with the create idempotency algorithm), list, and hard
+delete through /api/v1/account-transfers, and the Account lifecycle
+protections for planned references, exist as of VF-018C. Manual posting of
+a planned transfer is not implemented yet (VF-018D).
 
 Column
 
@@ -1778,9 +1778,9 @@ guarantees at most one debit and one credit per transfer
 "Exactly two rows when posted, none when planned" cannot be expressed
 without triggers (none are used) and is a service-level atomicity
 invariant: create_transfer_projections is the only way to create
-transfer rows, creates both at once, and refuses a planned transfer;
-the service paths that call it (posted create, manual post) arrive in
-VF-018C/D.
+transfer rows, creates both at once, and refuses a planned transfer.
+It is called from the immediately posted create path (VF-018C) and will
+be called from manual posting (VF-018D).
 
 Deletion: deleting a transfer removes its projections via ON DELETE
 CASCADE (see 7.1). Transfers use hard delete - no reversal entity.
@@ -2407,8 +2407,9 @@ has_transactions_for_account is kind-agnostic, so this happens
 automatically with no Income/Expense-specific code. Also rejected at the
 database level if any account_transfers row references the account as
 source or destination (ON DELETE RESTRICT, VF-018B) - including a planned
-transfer, which has no account_transactions rows. The controlled
-application-level 409 for that case arrives in VF-018C.
+transfer, which has no account_transactions rows. account_service
+rejects that case first with a controlled 409 (VF-018C), so the FK is
+only the last line of defense.
 
 AccountTransfer deleted
     ↓
@@ -2632,8 +2633,9 @@ A planned AccountTransfer has zero ledger projections and a posted one
 has exactly two (source debit, destination credit) - a service-level
 atomicity invariant, not a database constraint (VF-018B). Its
 foundation exists: create_transfer_projections creates both rows at
-once and refuses a planned transfer. The service paths that create and
-post transfers (VF-018C/D) do not exist yet.
+once and refuses a planned transfer. The immediately posted create path
+uses it in one transaction with the canonical row (VF-018C); manual
+posting (VF-018D) does not exist yet.
 
 Budget.end_date >= Budget.start_date
 

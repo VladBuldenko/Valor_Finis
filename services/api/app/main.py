@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.core.exception_handlers import register_exception_handlers
 from app.db.database_models import import_database_models
 from app.modules.accounts.account_router import router as accounts_router
+from app.modules.accounts.account_transfer_router import router as account_transfers_router
 from app.modules.analytics.analytics_router import router as analytics_router
 from app.modules.budgets.budget_router import router as budgets_router
 from app.modules.categories.router import router as categories_router
@@ -92,6 +93,10 @@ app.include_router(
 )
 app.include_router(
     accounts_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    account_transfers_router,
     prefix="/api/v1",
 )
 app.include_router(

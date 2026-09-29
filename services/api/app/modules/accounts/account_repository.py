@@ -145,6 +145,47 @@ def get_account_by_id_for_update(
     return account_model
 
 
+# Locks the given user-owned Accounts with SELECT ... FOR UPDATE in
+# ascending id order and returns whichever of them exist, without raising
+# for a missing one.
+# This function exists for the AccountTransfer create path (VF-018C), which
+# must lock both Accounts before its second idempotency lookup and only
+# afterwards decide whether a missing Account is a 404 - an identical replay
+# found by that second lookup must never fail on current Account state. The
+# single query orders by id before locking (PostgreSQL applies ORDER BY
+# before the locking clause), so rows are locked in the same ascending UUID
+# order Income/Expense moves use, and two transfers over the same pair in
+# opposite directions cannot lock them in opposite orders. A row deleted by
+# a concurrent committed transaction while this one waits for its lock is
+# simply not returned. Callers must not commit or release the session
+# between this call and the write it guards.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_ids: account identifiers to lock (duplicates are ignored).
+# - user_id: authenticated user identifier; other users' Accounts are never
+#   locked or returned.
+# Returns:
+# - Dict mapping account_id to its locked AccountModel, for the requested
+#   Accounts that exist and belong to the user.
+def get_accounts_by_ids_for_update(
+    db_session: Session,
+    account_ids: list[UUID],
+    user_id: UUID,
+) -> dict[UUID, AccountModel]:
+    account_models = (
+        db_session.query(AccountModel)
+        .filter(
+            AccountModel.id.in_(sorted(set(account_ids))),
+            AccountModel.user_id == user_id,
+        )
+        .order_by(AccountModel.id)
+        .with_for_update()
+        .all()
+    )
+
+    return {account_model.id: account_model for account_model in account_models}
+
+
 # Applies validated partial update data to an already-locked Account model
 # and commits.
 # This function exists to isolate PostgreSQL update operations from

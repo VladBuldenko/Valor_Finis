@@ -1610,10 +1610,11 @@ GET
 200
 
 An Account represents where real money is held - checking, savings, or
-cash. Credit cards, debt/liability accounts, investment accounts,
-account-to-account transfers, and Goal <-> Account movement are not
-implemented. Income and Expense can optionally be linked to an Account
-(VF-017D / VF-017E) - see the Income and Expenses sections. There is no
+cash. Credit cards, debt/liability accounts, investment accounts, and
+Goal <-> Account movement are not implemented. Income and Expense can
+optionally be linked to an Account (VF-017D / VF-017E) - see the Income
+and Expenses sections. Moving money between two of the user's Accounts
+is a separate resource - see 11.1 Account Transfers. There is no
 GET /api/v1/accounts/{account_id} endpoint - mobile detail screens
 resolve a single account from the list response, matching the
 established Goals pattern.
@@ -1668,9 +1669,17 @@ Account with any transaction history cannot be deleted (409, "Account
 with transaction history cannot be deleted. Archive it instead.") -
 archive it instead via PATCH status="archived".
 
+An Account referenced by any planned Account Transfer (VF-018C) cannot
+be deleted and cannot actually change currency - both are rejected with
+409 ("Account is referenced by planned transfers. Delete them first.").
+A planned transfer has no ledger rows, so the transaction-history rules
+above do not see it. Resending the same currency and archiving remain
+allowed. An Account referenced by a posted transfer already has ledger
+history, so the history rules above apply to it.
+
 Archiving (PATCH status="archived") remains possible regardless of
-transaction history, and an archived account's balance and full history
-remain fully readable. A new manual adjustment into an archived account
+transaction history or planned transfers, and an archived account's
+balance and full history remain fully readable. A new manual adjustment into an archived account
 is rejected with 409 ("Archived account cannot receive new
 transactions."). Reactivating (PATCH status="active") allows new
 adjustments again.
@@ -1760,14 +1769,23 @@ Account Transaction Response
   "description": null,
   "income_id": null,
   "expense_id": null,
+  "transfer_id": null,
+  "counterparty_account_id": null,
   "created_at": "2026-09-23T10:00:00Z"
 }
 
-`kind` is one of `opening_balance`, `adjustment`, `income`, or `expense`
-(VF-017D added `income`, VF-017E adds `expense` - each an additive
-change to this Literal; clients that switch exhaustively on `kind` must
-be updated to tolerate each new value, it is not claimed to be
-transparent for every possible client). `income_id` is non-null only on
+`kind` is one of `opening_balance`, `adjustment`, `income`, `expense`,
+or `transfer` (VF-017D added `income`, VF-017E `expense`, VF-018B/C
+`transfer` - each an additive change to this Literal; clients that
+switch exhaustively on `kind` must be updated to tolerate each new
+value, it is not claimed to be transparent for every possible client).
+`transfer_id` is non-null only on a `kind="transfer"` row - one of the
+two projections of a posted Account Transfer (see 11.1) - and
+`counterparty_account_id` is non-null only on such a row: the transfer's
+destination Account on the source Account's debit row, and its source
+Account on the destination Account's credit row. It is derived from the
+transfer at read time, never stored. Planned transfers never appear in
+Account history. `income_id` is non-null only on
 a `kind="income"` row, and identifies the source Income this row is a
 synchronized projection of. `expense_id` is non-null only on a
 `kind="expense"` row, and identifies the source Expense this row is a
@@ -1779,11 +1797,217 @@ transaction, for direct, Income-backed, or Expense-backed rows: an
 of the corresponding Income create/PATCH/DELETE (see the Income section
 below), and an `expense`-kind row ONLY as a side effect of the
 corresponding Expense create/PATCH/DELETE (see the Expenses section
-above) - direct rows remain immutable exactly as before.
+above) - direct rows remain immutable exactly as before. A
+`transfer`-kind row is created only by posting an Account Transfer and
+removed only by deleting that transfer (see 11.1).
 
 Transaction history is returned newest first, ordered by
 transaction_date DESC, then created_at DESC, then id DESC for
 deterministic output.
+
+11.1 Account Transfers
+
+Base path:
+
+/api/v1/account-transfers
+
+Endpoints
+
+Method
+
+Path
+
+Success
+
+POST
+
+/api/v1/account-transfers
+
+201 (created) or 200 (idempotent replay)
+
+GET
+
+/api/v1/account-transfers
+
+200
+
+DELETE
+
+/api/v1/account-transfers/{transfer_id}
+
+204
+
+An Account Transfer moves the user's own money from one of their
+Accounts to another, in the same currency. It is not Income or Expense:
+transfers never create Income/Expense rows and never affect expense-based
+analytics or budgets. The approved domain contract is
+docs/modules/account-transfers.md.
+
+There is no GET /api/v1/account-transfers/{transfer_id} (clients resolve
+a transfer from the list), no PATCH (a correction is delete + create),
+and no manual posting endpoint yet - posting a planned transfer is future
+work (VF-018D). There is no automatic scheduler: a planned transfer stays
+planned until it is posted.
+
+Lifecycle:
+
+planned - an expected future transfer. It has no ledger rows, never
+affects current Account balances, and does not appear in Account
+history.
+
+posted - a transfer that happened. It has exactly two ledger rows: a
+debit on the source Account and a credit on the destination Account,
+both dated effective_date (see Account Transaction Response above).
+
+Create Transfer
+
+POST /api/v1/account-transfers
+
+Request:
+
+{
+  "client_request_id": "0f8c5f5e-6a38-4a8e-9b0e-2f7d0a6f1c11",
+  "source_account_id": "<uuid>",
+  "destination_account_id": "<uuid>",
+  "amount": "300.00",
+  "transfer_date": "2026-10-15",
+  "description": "Move to savings"
+}
+
+Fields:
+
+Field
+
+Required
+
+Notes
+
+client_request_id
+
+yes
+
+UUID generated by the client; the create idempotency key (see below)
+
+source_account_id
+
+yes
+
+Account the money leaves
+
+destination_account_id
+
+yes
+
+Account the money enters; must differ from source_account_id (422)
+
+amount
+
+yes
+
+Decimal > 0, max 12 digits, 2 decimal places (max 9999999999.99)
+
+transfer_date
+
+yes
+
+date; classified by the server as described below
+
+description
+
+no
+
+max 500 characters; stored as sent (no normalization)
+
+user_id, currency, status, planned_date, effective_date, posted_at, and
+kind are server-owned: sending any of them is rejected with 422 (extra
+fields are forbidden). currency is derived from the Accounts.
+
+Date classification (server date; not yet user-timezone aware):
+
+transfer_date <= today - created as posted: planned_date = null,
+effective_date = transfer_date, posted_at = now, and both ledger rows
+are created in the same database transaction.
+
+transfer_date > today - created as planned: planned_date =
+transfer_date, effective_date = null, posted_at = null, no ledger rows.
+
+Validation for a new transfer (both Accounts are locked first):
+
+404 "Account not found." - either Account is missing or belongs to
+another user (no existence is leaked).
+
+409 "Archived account cannot receive new transactions." - either Account
+is archived.
+
+422 "Transfer source and destination accounts must use the same
+currency." - the Accounts' currencies differ (no FX transfers).
+
+There is no insufficient-funds check: a posted transfer may make the
+source balance negative.
+
+Idempotency:
+
+201 - this request created a new transfer.
+
+200 - client_request_id already identifies a transfer created from the
+same payload (source, destination, amount compared as a decimal value so
+"300" equals "300.00", original transfer_date, description compared
+exactly). The transfer's CURRENT state is returned and nothing new is
+created. Current Account state is not re-validated on a replay: if an
+Account was archived after the original create, the replay still
+returns 200.
+
+409 "client_request_id has already been used for a different
+transfer." - the same key with any different payload. The existing
+transfer is not revealed.
+
+Concurrent duplicate requests with the same key never create two
+transfers: the database enforces UNIQUE(user_id, client_request_id) and
+the losing request is resolved as 200 or 409 as above. After a transfer
+is hard-deleted its client_request_id is free again, so reusing it
+creates a new transfer (accepted MVP behavior).
+
+Response (201 or 200):
+
+{
+  "id": "<uuid>",
+  "user_id": "<uuid>",
+  "client_request_id": "<uuid>",
+  "source_account_id": "<uuid>",
+  "destination_account_id": "<uuid>",
+  "amount": "300.00",
+  "currency": "EUR",
+  "status": "planned",
+  "planned_date": "2026-10-15",
+  "effective_date": null,
+  "description": "Move to savings",
+  "posted_at": null,
+  "created_at": "2026-09-29T10:00:00Z",
+  "updated_at": "2026-09-29T10:00:00Z"
+}
+
+There is no transfer_date response field.
+
+List Transfers
+
+GET /api/v1/account-transfers
+
+Returns the user's planned and posted transfers, ordered by the
+transfer's own date - effective_date once posted, otherwise
+planned_date - descending, then created_at DESC, then id DESC. No
+filters or pagination. A planned transfer whose planned_date has passed
+is returned as stored (still planned).
+
+Delete Transfer
+
+DELETE /api/v1/account-transfers/{transfer_id}
+
+Hard delete, 204. A planned transfer is removed with no ledger effect. A
+posted transfer is removed together with both of its ledger rows, so its
+effect on both Account balances disappears. Archived Accounts never block
+deletion. A missing or another user's transfer is 404 ("Account transfer
+not found."). There is no reversal entry and no audit record of a
+deleted transfer.
 
 12. Income
 
@@ -2077,6 +2301,7 @@ Important current domain mappings include:
 404  Budget not found.
 404  Goal not found.
 404  Account not found.
+404  Account transfer not found.
 404  Income not found.
 404  Receipt not found.
 404  Linked expense not found.
@@ -2089,6 +2314,8 @@ Important current domain mappings include:
 409  Account currency cannot be changed after transaction history exists.
 409  Account with transaction history cannot be deleted. Archive it instead.
 409  Archived account cannot receive new transactions.
+409  Account is referenced by planned transfers. Delete them first.
+409  client_request_id has already been used for a different transfer.
 409  Receipt cannot be processed in its current status.
 409  Receipt cannot be confirmed in its current status.
 409  Receipt has already been confirmed.
@@ -2099,6 +2326,7 @@ Important current domain mappings include:
 422  A foreign-currency income cannot be dated in the future.
 422  Income currency must match the account's currency to link them.
 422  Expense currency must match the account's currency to link them.
+422  Transfer source and destination accounts must use the same currency.
 422  Receipt file is empty.
 422  Receipt OCR processing failed.
 422  Required receipt confirmation data is missing.

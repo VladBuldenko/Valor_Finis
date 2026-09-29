@@ -142,4 +142,16 @@ class AccountTransactionResponse(BaseModel):
         examples=[None],
     )
 
+    counterparty_account_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "For a transfer row (VF-018C), the other Account of the "
+            "transfer: the destination Account on the source Account's "
+            "debit row, the source Account on the destination Account's "
+            "credit row. A read-model value derived from the canonical "
+            "transfer, never stored. Null for every other kind."
+        ),
+        examples=[None],
+    )
+
     created_at: datetime

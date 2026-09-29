@@ -8,8 +8,11 @@ from app.modules.accounts.account_errors import (
     AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
     AccountNotFoundError,
+    AccountReferencedByPlannedTransferError,
 )
 from app.modules.accounts.account_transfer_errors import (
+    AccountTransferCurrencyMismatchError,
+    AccountTransferIdempotencyConflictError,
     AccountTransferNotFoundError,
 )
 from app.modules.budgets.budget_errors import (
@@ -84,9 +87,21 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_409_CONFLICT,
         "Archived account cannot receive new transactions.",
     ),
+    AccountReferencedByPlannedTransferError: (
+        status.HTTP_409_CONFLICT,
+        "Account is referenced by planned transfers. Delete them first.",
+    ),
     AccountTransferNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Account transfer not found.",
+    ),
+    AccountTransferIdempotencyConflictError: (
+        status.HTTP_409_CONFLICT,
+        "client_request_id has already been used for a different transfer.",
+    ),
+    AccountTransferCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Transfer source and destination accounts must use the same currency.",
     ),
     CategoryAlreadyExistsError: (
         status.HTTP_409_CONFLICT,

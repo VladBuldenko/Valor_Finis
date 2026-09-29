@@ -1,4 +1,5 @@
 from typing import Any, Optional, Union
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -323,5 +324,54 @@ def create_receipt(
     )
 
     assert response.status_code == 201, response.text
+
+    return response.json()
+
+
+# Creates an account transfer through the API (VF-018C).
+# This helper exists to avoid repeating the transfer request body in every
+# test. A fresh client_request_id is generated unless one is given, so a
+# replay test can pass the same key explicitly.
+# Parameters:
+# - client: FastAPI test client.
+# - user_id: authenticated user identifier as string.
+# - source_account_id: account the money leaves.
+# - destination_account_id: account the money enters.
+# - amount: decimal amount as a string.
+# - transfer_date: ISO date string.
+# - description: optional note.
+# - client_request_id: optional idempotency key as string.
+# - expected_status: HTTP status the request must return.
+# Returns:
+# - Parsed JSON response body.
+def create_account_transfer(
+    client: TestClient,
+    user_id: str,
+    source_account_id: str,
+    destination_account_id: str,
+    amount: str = "100.00",
+    transfer_date: str = "2026-09-01",
+    description: Optional[str] = None,
+    client_request_id: Optional[str] = None,
+    expected_status: int = 201,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "client_request_id": client_request_id or str(uuid4()),
+        "source_account_id": source_account_id,
+        "destination_account_id": destination_account_id,
+        "amount": amount,
+        "transfer_date": transfer_date,
+    }
+
+    if description is not None:
+        payload["description"] = description
+
+    response = client.post(
+        "/api/v1/account-transfers",
+        headers=auth_headers(user_id),
+        json=payload,
+    )
+
+    assert response.status_code == expected_status, response.text
 
     return response.json()

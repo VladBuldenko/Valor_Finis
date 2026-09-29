@@ -170,3 +170,53 @@ def test_account_model_has_no_current_balance_column() -> None:
     column_names = {column.name for column in AccountModel.__table__.columns}
 
     assert "current_balance" not in column_names
+
+
+# Tests that get_accounts_by_ids_for_update returns every requested owned
+# Account keyed by id, silently omits a missing id and another user's
+# Account instead of raising (VF-018C), and ignores duplicate ids.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if only the owned, existing Accounts come back.
+def test_get_accounts_by_ids_for_update_returns_found_rows_without_raising(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    try:
+        first = account_repository.create_account(
+            db_session=db_session,
+            account_data=AccountCreate(name="A", type="checking", currency="EUR"),
+            user_id=user_id,
+        )
+        second = account_repository.create_account(
+            db_session=db_session,
+            account_data=AccountCreate(name="B", type="savings", currency="EUR"),
+            user_id=user_id,
+        )
+        others = account_repository.create_account(
+            db_session=db_session,
+            account_data=AccountCreate(name="C", type="cash", currency="EUR"),
+            user_id=other_user_id,
+        )
+
+        locked = account_repository.get_accounts_by_ids_for_update(
+            db_session=db_session,
+            account_ids=[second.id, first.id, first.id],
+            user_id=user_id,
+        )
+        assert set(locked) == {first.id, second.id}
+        db_session.rollback()
+
+        partial = account_repository.get_accounts_by_ids_for_update(
+            db_session=db_session,
+            account_ids=[first.id, uuid4(), others.id],
+            user_id=user_id,
+        )
+        assert set(partial) == {first.id}
+        db_session.rollback()
+    finally:
+        db_session.close()

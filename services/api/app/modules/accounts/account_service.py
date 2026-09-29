@@ -1,16 +1,23 @@
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.modules.accounts import account_repository, account_transaction_repository
+from app.modules.accounts import (
+    account_repository,
+    account_transaction_repository,
+    account_transfer_repository,
+)
 from app.modules.accounts.account_errors import (
     AccountArchivedError,
     AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
+    AccountReferencedByPlannedTransferError,
 )
 from app.modules.accounts.account_models import AccountModel
+from app.modules.accounts.account_transaction_models import AccountTransactionModel
 from app.modules.accounts.account_schemas import (
     AccountCreate,
     AccountResponse,
@@ -169,6 +176,17 @@ def get_accounts(
 # own validator (e.g. "eur" -> "EUR") by the time it reaches this
 # function, so resending the Account's current currency (in any casing)
 # after history exists is a no-op and is allowed, not rejected.
+#
+# Planned-transfer rule (VF-018C): an actual currency change is also
+# rejected while any planned AccountTransfer references the Account - a
+# planned transfer has no ledger rows, so the history check above cannot
+# see it, and its amount is expressed in this currency. The check is a
+# plain read made under the Account lock and BEFORE the UPDATE is issued,
+# so the composite (account_id, user_id, currency) foreign key on
+# account_transfers never has to reject the write (it stays the last line
+# of defense) and this path never takes transfer row locks. A same-value
+# currency resend and every other field change (including archiving) do
+# not run this check at all.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - account_id: account identifier.
@@ -182,6 +200,8 @@ def get_accounts(
 #   to the user.
 # - AccountCurrencyImmutableError: when currency is actually changing and
 #   the account already has transaction history.
+# - AccountReferencedByPlannedTransferError: when currency is actually
+#   changing and a planned transfer references the account.
 def update_account(
     db_session: Session,
     account_id: UUID,
@@ -207,6 +227,16 @@ def update_account(
             if has_history:
                 db_session.rollback()
                 raise AccountCurrencyImmutableError()
+
+            has_planned_transfers = account_transfer_repository.has_planned_transfers_for_account(
+                db_session=db_session,
+                account_id=account_id,
+                user_id=user_id,
+            )
+
+            if has_planned_transfers:
+                db_session.rollback()
+                raise AccountReferencedByPlannedTransferError()
 
     account_model = account_repository.apply_account_update(
         db_session=db_session,
@@ -239,6 +269,18 @@ def update_account(
 # create_account_transaction's own row lock: whichever of "delete this
 # Account" or "create its first transaction" acquires the lock first
 # determines the outcome the other one observes.
+#
+# Planned-transfer rule (VF-018C): an Account referenced by any planned
+# AccountTransfer cannot be deleted either - a planned transfer has no
+# ledger rows, so the history check cannot see it, and deleting the
+# Account would silently destroy the plan. The check is a plain read made
+# under the Account lock and BEFORE the DELETE is issued: relying on the
+# account_transfers ON DELETE RESTRICT foreign key instead would surface an
+# IntegrityError (500), and PostgreSQL's FK enforcement would row-lock the
+# referencing transfer rows while this Account lock is held - the reverse
+# of the Transfer -> Account order transfer deletion uses. Any concurrent
+# transfer create/delete touching this Account must hold its lock too, so
+# the read is consistent. The FK remains the last line of defense.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - account_id: account identifier.
@@ -250,6 +292,8 @@ def update_account(
 #   to the user.
 # - AccountDeletionNotAllowedError: when the account has any transaction
 #   history.
+# - AccountReferencedByPlannedTransferError: when a planned transfer
+#   references the account.
 def delete_account(
     db_session: Session,
     account_id: UUID,
@@ -270,6 +314,16 @@ def delete_account(
     if has_history:
         db_session.rollback()
         raise AccountDeletionNotAllowedError()
+
+    has_planned_transfers = account_transfer_repository.has_planned_transfers_for_account(
+        db_session=db_session,
+        account_id=account_id,
+        user_id=user_id,
+    )
+
+    if has_planned_transfers:
+        db_session.rollback()
+        raise AccountReferencedByPlannedTransferError()
 
     account_repository.delete_locked_account(
         db_session=db_session,
@@ -340,11 +394,47 @@ def create_account_transaction(
     return AccountTransactionResponse.model_validate(transaction_model)
 
 
+# Builds an AccountTransactionResponse from a ledger row and its
+# already-resolved transfer counterparty.
+# This function exists because counterparty_account_id has no database
+# column (VF-018C): it is derived from the canonical transfer in the
+# history query and must be supplied explicitly, so this is the only place
+# a history response is assembled with it.
+# Parameters:
+# - transaction_model: the AccountTransaction database record.
+# - counterparty_account_id: the other Account of the row's transfer, or
+#   None for a non-transfer row.
+# Returns:
+# - AccountTransactionResponse including counterparty_account_id.
+def _build_account_transaction_response(
+    transaction_model: AccountTransactionModel,
+    counterparty_account_id: Optional[UUID],
+) -> AccountTransactionResponse:
+    return AccountTransactionResponse(
+        id=transaction_model.id,
+        account_id=transaction_model.account_id,
+        user_id=transaction_model.user_id,
+        kind=transaction_model.kind,
+        direction=transaction_model.direction,
+        amount=transaction_model.amount,
+        transaction_date=transaction_model.transaction_date,
+        description=transaction_model.description,
+        income_id=transaction_model.income_id,
+        expense_id=transaction_model.expense_id,
+        transfer_id=transaction_model.transfer_id,
+        counterparty_account_id=counterparty_account_id,
+        created_at=transaction_model.created_at,
+    )
+
+
 # Returns the full transaction history for an account owned by the
 # authenticated user.
 # This function exists to enforce ownership before ever touching the
 # ledger: another user's Account must behave as not found, never leaking
-# whether it exists.
+# whether it exists. Each transfer row carries counterparty_account_id -
+# the other Account of its transfer - resolved in the same single query
+# as the history itself (no per-row transfer lookup); every other row
+# gets None.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - account_id: account identifier.
@@ -365,13 +455,13 @@ def get_account_transactions(
         user_id=user_id,
     )
 
-    transaction_models = account_transaction_repository.get_transactions_for_account(
+    rows = account_transaction_repository.get_transactions_with_transfer_counterparty_for_account(
         db_session=db_session,
         account_id=account_id,
         user_id=user_id,
     )
 
     return [
-        AccountTransactionResponse.model_validate(transaction_model)
-        for transaction_model in transaction_models
+        _build_account_transaction_response(transaction_model, counterparty_account_id)
+        for transaction_model, counterparty_account_id in rows
     ]

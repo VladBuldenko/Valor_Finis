@@ -176,7 +176,9 @@ Owns savings goals and their GoalTransaction ledger (opening balance, contributi
 
 Accounts
 
-Owns Accounts (checking, savings, cash) and the AccountTransaction ledger: opening balance, manual adjustments, and the Income/Expense projections. An Account's balance is derived from its ledger and may be negative.
+Owns Accounts (checking, savings, cash) and the AccountTransaction ledger: opening balance, manual adjustments, and the Income/Expense/Transfer projections. An Account's balance is derived from its ledger and may be negative.
+
+It also owns Account Transfers (VF-018C): the canonical AccountTransfer record, its service (create with server-side idempotency, list, hard delete), and its router mounted at /api/v1/account-transfers. Transfers live inside the accounts module because the Account lifecycle rules must read them.
 
 Income
 
@@ -216,7 +218,7 @@ Valor Finis keeps two separate ledgers. They are not the same ledger and they ar
 
 GoalTransaction rows are append-only.
 
-In the AccountTransaction ledger, direct entries such as opening balances and manual adjustments are immutable, while Income/Expense projection rows are synchronized with their canonical records and may be updated, moved to another Account, or removed together with them (on detach or when the canonical record is deleted).
+In the AccountTransaction ledger, direct entries such as opening balances and manual adjustments are immutable, while Income/Expense projection rows are synchronized with their canonical records and may be updated, moved to another Account, or removed together with them (on detach or when the canonical record is deleted). Transfer projection rows are created only when an Account Transfer is posted and removed only together with the transfer.
 
 Account
    ↓
@@ -258,13 +260,39 @@ an archived Account cannot receive new linked activity, but existing links can b
 
 Direct Account ledger entries (opening balance and manual adjustments) are immutable; corrections are made with a compensating adjustment. An Account with ledger history cannot be deleted, only archived; its currency becomes immutable once history exists.
 
+Account Transfers
+
+AccountTransfer (canonical, same currency, same user)
+   ├── planned: no ledger rows, no balance effect
+   └── posted:  debit AccountTransaction on the source Account
+                credit AccountTransaction on the destination Account
+                (kind "transfer", both dated effective_date)
+
+A transfer moves the user's own money between two Accounts. It is neither Income nor Expense and never feeds expense analytics or budgets. Implemented (VF-018C):
+
+create: transfer_date <= server today creates a posted transfer and both projections in one database transaction; a later date creates a planned transfer with no ledger rows. There is no insufficient-funds check.
+
+create idempotency: every create carries a client_request_id. The service looks it up before locking, locks both Accounts, looks it up again, and only then validates the Accounts (owned, active, same currency) for a new transfer. An existing transfer with the same original payload is returned as a replay (200) without re-validating current Account state; a different payload is a 409. UNIQUE(user_id, client_request_id) is the final defense against concurrent duplicates, recognized by its constraint name.
+
+list: planned and posted transfers, stored state only.
+
+hard delete: removes the transfer and, if posted, both projections (ON DELETE CASCADE). Archived Accounts never block it.
+
+Account lifecycle guard: an Account referenced by a planned transfer cannot be deleted or actually change currency (409); archiving stays allowed. Posted transfers are covered by the existing ledger-history rules.
+
+History read model: each transfer row in Account history carries transfer_id and a read-only counterparty_account_id resolved in the same query (no per-row lookup).
+
+The domain contract is docs/modules/account-transfers.md.
+
 Concurrency
 
 Lifecycle and linkage operations lock the affected rows with SELECT ... FOR UPDATE. Canonical rows are locked before Account rows, and FX resolution (external network I/O) happens before any Account row lock is taken, so no Account lock is held across a network call.
 
+Whenever two Accounts are locked (an Income/Expense move, a transfer create or delete) they are locked in ascending id order, so operations over the same pair in opposite directions cannot lock them in opposite orders. Transfer delete locks the transfer row first, then its Accounts. Account delete and currency change lock only the Account and read planned-transfer references without locking them, before writing, so the Account path never takes transfer row locks. This removes the known lock-order cycles; it is verified by concurrency tests rather than claimed as a proof that no deadlock can ever occur.
+
 Not yet implemented
 
-Account-to-account transfers (the next milestone, pending specification) and any Goal ↔ Account movement or earmarking (pending product discovery).
+Manual posting of a planned Account Transfer (VF-018D), transfers in the mobile client (VF-018E), any automatic scheduler for planned transfers, and any Goal ↔ Account movement or earmarking (pending product discovery). A planned transfer stays planned until it is posted.
 
 6. Module Boundaries
 
@@ -725,7 +753,7 @@ Automated backend CI                  ✅
 Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
-Account transfers                     next (specification pending)
+Account transfers (create/list/delete) ✅ backend; manual posting next
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -735,9 +763,9 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Account Transfers specification
+Account Transfers manual posting (VF-018D)
       ↓
-Account Transfers backend + mobile
+Account Transfers mobile (VF-018E)
       ↓
 Goal ↔ Account semantics discovery
       ↓

@@ -310,6 +310,7 @@ def test_get_account_transactions_endpoint_serializes_transfer_rows(
     assert source_row["transfer_id"] == transfer_id
     assert source_row["income_id"] is None
     assert source_row["expense_id"] is None
+    assert source_row["counterparty_account_id"] == destination["id"]
 
     destination_history = client.get(
         f"/api/v1/accounts/{destination['id']}/transactions",
@@ -320,6 +321,7 @@ def test_get_account_transactions_endpoint_serializes_transfer_rows(
     assert destination_row["kind"] == "transfer"
     assert destination_row["direction"] == "credit"
     assert destination_row["transfer_id"] == transfer_id
+    assert destination_row["counterparty_account_id"] == source["id"]
 
     accounts = {
         account["id"]: account
@@ -352,3 +354,4 @@ def test_get_account_transactions_endpoint_non_transfer_rows_have_null_transfer_
     )
     assert response.status_code == 200
     assert [row["transfer_id"] for row in response.json()] == [None, None]
+    assert [row["counterparty_account_id"] for row in response.json()] == [None, None]
