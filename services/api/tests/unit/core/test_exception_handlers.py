@@ -11,7 +11,9 @@ from app.core.exception_handlers import (
 )
 from app.modules.accounts.account_errors import AccountReferencedByPlannedTransferError
 from app.modules.accounts.account_transfer_errors import (
+    AccountTransferAlreadyPostedError,
     AccountTransferCurrencyMismatchError,
+    AccountTransferEffectiveDateInFutureError,
     AccountTransferIdempotencyConflictError,
     AccountTransferNotFoundError,
 )
@@ -83,6 +85,16 @@ from app.modules.receipts.receipt_errors import (
             AccountReferencedByPlannedTransferError,
             status.HTTP_409_CONFLICT,
             "Account is referenced by planned transfers. Delete them first.",
+        ),
+        (
+            AccountTransferAlreadyPostedError,
+            status.HTTP_409_CONFLICT,
+            "Account transfer has already been posted.",
+        ),
+        (
+            AccountTransferEffectiveDateInFutureError,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Transfer effective date cannot be in the future.",
         ),
         (
             CategoryAlreadyExistsError,
