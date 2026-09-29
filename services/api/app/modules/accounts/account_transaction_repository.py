@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
 from app.modules.accounts.account_transaction_models import AccountTransactionModel
@@ -157,6 +157,68 @@ def get_transactions_for_account(
         )
         .all()
     )
+
+
+# Returns an account's full transaction history, newest first, each row
+# paired with its transfer counterparty Account id (VF-018C).
+# This function exists to back GET /api/v1/accounts/{account_id}/transactions
+# with the counterparty read model in ONE query, never one transfer lookup
+# per row: account_transactions is LEFT OUTER JOINed to account_transfers on
+# (transfer_id, user_id), and the counterparty is derived from the canonical
+# transfer's actual Account ids - the destination for the row on the source
+# Account, the source for the row on the destination Account - rather than
+# inferred from direction. Non-transfer rows (and any row whose account_id
+# matches neither side, which valid data never produces) get None.
+# counterparty_account_id is a read-model value only, never stored. Ordering
+# is identical to get_transactions_for_account (transaction_date DESC,
+# created_at DESC, id DESC).
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_id: account identifier to list transactions for.
+# - user_id: authenticated user identifier that owns the account, used as
+#   a defense-in-depth filter alongside account_id and in the join.
+# Returns:
+# - List of (AccountTransactionModel, counterparty_account_id or None)
+#   tuples, newest first.
+def get_transactions_with_transfer_counterparty_for_account(
+    db_session: Session,
+    account_id: UUID,
+    user_id: UUID,
+) -> list[tuple[AccountTransactionModel, Optional[UUID]]]:
+    counterparty_account_id = case(
+        (
+            AccountTransactionModel.account_id == AccountTransferModel.source_account_id,
+            AccountTransferModel.destination_account_id,
+        ),
+        (
+            AccountTransactionModel.account_id == AccountTransferModel.destination_account_id,
+            AccountTransferModel.source_account_id,
+        ),
+        else_=None,
+    ).label("counterparty_account_id")
+
+    rows = (
+        db_session.query(AccountTransactionModel, counterparty_account_id)
+        .outerjoin(
+            AccountTransferModel,
+            and_(
+                AccountTransferModel.id == AccountTransactionModel.transfer_id,
+                AccountTransferModel.user_id == AccountTransactionModel.user_id,
+            ),
+        )
+        .filter(
+            AccountTransactionModel.account_id == account_id,
+            AccountTransactionModel.user_id == user_id,
+        )
+        .order_by(
+            AccountTransactionModel.transaction_date.desc(),
+            AccountTransactionModel.created_at.desc(),
+            AccountTransactionModel.id.desc(),
+        )
+        .all()
+    )
+
+    return [(transaction_model, counterparty) for transaction_model, counterparty in rows]
 
 
 # Returns every one of a user's accounts' ledger balances in a single
