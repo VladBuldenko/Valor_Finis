@@ -444,6 +444,14 @@ export function DashboardScreen() {
           </Pressable>
         </Link>
 
+        {/* Navigation only (VF-018E) -- Transfers are never fetched or
+            aggregated on this screen; see transfers-screen.tsx. */}
+        <Link href="/transfers" asChild>
+          <Pressable style={styles.button}>
+            <Text style={styles.buttonText}>Transfers</Text>
+          </Pressable>
+        </Link>
+
         <Link href="/expenses" asChild>
           <Pressable style={styles.button}>
             <Text style={styles.buttonText}>Expenses</Text>

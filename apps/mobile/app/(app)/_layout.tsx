@@ -100,6 +100,18 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="transfers"
+        options={{
+          title: "Transfers",
+        }}
+      />
+      <Stack.Screen
+        name="transfers/new"
+        options={{
+          title: "New Transfer",
+        }}
+      />
+      <Stack.Screen
         name="goals"
         options={{
           title: "Goals",
