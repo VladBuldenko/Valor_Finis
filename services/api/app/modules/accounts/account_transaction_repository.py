@@ -7,9 +7,12 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.modules.accounts.account_transaction_models import AccountTransactionModel
+from app.modules.accounts.account_transfer_models import AccountTransferModel
 
 # VF-017D: Income <-> Account ledger projection primitives.
 # VF-017E: Expense <-> Account ledger projection primitives (exact mirror).
+# VF-018B: AccountTransfer ledger projection primitive
+#          (create_transfer_projections, at the end of this module).
 #
 # These functions are the ONLY way an "income"-kind or "expense"-kind
 # AccountTransaction row may ever be created, read, updated, or deleted.
@@ -721,3 +724,97 @@ def get_expense_account_links_for_user(
     )
 
     return {expense_id: account_id for expense_id, account_id in rows}
+
+
+# Validates that a transfer given to create_transfer_projections is
+# posted, before any ledger row is created.
+# This function exists so the "a planned transfer never has ledger
+# projections" invariant (VF-018A, D11) is guarded structurally, not only
+# by convention: a planned transfer must never affect current Account
+# balances, and create_transfer_projections is the only way a
+# transfer-kind row may be created. Like the Income/Expense projection
+# guards above, a violation can only come from a programming mistake
+# inside this codebase, never from a client request, so it raises a plain
+# ValueError rather than a domain/HTTP error class.
+# Parameters:
+# - transfer: the AccountTransferModel a caller wants to project into the
+#   ledger.
+# Returns:
+# - None.
+# Raises:
+# - ValueError: transfer is not posted (status != "posted") or has no
+#   effective_date.
+def _validate_transfer_for_projection_creation(
+    transfer: AccountTransferModel,
+) -> None:
+    if transfer.status != "posted" or transfer.effective_date is None:
+        raise ValueError(
+            "create_transfer_projections may only be called with a posted "
+            "AccountTransfer (status='posted', effective_date set) - "
+            "refusing to create ledger rows for a planned transfer."
+        )
+
+
+# Creates the two AccountTransaction projection rows of a posted
+# AccountTransfer: a debit on the source Account and a credit on the
+# destination Account.
+# This function exists as the only way a kind="transfer" row may be
+# created. Both rows are created in one call, so no code path can create
+# one side without the other. Every value is derived from the canonical
+# transfer itself - account ids, user_id, amount, and transaction_date =
+# effective_date - rather than passed separately, so the projections
+# cannot drift from their transfer. kind="transfer" and description=None
+# are hardcoded (the transfer's own description is the single canonical
+# copy of that text). _validate_transfer_for_projection_creation runs
+# BEFORE any row is added, so a planned transfer raises ValueError without
+# touching the session.
+#
+# It only flushes and has no commit parameter: the caller (the future
+# posted-create and manual-post service paths) owns one database
+# transaction that also contains the canonical transfer write, and commits
+# once. There is deliberately no update or delete counterpart: transfer
+# projections are removed only by ON DELETE CASCADE when the canonical
+# transfer is deleted. UNIQUE(transfer_id, direction) makes a second call
+# for the same transfer fail on flush.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - transfer: the posted AccountTransferModel to project. It must already
+#   be flushed (have an id) in the current transaction.
+# Returns:
+# - Tuple (source_debit, destination_credit) of AccountTransactionModel
+#   instances flushed in the current transaction.
+# Raises:
+# - ValueError: transfer is not posted - see
+#   _validate_transfer_for_projection_creation.
+def create_transfer_projections(
+    db_session: Session,
+    transfer: AccountTransferModel,
+) -> tuple[AccountTransactionModel, AccountTransactionModel]:
+    _validate_transfer_for_projection_creation(transfer)
+
+    source_debit = AccountTransactionModel(
+        account_id=transfer.source_account_id,
+        user_id=transfer.user_id,
+        kind="transfer",
+        direction="debit",
+        amount=transfer.amount,
+        transaction_date=transfer.effective_date,
+        description=None,
+        transfer_id=transfer.id,
+    )
+
+    destination_credit = AccountTransactionModel(
+        account_id=transfer.destination_account_id,
+        user_id=transfer.user_id,
+        kind="transfer",
+        direction="credit",
+        amount=transfer.amount,
+        transaction_date=transfer.effective_date,
+        description=None,
+        transfer_id=transfer.id,
+    )
+
+    db_session.add_all([source_debit, destination_credit])
+    db_session.flush()
+
+    return source_debit, destination_credit

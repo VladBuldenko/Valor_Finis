@@ -9,6 +9,9 @@ from app.modules.accounts.account_errors import (
     AccountDeletionNotAllowedError,
     AccountNotFoundError,
 )
+from app.modules.accounts.account_transfer_errors import (
+    AccountTransferNotFoundError,
+)
 from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
     BudgetImmutableFieldError,
@@ -80,6 +83,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     AccountArchivedError: (
         status.HTTP_409_CONFLICT,
         "Archived account cannot receive new transactions.",
+    ),
+    AccountTransferNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Account transfer not found.",
     ),
     CategoryAlreadyExistsError: (
         status.HTTP_409_CONFLICT,

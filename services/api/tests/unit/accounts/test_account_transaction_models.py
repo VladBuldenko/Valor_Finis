@@ -1,7 +1,8 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.db.database_session import SessionLocal
@@ -9,6 +10,7 @@ from app.modules.accounts import account_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_schemas import AccountCreate
 from app.modules.accounts.account_transaction_models import AccountTransactionModel
+from app.modules.accounts.account_transfer_models import AccountTransferModel
 from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.income.income_models import IncomeModel
 
@@ -1001,5 +1003,296 @@ def test_account_transaction_cross_user_expense_link_rejected_at_db_level(
             assert False, "expected IntegrityError for cross-user expense linkage"
         except IntegrityError:
             db_session.rollback()
+    finally:
+        db_session.close()
+
+
+# Creates a committed posted AccountTransfer between two fresh EUR
+# Accounts owned by user_id (VF-018B) and returns (transfer, source,
+# destination). Inserted directly, with no ledger projections - each test
+# adds exactly the projection rows it is exercising.
+def _create_posted_transfer(db_session, user_id):
+    source = _create_account(db_session, user_id)
+    destination = _create_account(db_session, user_id)
+
+    transfer = AccountTransferModel(
+        user_id=user_id,
+        client_request_id=uuid4(),
+        source_account_id=source.id,
+        destination_account_id=destination.id,
+        amount=Decimal("300.00"),
+        currency="EUR",
+        status="posted",
+        planned_date=None,
+        effective_date=date(2026, 9, 28),
+        posted_at=datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(transfer)
+    db_session.commit()
+    db_session.refresh(transfer)
+    return transfer, source, destination
+
+
+# Builds an unsaved kind="transfer" AccountTransactionModel for one side of
+# the given transfer.
+def _transfer_row(transfer, account_id, direction, **overrides) -> AccountTransactionModel:
+    values = {
+        "account_id": account_id,
+        "user_id": transfer.user_id,
+        "kind": "transfer",
+        "direction": direction,
+        "amount": transfer.amount,
+        "transaction_date": transfer.effective_date,
+        "transfer_id": transfer.id,
+    }
+    values.update(overrides)
+    return AccountTransactionModel(**values)
+
+
+# Commits a row that must violate a database constraint and asserts the
+# commit raises IntegrityError, leaving the session usable afterward.
+def _assert_rejected(db_session, row, reason: str) -> None:
+    db_session.add(row)
+
+    try:
+        db_session.commit()
+        assert False, f"expected IntegrityError for {reason}"
+    except IntegrityError:
+        db_session.rollback()
+
+
+# Tests that a kind="transfer" debit row with transfer_id set persists -
+# the valid shape of a transfer's source-side projection (VF-018B).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the row is persisted.
+def test_account_transaction_transfer_debit_row_persists(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, source, _ = _create_posted_transfer(db_session, user_id)
+
+        row = _transfer_row(transfer, source.id, "debit")
+        db_session.add(row)
+        db_session.commit()
+        db_session.refresh(row)
+
+        assert row.kind == "transfer"
+        assert row.direction == "debit"
+        assert row.transfer_id == transfer.id
+        assert row.income_id is None
+        assert row.expense_id is None
+    finally:
+        db_session.close()
+
+
+# Tests that a kind="transfer" credit row with transfer_id set persists -
+# the valid shape of a transfer's destination-side projection. The
+# transfer branch of the linkage CHECK must not force a single direction.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the row is persisted.
+def test_account_transaction_transfer_credit_row_persists(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, _, destination = _create_posted_transfer(db_session, user_id)
+
+        row = _transfer_row(transfer, destination.id, "credit")
+        db_session.add(row)
+        db_session.commit()
+        db_session.refresh(row)
+
+        assert row.kind == "transfer"
+        assert row.direction == "credit"
+        assert row.transfer_id == transfer.id
+    finally:
+        db_session.close()
+
+
+# Tests that one debit and one credit row for the same transfer are both
+# allowed - UNIQUE(transfer_id, direction) permits exactly one of each.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if both rows persist.
+def test_account_transaction_transfer_debit_and_credit_same_transfer_allowed(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, source, destination = _create_posted_transfer(db_session, user_id)
+
+        db_session.add_all([
+            _transfer_row(transfer, source.id, "debit"),
+            _transfer_row(transfer, destination.id, "credit"),
+        ])
+        db_session.commit()
+
+        rows = (
+            db_session.query(AccountTransactionModel)
+            .filter(AccountTransactionModel.transfer_id == transfer.id)
+            .all()
+        )
+        assert sorted(row.direction for row in rows) == ["credit", "debit"]
+    finally:
+        db_session.close()
+
+
+# Tests that invalid source-linkage combinations involving transfer_id are
+# rejected by ck_account_transactions_source_linkage_valid, while existing
+# income/expense/direct shapes stay protected.
+# Parameters:
+# - case: which invalid combination to build.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+@pytest.mark.parametrize(
+    "case",
+    [
+        "transfer_kind_without_transfer_id",
+        "transfer_kind_with_income_id",
+        "transfer_kind_with_expense_id",
+        "income_kind_with_transfer_id",
+        "expense_kind_with_transfer_id",
+        "direct_kind_with_transfer_id",
+    ],
+)
+def test_account_transaction_invalid_transfer_linkage_rejected(
+    case: str, clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, source, _ = _create_posted_transfer(db_session, user_id)
+
+        if case == "transfer_kind_without_transfer_id":
+            row = _transfer_row(transfer, source.id, "debit", transfer_id=None)
+        elif case == "transfer_kind_with_income_id":
+            income = _create_income(db_session, user_id)
+            row = _transfer_row(transfer, source.id, "debit", income_id=income.id)
+        elif case == "transfer_kind_with_expense_id":
+            expense = _create_expense(db_session, user_id)
+            row = _transfer_row(transfer, source.id, "debit", expense_id=expense.id)
+        elif case == "income_kind_with_transfer_id":
+            income = _create_income(db_session, user_id)
+            row = _transfer_row(
+                transfer, source.id, "credit", kind="income", income_id=income.id,
+            )
+        elif case == "expense_kind_with_transfer_id":
+            expense = _create_expense(db_session, user_id)
+            row = _transfer_row(
+                transfer, source.id, "debit", kind="expense", expense_id=expense.id,
+            )
+        else:
+            row = _transfer_row(transfer, source.id, "credit", kind="adjustment")
+
+        _assert_rejected(db_session, row, case)
+    finally:
+        db_session.close()
+
+
+# Tests that a second projection with the same direction for the same
+# transfer is rejected by uq_account_transactions_transfer_id_direction.
+# Parameters:
+# - direction: the duplicated direction under test.
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the second commit raises IntegrityError.
+@pytest.mark.parametrize("direction", ["debit", "credit"])
+def test_account_transaction_duplicate_transfer_direction_rejected(
+    direction: str, clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, source, destination = _create_posted_transfer(db_session, user_id)
+        account_id = source.id if direction == "debit" else destination.id
+
+        db_session.add(_transfer_row(transfer, account_id, direction))
+        db_session.commit()
+
+        _assert_rejected(
+            db_session,
+            _transfer_row(transfer, account_id, direction),
+            f"duplicate {direction} for the same transfer",
+        )
+    finally:
+        db_session.close()
+
+
+# Tests that a projection whose user_id does not match the referenced
+# transfer's user_id is rejected by the composite ownership foreign key
+# fk_account_transactions_transfer_id_user_id.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if committing raises IntegrityError.
+def test_account_transaction_cross_user_transfer_link_rejected_at_db_level(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    try:
+        other_users_transfer, _, _ = _create_posted_transfer(db_session, other_user_id)
+        own_account = _create_account(db_session, user_id)
+
+        _assert_rejected(
+            db_session,
+            _transfer_row(
+                other_users_transfer, own_account.id, "debit", user_id=user_id,
+            ),
+            "cross-user transfer linkage",
+        )
+    finally:
+        db_session.close()
+
+
+# Tests that deleting a transfer removes its ledger projections through
+# ON DELETE CASCADE, leaving other ledger rows on the same Accounts intact.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if only the transfer rows disappear.
+def test_account_transaction_transfer_rows_cascade_on_transfer_delete(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        transfer, source, destination = _create_posted_transfer(db_session, user_id)
+        adjustment = AccountTransactionModel(
+            account_id=source.id,
+            user_id=user_id,
+            kind="adjustment",
+            direction="credit",
+            amount=Decimal("1000.00"),
+            transaction_date=date(2026, 9, 1),
+        )
+        db_session.add_all([
+            adjustment,
+            _transfer_row(transfer, source.id, "debit"),
+            _transfer_row(transfer, destination.id, "credit"),
+        ])
+        db_session.commit()
+        adjustment_id = adjustment.id
+
+        db_session.delete(transfer)
+        db_session.commit()
+        db_session.expire_all()
+
+        remaining = db_session.query(AccountTransactionModel).all()
+        assert [row.id for row in remaining] == [adjustment_id]
     finally:
         db_session.close()

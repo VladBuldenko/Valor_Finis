@@ -34,7 +34,10 @@ class AccountTransactionModel(Base):
         an Income row (see income_id below). VF-017E adds a fourth,
         source-backed kind: expense - a synchronized projection of an
         Expense row (see expense_id below), symmetric to income but always
-        a debit. transfer remains deferred - see the "Why" note below.
+        a debit. VF-018B adds a fifth, source-backed kind: transfer - one
+        of the two synchronized projections of a posted AccountTransfer
+        (see transfer_id below): a debit on the source Account or a credit
+        on the destination Account.
 
     Why:
         This table is THE authoritative source of an Account's balance:
@@ -100,11 +103,25 @@ class AccountTransactionModel(Base):
         below guarantees a projection can never reference an Expense
         belonging to a different user, at the database level.
 
-        A single row can never be both an income projection and an
-        expense projection at once - ck_account_transactions_
-        source_linkage_valid (below) enforces this by construction, since
-        kind is a single scalar value and its three branches (income,
-        expense, direct) are mutually exclusive.
+        transfer_id: nullable, FK (transfer_id, user_id) ->
+        account_transfers(id, user_id) ON DELETE CASCADE (VF-018B) - the
+        same canonical-owns-its-projection rule as income_id/expense_id: a
+        posted AccountTransfer owns its two projections, so they vanish
+        with it. Unlike income_id/expense_id it is not unique on its own:
+        UNIQUE(transfer_id, direction) allows at most one debit and at most
+        one credit per transfer. "Exactly two rows for a posted transfer,
+        none for a planned one" cannot be expressed without triggers and
+        remains a service-level atomicity invariant - see
+        account_transaction_repository.create_transfer_projections, the
+        only way a transfer-kind row may be created. Transfer rows have no
+        update or delete primitive at all: they are removed only by
+        CASCADE when the canonical transfer is deleted.
+
+        A single row can never be more than one kind of projection at once
+        - ck_account_transactions_source_linkage_valid (below) enforces
+        this by construction, since kind is a single scalar value and its
+        four branches (income, expense, transfer, direct) are mutually
+        exclusive.
 
     Fields:
         id: Unique transaction identifier.
@@ -118,16 +135,19 @@ class AccountTransactionModel(Base):
             composite foreign keys below, as the mechanism that makes a
             cross-user Income<->Account link database-impossible.
         kind: One of opening_balance, adjustment (VF-017B), income
-            (VF-017D), expense (VF-017E). Enforced at the database level
-            via CHECK, not only application validation. opening_balance
-            is reserved for account creation, income for Income linkage,
-            and expense for Expense linkage - the public API must never
-            let a client create any of the three directly (see
+            (VF-017D), expense (VF-017E), transfer (VF-018B). Enforced at
+            the database level via CHECK, not only application validation.
+            opening_balance is reserved for account creation, income for
+            Income linkage, expense for Expense linkage, and transfer for
+            posted AccountTransfer projections - the public API must never
+            let a client create any of these directly (see
             account_transaction_schemas.AccountTransactionCreate).
         direction: One of credit (increases balance), debit (decreases
             balance). Every income-backed row is a credit and every
             expense-backed row is a debit - both enforced by
-            ck_account_transactions_source_linkage_valid below.
+            ck_account_transactions_source_linkage_valid below. A
+            transfer-backed row may be either (the source side is the
+            debit, the destination side the credit).
         amount: Always positive; direction is carried by the direction
             column, never by sign. For an income-backed row, always
             synchronized to equal the source Income's own amount; for an
@@ -149,11 +169,11 @@ class AccountTransactionModel(Base):
             would need its own synchronization (see income_service.py /
             expenses_service.py).
         income_id: If this row is an Income projection, the source
-            Income's id. NULL for direct opening_balance/adjustment rows
-            and for expense-backed rows.
+            Income's id. NULL for every other kind.
         expense_id: If this row is an Expense projection, the source
-            Expense's id (VF-017E). NULL for direct opening_balance/
-            adjustment rows and for income-backed rows.
+            Expense's id (VF-017E). NULL for every other kind.
+        transfer_id: If this row is an AccountTransfer projection, the
+            source transfer's id (VF-018B). NULL for every other kind.
         created_at: Record creation timestamp. For an income- or
             expense-backed row, this is the projection's own creation
             time and is never reset when the row is later synchronized
@@ -166,26 +186,30 @@ class AccountTransactionModel(Base):
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_account_transactions_amount_positive"),
         CheckConstraint(
-            "kind IN ('opening_balance','adjustment','income','expense')",
+            "kind IN ('opening_balance','adjustment','income','expense','transfer')",
             name="ck_account_transactions_kind_valid",
         ),
         CheckConstraint(
             "direction IN ('credit','debit')",
             name="ck_account_transactions_direction_valid",
         ),
-        # Combined source-linkage CHECK (VF-017E, replaces VF-017D's
-        # income-only version): the three branches are mutually exclusive
-        # by construction, since kind is a single scalar value - a row
-        # can satisfy at most one, which is what makes "both income_id
-        # and expense_id populated" and every other invalid combination
-        # structurally impossible, not merely application-validated.
+        # Combined source-linkage CHECK (VF-017E; VF-018B adds the
+        # transfer branch): the four branches are mutually exclusive by
+        # construction, since kind is a single scalar value - a row can
+        # satisfy at most one, which is what makes "more than one source
+        # id populated" and every other invalid combination structurally
+        # impossible, not merely application-validated. The transfer
+        # branch leaves direction free: each posted transfer has one
+        # debit and one credit projection.
         CheckConstraint(
             "(kind = 'income' AND income_id IS NOT NULL AND expense_id IS NULL "
-            "AND direction = 'credit') "
+            "AND transfer_id IS NULL AND direction = 'credit') "
             "OR (kind = 'expense' AND expense_id IS NOT NULL AND income_id IS NULL "
-            "AND direction = 'debit') "
+            "AND transfer_id IS NULL AND direction = 'debit') "
+            "OR (kind = 'transfer' AND transfer_id IS NOT NULL "
+            "AND income_id IS NULL AND expense_id IS NULL) "
             "OR (kind IN ('opening_balance','adjustment') "
-            "AND income_id IS NULL AND expense_id IS NULL)",
+            "AND income_id IS NULL AND expense_id IS NULL AND transfer_id IS NULL)",
             name="ck_account_transactions_source_linkage_valid",
         ),
         Index(
@@ -201,6 +225,15 @@ class AccountTransactionModel(Base):
         ),
         UniqueConstraint("income_id", name="uq_account_transactions_income_id"),
         UniqueConstraint("expense_id", name="uq_account_transactions_expense_id"),
+        # At most one debit and at most one credit projection per transfer
+        # (VF-018B). NULL transfer_id values never collide, so every
+        # non-transfer row is unaffected. Its index leads with transfer_id,
+        # which also serves transfer lookups and the CASCADE delete.
+        UniqueConstraint(
+            "transfer_id",
+            "direction",
+            name="uq_account_transactions_transfer_id_direction",
+        ),
         # Composite ownership FKs (VF-017D income, VF-017E expense):
         # account_id/income_id/expense_id must each agree with THIS row's
         # own user_id, not merely reference a valid id - this is what
@@ -224,6 +257,12 @@ class AccountTransactionModel(Base):
             ["expense_id", "user_id"],
             ["expenses.id", "expenses.user_id"],
             name="fk_account_transactions_expense_id_user_id",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["transfer_id", "user_id"],
+            ["account_transfers.id", "account_transfers.user_id"],
+            name="fk_account_transactions_transfer_id_user_id",
             ondelete="CASCADE",
         ),
     )
@@ -277,6 +316,11 @@ class AccountTransactionModel(Base):
     )
 
     expense_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    transfer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         nullable=True,
     )
