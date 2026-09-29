@@ -3,10 +3,21 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.accounts.account_transfer_errors import AccountTransferNotFoundError
+from app.modules.accounts.account_transfer_errors import (
+    AccountTransferClientRequestIdTakenError,
+    AccountTransferNotFoundError,
+)
 from app.modules.accounts.account_transfer_models import AccountTransferModel
+
+# The create-idempotency unique constraint (VF-018B). Only a violation of
+# exactly this constraint is translated into
+# AccountTransferClientRequestIdTakenError; every other IntegrityError
+# propagates unchanged.
+CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT = "uq_account_transfers_user_id_client_request_id"
 
 # VF-018B: AccountTransfer persistence primitives.
 #
@@ -27,9 +38,14 @@ from app.modules.accounts.account_transfer_models import AccountTransferModel
 # given: the caller (the future transfer service) decides status and the
 # matching planned_date/effective_date/posted_at combination, which the
 # database then validates via ck_account_transfers_lifecycle_consistent.
-# A duplicate (user_id, client_request_id) raises IntegrityError on flush
-# (uq_account_transfers_user_id_client_request_id); translating that into
-# an idempotent replay or conflict is the service's job.
+# A duplicate (user_id, client_request_id) fails the flush on
+# uq_account_transfers_user_id_client_request_id; that one constraint is
+# re-raised as AccountTransferClientRequestIdTakenError (identified by
+# PostgreSQL constraint metadata, never by message text - the same pattern
+# budget_repository uses) so the service can resolve the race as a replay
+# or a conflict. Every other IntegrityError propagates unchanged. The
+# session is left in its failed state: rolling back belongs to the caller,
+# which owns the transaction.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier that owns the transfer and both
@@ -46,6 +62,9 @@ from app.modules.accounts.account_transfer_models import AccountTransferModel
 # - posted_at: technical posting timestamp for a posted transfer, else None.
 # Returns:
 # - AccountTransferModel instance flushed in the current transaction.
+# Raises:
+# - AccountTransferClientRequestIdTakenError: the user already has a
+#   transfer with this client_request_id (original IntegrityError chained).
 def create_account_transfer(
     db_session: Session,
     user_id: UUID,
@@ -75,7 +94,20 @@ def create_account_transfer(
     )
 
     db_session.add(transfer_model)
-    db_session.flush()
+
+    try:
+        db_session.flush()
+    except IntegrityError as error:
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT:
+            raise AccountTransferClientRequestIdTakenError() from error
+
+        raise
 
     return transfer_model
 
@@ -165,3 +197,75 @@ def delete_locked_account_transfer(
 ) -> None:
     db_session.delete(transfer_model)
     db_session.flush()
+
+
+# Returns every one of the user's AccountTransfers, planned and posted,
+# newest first.
+# This function exists to back GET /api/v1/account-transfers. Ordering is
+# deterministic: the transfer's own date - effective_date once posted,
+# otherwise planned_date - descending, then created_at DESC, then id DESC,
+# so transfers on the same date never come back in an arbitrary order. It
+# returns stored state only: a planned transfer whose planned_date has
+# passed stays planned here (there is no automatic posting).
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier; only this user's transfers are
+#   returned.
+# Returns:
+# - List of AccountTransferModel instances in the order above.
+def get_account_transfers(
+    db_session: Session,
+    user_id: UUID,
+) -> list[AccountTransferModel]:
+    return (
+        db_session.query(AccountTransferModel)
+        .filter(AccountTransferModel.user_id == user_id)
+        .order_by(
+            func.coalesce(
+                AccountTransferModel.effective_date,
+                AccountTransferModel.planned_date,
+            ).desc(),
+            AccountTransferModel.created_at.desc(),
+            AccountTransferModel.id.desc(),
+        )
+        .all()
+    )
+
+
+# Returns whether any planned AccountTransfer references an Account as its
+# source or destination.
+# This function exists for the Account lifecycle guards (VF-018C): a planned
+# transfer has no ledger rows, so has_transactions_for_account cannot see
+# it, yet it must block deleting the Account or actually changing its
+# currency. It is a plain existence read with no row lock - the Account
+# lifecycle path already holds the Account's own FOR UPDATE lock and must
+# never take transfer row locks (transfer paths lock Transfer -> Accounts,
+# so Account -> Transfer locking would invert that order). Any concurrent
+# create/post/delete that could add or remove such a reference must itself
+# hold this Account's lock, so the read is consistent for the caller.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_id: account identifier to check.
+# - user_id: authenticated user identifier that owns the account, used as a
+#   defense-in-depth filter.
+# Returns:
+# - True if at least one planned transfer references the account.
+def has_planned_transfers_for_account(
+    db_session: Session,
+    account_id: UUID,
+    user_id: UUID,
+) -> bool:
+    first_transfer_id = (
+        db_session.query(AccountTransferModel.id)
+        .filter(
+            AccountTransferModel.user_id == user_id,
+            AccountTransferModel.status == "planned",
+            or_(
+                AccountTransferModel.source_account_id == account_id,
+                AccountTransferModel.destination_account_id == account_id,
+            ),
+        )
+        .first()
+    )
+
+    return first_transfer_id is not None

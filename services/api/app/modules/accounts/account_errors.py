@@ -68,3 +68,25 @@ class AccountArchivedError(Exception):
     """
 
     pass
+
+
+class AccountReferencedByPlannedTransferError(Exception):
+    """
+    Raised when an Account delete or actual currency change is attempted
+    while a planned AccountTransfer references the Account.
+
+    What:
+        Represents a blocked Account lifecycle operation in the accounts
+        module (VF-018C).
+
+    Why:
+        A planned transfer has no ledger rows, so the existing transaction
+        history check does not see it. Deleting the Account would destroy
+        the plan, and changing its currency would make the planned amount
+        meaningless; the composite (account_id, user_id, currency) foreign
+        keys on account_transfers would also reject either write at the
+        database level. This error turns that into a controlled 409
+        instead of an IntegrityError. Archiving stays allowed.
+    """
+
+    pass
