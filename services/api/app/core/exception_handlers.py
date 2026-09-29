@@ -11,7 +11,9 @@ from app.modules.accounts.account_errors import (
     AccountReferencedByPlannedTransferError,
 )
 from app.modules.accounts.account_transfer_errors import (
+    AccountTransferAlreadyPostedError,
     AccountTransferCurrencyMismatchError,
+    AccountTransferEffectiveDateInFutureError,
     AccountTransferIdempotencyConflictError,
     AccountTransferNotFoundError,
 )
@@ -102,6 +104,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     AccountTransferCurrencyMismatchError: (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "Transfer source and destination accounts must use the same currency.",
+    ),
+    AccountTransferAlreadyPostedError: (
+        status.HTTP_409_CONFLICT,
+        "Account transfer has already been posted.",
+    ),
+    AccountTransferEffectiveDateInFutureError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Transfer effective date cannot be in the future.",
     ),
     CategoryAlreadyExistsError: (
         status.HTTP_409_CONFLICT,

@@ -91,6 +91,36 @@ class AccountTransferCreate(BaseModel):
         return self
 
 
+class AccountTransferPost(BaseModel):
+    """
+    Schema for manually posting a planned AccountTransfer (VF-018D).
+
+    What:
+        The optional body of POST /api/v1/account-transfers/{transfer_id}/post.
+
+    Why:
+        effective_date is the accounting date on which the money actually
+        moved and becomes the transaction_date of both ledger projections.
+        It is optional: when omitted, the server date is used. It may be
+        before or after the transfer's planned_date, but never in the
+        future - that rule depends on the server date, so the service
+        enforces it (before looking up the transfer), not this schema.
+        Everything else about the transition is server-owned, so
+        extra="forbid" rejects any other field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    effective_date: Optional[Date] = Field(
+        default=None,
+        description=(
+            "Date the money actually moved. Defaults to today (server date); "
+            "must not be in the future."
+        ),
+        examples=["2026-10-18"],
+    )
+
+
 class AccountTransferResponse(BaseModel):
     """
     Schema for returning AccountTransfer data (VF-018C).

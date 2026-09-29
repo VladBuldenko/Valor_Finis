@@ -12,20 +12,24 @@ from app.modules.accounts import (
 )
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
 from app.modules.accounts.account_transfer_errors import (
+    AccountTransferAlreadyPostedError,
     AccountTransferClientRequestIdTakenError,
     AccountTransferCurrencyMismatchError,
+    AccountTransferEffectiveDateInFutureError,
     AccountTransferIdempotencyConflictError,
 )
 from app.modules.accounts.account_transfer_models import AccountTransferModel
 from app.modules.accounts.account_transfer_schemas import (
     AccountTransferCreate,
+    AccountTransferPost,
     AccountTransferResponse,
 )
 
 # VF-018C: AccountTransfer create/list/delete orchestration.
-# Contract: docs/modules/account-transfers.md (D1-D19). Manual posting of a
-# planned transfer (VF-018D) is deliberately not implemented here: the only
-# path that creates ledger projections is an immediately posted create.
+# VF-018D: manual posting of a planned transfer (post_account_transfer).
+# Contract: docs/modules/account-transfers.md (D1-D19). Ledger projections
+# are created only by an immediately posted create or by manual posting;
+# there is no automatic posting of planned transfers.
 
 
 @dataclass(frozen=True)
@@ -353,3 +357,112 @@ def delete_account_transfer(
     except Exception:
         db_session.rollback()
         raise
+
+
+# Manually posts one of the authenticated user's planned transfers.
+# This function exists as the single planned -> posted transition (VF-018D).
+# The whole transition is one service-owned transaction, in the approved
+# order (contract section 8):
+#   1. resolve effective_date (default: today) and reject a future date -
+#      BEFORE any lookup, so a future date is 422 even for a missing or
+#      foreign transfer;
+#   2. lock the transfer FOR UPDATE, user-scoped (missing/foreign -> 404);
+#   3. only a planned transfer can be posted (else 409) - posting is at most
+#      once and not idempotent; there is no "not yet due" rule, so it may be
+#      posted before or after planned_date;
+#   4. lock both Accounts FOR UPDATE in ascending UUID order - after the
+#      transfer, the same Transfer -> Accounts order delete uses;
+#   5. both Accounts must be active (else 409; the transfer stays planned
+#      with no ledger rows); the currency re-check is defense in depth - the
+#      composite (account_id, user_id, currency) foreign keys already make a
+#      mismatch impossible;
+#   6. mark the transfer posted (effective_date, posted_at; planned_date is
+#      kept) and flush, then create both ledger projections dated
+#      effective_date - create_transfer_projections requires the transfer to
+#      already be posted in this uncommitted transaction;
+#   7. commit once.
+# Any failure rolls back everything, releasing both locks: the transfer
+# stays planned with no effective_date, no posted_at, and no ledger rows.
+# There is no balance check - posting may make the source balance negative.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - transfer_id: transfer identifier.
+# - user_id: authenticated user identifier that owns the transfer.
+# - post_data: optional request body; None or an omitted effective_date
+#   means today.
+# - as_of: optional reference "today" for tests; defaults to date.today().
+# Returns:
+# - AccountTransferResponse with the transfer's posted state.
+# Raises:
+# - AccountTransferEffectiveDateInFutureError: effective_date > today.
+# - AccountTransferNotFoundError: missing or foreign transfer.
+# - AccountTransferAlreadyPostedError: the transfer is not planned.
+# - AccountArchivedError: the source or destination Account is archived.
+def post_account_transfer(
+    db_session: Session,
+    transfer_id: UUID,
+    user_id: UUID,
+    post_data: Optional[AccountTransferPost] = None,
+    as_of: Optional[date] = None,
+) -> AccountTransferResponse:
+    today = as_of if as_of is not None else date.today()
+    requested_date = post_data.effective_date if post_data is not None else None
+    effective_date = requested_date if requested_date is not None else today
+
+    if effective_date > today:
+        raise AccountTransferEffectiveDateInFutureError()
+
+    transfer_model = account_transfer_repository.get_account_transfer_by_id_for_update(
+        db_session=db_session,
+        transfer_id=transfer_id,
+        user_id=user_id,
+    )
+
+    try:
+        if transfer_model.status != "planned":
+            raise AccountTransferAlreadyPostedError()
+
+        locked_accounts = account_repository.get_accounts_by_ids_for_update(
+            db_session=db_session,
+            account_ids=[
+                transfer_model.source_account_id,
+                transfer_model.destination_account_id,
+            ],
+            user_id=user_id,
+        )
+        source_account = locked_accounts.get(transfer_model.source_account_id)
+        destination_account = locked_accounts.get(transfer_model.destination_account_id)
+
+        if source_account is None or destination_account is None:
+            # Unreachable while the ON DELETE RESTRICT foreign keys hold.
+            raise AccountNotFoundError()
+
+        if source_account.status == "archived" or destination_account.status == "archived":
+            raise AccountArchivedError()
+
+        if (
+            source_account.currency != transfer_model.currency
+            or destination_account.currency != transfer_model.currency
+        ):
+            raise AccountTransferCurrencyMismatchError()
+
+        account_transfer_repository.mark_locked_account_transfer_posted(
+            db_session=db_session,
+            transfer_model=transfer_model,
+            effective_date=effective_date,
+            posted_at=datetime.now(timezone.utc),
+        )
+
+        account_transaction_repository.create_transfer_projections(
+            db_session=db_session,
+            transfer=transfer_model,
+        )
+
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
+
+    db_session.refresh(transfer_model)
+
+    return AccountTransferResponse.model_validate(transfer_model)
