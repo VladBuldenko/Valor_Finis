@@ -9,7 +9,10 @@ from app.core.exception_handlers import (
     handle_domain_error,
     register_exception_handlers,
 )
+from app.modules.accounts.account_errors import AccountReferencedByPlannedTransferError
 from app.modules.accounts.account_transfer_errors import (
+    AccountTransferCurrencyMismatchError,
+    AccountTransferIdempotencyConflictError,
     AccountTransferNotFoundError,
 )
 from app.modules.budgets.budget_errors import (
@@ -65,6 +68,21 @@ from app.modules.receipts.receipt_errors import (
             AccountTransferNotFoundError,
             status.HTTP_404_NOT_FOUND,
             "Account transfer not found.",
+        ),
+        (
+            AccountTransferIdempotencyConflictError,
+            status.HTTP_409_CONFLICT,
+            "client_request_id has already been used for a different transfer.",
+        ),
+        (
+            AccountTransferCurrencyMismatchError,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Transfer source and destination accounts must use the same currency.",
+        ),
+        (
+            AccountReferencedByPlannedTransferError,
+            status.HTTP_409_CONFLICT,
+            "Account is referenced by planned transfers. Delete them first.",
         ),
         (
             CategoryAlreadyExistsError,
@@ -249,3 +267,19 @@ def test_registered_domain_error_handler_returns_json_response() -> None:
     assert response.json() == {
         "detail": "Budget not found.",
     }
+
+
+# Tests that the internal create-idempotency race signal is never mapped
+# to an HTTP response - it must always be resolved inside the service
+# (VF-018C), so an escaped instance would be an unexpected 500, not a
+# silently wrong status.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the internal signal has no mapping.
+def test_internal_client_request_id_race_signal_is_not_mapped() -> None:
+    from app.modules.accounts.account_transfer_errors import (
+        AccountTransferClientRequestIdTakenError,
+    )
+
+    assert AccountTransferClientRequestIdTakenError not in DOMAIN_ERROR_RESPONSES
