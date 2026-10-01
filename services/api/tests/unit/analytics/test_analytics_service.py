@@ -11,7 +11,7 @@ from pytest import MonkeyPatch
 
 from app.db.database_session import SessionLocal, engine
 from app.modules.analytics import analytics_service
-from app.modules.budgets import budget_service
+from app.modules.budgets import budget_service, budget_version_repository
 from app.modules.budgets.budget_schemas import BudgetCreate, BudgetUpdate
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals.goal_schemas import GoalCreate
@@ -3111,15 +3111,30 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
 # arbitrary as_of and can only ever report the current period - this
 # scenario is only reachable at the service layer now, which is exactly
 # why get_budget_status keeps as_of as an explicit, internal parameter.
+# update_budget dates the new version from the real date.today(), so that
+# "today" is frozen to 2026-09-16 (VF-CI-02): the edit then lands in the
+# September period the "current" query below asks about, whatever the
+# wall clock says. Only budget_service's date symbol is replaced.
 # Parameters:
+# - monkeypatch: pytest fixture used to freeze budget_service's current date.
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
 # - None. The test passes if the current-period query reflects the new
 #   limit and the past-period query still reflects the original one.
 def test_get_budget_status_edit_uses_current_version_past_period_unaffected(
+    monkeypatch: MonkeyPatch,
     clean_database: None,
 ) -> None:
     # Arrange
+    frozen_today = date(2026, 9, 16)
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return frozen_today
+
+    monkeypatch.setattr(budget_service, "date", _FrozenDate)
+
     db_session = SessionLocal()
     user_id = uuid4()
 
@@ -3144,6 +3159,16 @@ def test_get_budget_status_edit_uses_current_version_past_period_unaffected(
             budget_data=BudgetUpdate(limit_amount=Decimal("600")),
             user_id=user_id,
         )
+
+        # The edit made "today" (frozen) applies from that period's start.
+        edited_version = budget_version_repository.resolve_version_for_period(
+            db_session=db_session,
+            budget_id=budget.id,
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 30),
+        )
+        assert edited_version is not None
+        assert edited_version.effective_from == date(2026, 9, 1)
 
         # Act
         current_status = analytics_service.get_budget_status(
