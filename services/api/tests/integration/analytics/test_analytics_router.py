@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.modules.analytics import analytics_router
 from app.modules.fx import fx_ecb_provider, fx_service
 from app.modules.fx.fx_schemas import FxRateResult
 from tests.helpers import (
@@ -2633,29 +2634,42 @@ def test_budget_status_endpoint_projected_spending_matches_pace_formula(
 
 # Tests (D) that a spending pace above the limit produces a nonzero
 # projected_deficit and zero projected_surplus.
+# The endpoint's "today" is frozen to a mid-month date (VF-CI-02): on the
+# last day of a month days_elapsed == days_in_period, the pace multiplier
+# is exactly 1, and a just-under-limit spend correctly projects no deficit
+# - so with the real clock this scenario could not be expressed on that
+# day. Only analytics_router's date.today() is replaced; the request still
+# goes through the real endpoint, service, and metrics.
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
+# - monkeypatch: pytest fixture used to freeze the endpoint's current date.
 # Returns:
 # - None. The test passes if deficit is nonzero and surplus is zero.
 def test_budget_status_endpoint_projected_deficit_when_pace_exceeds_budget(
     client: TestClient,
     clean_database: None,
+    monkeypatch,
 ) -> None:
     # Arrange
     user_id = str(uuid4())
-    today = date.today()
+    frozen_today = date(2026, 9, 15)  # day 15 of a 30-day month
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return frozen_today
+
+    monkeypatch.setattr(analytics_router, "date", _FrozenDate)
 
     create_budget_with(
         client=client, user_id=user_id, start_date=date(2020, 1, 1).isoformat(), period="monthly",
         name="Overspending", limit_amount=100,
     )
     # spent is just under the limit (not yet actually exceeded - that case
-    # is F below), but the pace projection multiplies it out over the rest
-    # of the month, which pushes the projection over the limit on every day
-    # of the month except the very last one (where days_in_period ==
-    # days_elapsed and the projection multiplier is exactly 1).
-    create_expense_with(client=client, user_id=user_id, expense_date=today.isoformat(), amount=99)
+    # is F below), but halfway through the month the pace projection
+    # doubles it: 99 / 15 * 30 = 198, i.e. a 98.00 deficit.
+    create_expense_with(client=client, user_id=user_id, expense_date=frozen_today.isoformat(), amount=99)
 
     # Act
     response = client.get(
@@ -2665,8 +2679,11 @@ def test_budget_status_endpoint_projected_deficit_when_pace_exceeds_budget(
 
     # Assert
     status = response.json()[0]
+    assert status["period_start"] == "2026-09-01"
+    assert status["days_elapsed"] == 15
     assert status["is_exceeded"] is False
-    assert Decimal(status["projected_deficit"]) > Decimal("0")
+    assert Decimal(status["projected_spending"]) == Decimal("198.00")
+    assert Decimal(status["projected_deficit"]) == Decimal("98.00")
     assert Decimal(status["projected_surplus"]) == Decimal("0.00")
     assert status["risk_status"] == "at_risk"
 
