@@ -294,7 +294,7 @@ Whenever two Accounts are locked (an Income/Expense move, a transfer create, pos
 
 Not yet implemented
 
-Transfers in the mobile client (VF-018E), any automatic scheduler for planned transfers, and any Goal ↔ Account movement or earmarking (pending product discovery). A planned transfer stays planned until it is posted manually.
+Any automatic scheduler for planned transfers, and any Goal ↔ Account movement or earmarking (pending product discovery). A planned transfer stays planned until it is posted manually (the mobile client posts with an explicit effective_date, VF-018E).
 
 6. Module Boundaries
 
@@ -755,7 +755,7 @@ Automated backend CI                  ✅
 Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
-Account transfers (create/list/delete/post) ✅ backend; mobile next
+Account transfers (create/list/delete/post) ✅ backend + mobile
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -765,8 +765,6 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Account Transfers mobile (VF-018E)
-      ↓
 Goal ↔ Account semantics discovery
       ↓
 cash-flow / financial overview

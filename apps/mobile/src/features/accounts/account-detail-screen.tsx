@@ -34,6 +34,7 @@ import {
 } from "./account.service";
 import { styles } from "./accounts.styles";
 import type {
+  Account,
   AccountStatus,
   AccountTransaction,
   AccountTransactionCreateInput,
@@ -53,16 +54,48 @@ const STATUS_LABELS: Record<AccountStatus, string> = {
 };
 
 // Readable labels for every transaction kind a client may see in history --
-// including opening_balance/income/expense, which a client can never
-// create through this screen (see the credit/debit-only toggle below), but
-// which must still be rendered as normal history. Mirrors
+// including opening_balance/income/expense/transfer, which a client can
+// never create through this screen (see the credit/debit-only toggle
+// below), but which must still be rendered as normal history. Mirrors
 // ../goals/goal-detail-screen.tsx's TRANSACTION_TYPE_LABELS.
 const KIND_LABELS: Record<AccountTransactionKind, string> = {
   opening_balance: "Opening balance",
   adjustment: "Adjustment",
   income: "Income",
   expense: "Expense",
+  transfer: "Transfer",
 };
+
+// Presentation-only counterparty line for a transfer row, or null for any
+// other kind. The counterparty is the backend's counterparty_account_id --
+// never derived from direction; direction only chooses the wording (a
+// debit moved money TO the counterparty, a credit came FROM it). The name
+// comes from the full ["accounts", userId] list, which includes archived
+// Accounts, so a since-archived counterparty still resolves; an id the
+// list cannot resolve gets a neutral fallback, never a raw UUID.
+function getTransferCounterpartyLabel(
+  transaction: AccountTransaction,
+  accounts: Account[],
+): string | null {
+  if (transaction.kind !== "transfer") {
+    return null;
+  }
+
+  const counterparty = accounts.find(
+    (candidate) => candidate.id === transaction.counterparty_account_id,
+  );
+
+  if (!counterparty) {
+    return "Counterparty account unavailable";
+  }
+
+  const name =
+    counterparty.status === "archived"
+      ? `${counterparty.name} (archived)`
+      : counterparty.name;
+
+  return transaction.direction === "debit" ? `To: ${name}` : `From: ${name}`;
+}
 
 // Only credit/debit are ever submittable from this screen's Add adjustment
 // form -- the backend always creates kind="adjustment" for every row this
@@ -90,19 +123,22 @@ export function AccountDetailScreen() {
 
   // There is no GET /accounts/{id} endpoint -- the account is resolved
   // from the already-fetched ["accounts", userId] list, the same query key
-  // and data every other Account screen uses. current_balance on this
+  // and data every other Account screen uses. The full list is kept (not
+  // narrowed with `select`) because transfer history rows resolve their
+  // counterparty Account names from it too. current_balance on the
   // resolved Account is already ledger-derived by the backend; this screen
   // never recalculates it locally.
   const {
-    data: account,
+    data: accounts = [],
     isLoading: isAccountLoading,
     error: accountError,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
-    select: (accounts) => accounts.find((candidate) => candidate.id === id),
   });
+
+  const account = accounts.find((candidate) => candidate.id === id);
 
   const {
     data: transactions = [],
@@ -493,33 +529,46 @@ export function AccountDetailScreen() {
             <Text style={styles.secondaryText}>No transactions yet.</Text>
           ) : (
             <View style={styles.historyList}>
-              {transactions.map((transaction) => (
-                <View key={transaction.id} style={styles.historyRow}>
-                  <View style={styles.historyRowHeader}>
-                    <Text style={styles.historyType}>
-                      {KIND_LABELS[transaction.kind]}
-                    </Text>
+              {transactions.map((transaction) => {
+                const counterpartyLabel = getTransferCounterpartyLabel(
+                  transaction,
+                  accounts,
+                );
 
-                    <Text style={styles.historyAmount}>
-                      {formatTransactionAmount(transaction)}{" "}
-                      {account.currency}
+                return (
+                  <View key={transaction.id} style={styles.historyRow}>
+                    <View style={styles.historyRowHeader}>
+                      <Text style={styles.historyType}>
+                        {KIND_LABELS[transaction.kind]}
+                      </Text>
+
+                      <Text style={styles.historyAmount}>
+                        {formatTransactionAmount(transaction)}{" "}
+                        {account.currency}
+                      </Text>
+                    </View>
+
+                    {counterpartyLabel ? (
+                      <Text style={styles.historyDescription}>
+                        {counterpartyLabel}
+                      </Text>
+                    ) : null}
+
+                    {transaction.description ? (
+                      <Text style={styles.historyDescription}>
+                        {transaction.description}
+                      </Text>
+                    ) : null}
+
+                    {/* The primary event date is transaction_date (the
+                        financial date), never created_at -- see
+                        account.types.ts. */}
+                    <Text style={styles.historyDate}>
+                      {transaction.transaction_date}
                     </Text>
                   </View>
-
-                  {transaction.description ? (
-                    <Text style={styles.historyDescription}>
-                      {transaction.description}
-                    </Text>
-                  ) : null}
-
-                  {/* The primary event date is transaction_date (the
-                      financial date), never created_at -- see
-                      account.types.ts. */}
-                  <Text style={styles.historyDate}>
-                    {transaction.transaction_date}
-                  </Text>
-                </View>
-              ))}
+                );
+              })}
             </View>
           )}
         </ScrollView>
