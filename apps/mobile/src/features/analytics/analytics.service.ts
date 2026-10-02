@@ -4,7 +4,9 @@ import type {
   BudgetStatusItem,
   CategorySummaryItem,
   CategoryTrendResponse,
+  FinancialOverviewResponse,
   GoalProgressItem,
+  IncomeExpenseTrendResponse,
   MonthlySummary,
   SpendingForecastResponse,
   SpendingTrendPeriod,
@@ -119,5 +121,49 @@ export async function getCategoryTrend(
 export async function getSpendingForecast(): Promise<SpendingForecastResponse> {
   return apiRequest<SpendingForecastResponse>(
     "/api/v1/analytics/spending-forecast",
+  );
+}
+
+/**
+ * Returns the authenticated user's Financial Overview for one calendar
+ * month (VF-019B): Income, Expenses, Net (Income - Expenses), savings
+ * rate, and completeness, all calculated by the backend. A month the
+ * server has not reached yet is a valid "future" response, not an error.
+ */
+export async function getFinancialOverview(
+  year: number,
+  month: number,
+): Promise<FinancialOverviewResponse> {
+  const params = new URLSearchParams({
+    year: String(year),
+    month: String(month),
+  });
+
+  return apiRequest<FinancialOverviewResponse>(
+    `/api/v1/analytics/financial-overview?${params.toString()}`,
+  );
+}
+
+/**
+ * Returns the authenticated user's monthly income-expense trend
+ * (VF-019B): `count` calendar months, oldest first, ending with the
+ * server's current month, with the same figures as the overview.
+ *
+ * `count` is optional -- the backend applies its own default (6) when
+ * omitted. This function never duplicates that default client-side.
+ */
+export async function getIncomeExpenseTrend(
+  count?: number,
+): Promise<IncomeExpenseTrendResponse> {
+  const params = new URLSearchParams();
+
+  if (count !== undefined) {
+    params.set("count", String(count));
+  }
+
+  const query = params.toString();
+
+  return apiRequest<IncomeExpenseTrendResponse>(
+    `/api/v1/analytics/income-expense-trend${query ? `?${query}` : ""}`,
   );
 }
