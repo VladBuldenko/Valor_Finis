@@ -82,8 +82,9 @@ exclusions above hold by construction and are covered by tests.
   is `"0.00"`.
 - `net_flow = income_total - expense_total` (may be negative or zero).
 - `savings_rate_percent = net_flow / income_total * 100`, rounded to two
-  places with `ROUND_HALF_EVEN`; negative values are not clamped; `null`
-  exactly when `income_total` is zero (decision Q3).
+  places with `ROUND_HALF_EVEN`; negative values are not clamped; a rate
+  that rounds to zero is `"0.00"`, never `"-0.00"`; `null` exactly when
+  `income_total` is zero (decision Q3).
 
 ## 6. Resolved / unresolved (decision Q4)
 

@@ -952,7 +952,10 @@ def _summarize_flow_side(
 # with ROUND_HALF_EVEN (the project's existing Decimal rounding). Negative
 # rates are returned as-is, never clamped. A zero income_total - no
 # resolved Income at all - has no defined rate and yields None rather than
-# a division by zero or a fabricated 0/100.
+# a division by zero or a fabricated 0/100. A tiny negative rate that
+# rounds to zero keeps Decimal's sign (-0.00); it is returned as a plain
+# 0.00 so the API never shows "-0.00" (a negative net_flow already tells
+# the client about the deficit).
 # Parameters:
 # - net_flow: income_total - expense_total.
 # - income_total: resolved Income total of the period.
@@ -965,10 +968,15 @@ def _calculate_savings_rate_percent(
     if income_total == 0:
         return None
 
-    return (net_flow * Decimal("100") / income_total).quantize(
+    savings_rate = (net_flow * Decimal("100") / income_total).quantize(
         MONEY_DECIMAL_PLACES,
         rounding=ROUND_HALF_EVEN,
     )
+
+    if savings_rate == 0:
+        return Decimal("0.00")
+
+    return savings_rate
 
 
 # Builds the income/expense figures of one period from its records.

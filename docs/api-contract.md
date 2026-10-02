@@ -1530,8 +1530,9 @@ Response:
   cash flow, an Account balance change, available cash, or net worth.
 - savings_rate_percent = net_flow / income_total * 100, rounded to two
   decimal places with ROUND_HALF_EVEN; negative values are returned as-is
-  (never clamped); null exactly when income_total is zero. It is
-  unrelated to Goal funding.
+  (never clamped), and a rate that rounds to zero is "0.00", never
+  "-0.00"; null exactly when income_total is zero. It is unrelated to Goal
+  funding.
 - A record is unresolved when base_amount is null or its snapshot
   base_currency differs from the user's base currency. It is excluded
   from its sum, counted in unresolved_income_count /

@@ -218,6 +218,45 @@ def test_overview_savings_rate_rounds_half_even(monkeypatch: MonkeyPatch) -> Non
     assert _overview(2026, 9).savings_rate_percent == Decimal("-12.34")
 
 
+# Tests the zero-sign normalization of the savings rate: a tiny negative
+# rate that rounds to zero is a plain 0.00 (never "-0.00"), while Net keeps
+# its real negative value; a negative rate that rounds to a non-zero value
+# stays negative; and zero income still yields None.
+# Parameters:
+# - monkeypatch: pytest fixture used to replace repository calls.
+# Returns:
+# - None. The test passes if all three cases match.
+def test_overview_savings_rate_never_negative_zero(monkeypatch: MonkeyPatch) -> None:
+    _wire(
+        monkeypatch,
+        income=[_income(date(2026, 9, 1), "1000000.00")],
+        expenses=[_expense(date(2026, 9, 2), "1000000.01")],
+    )
+    rounds_to_zero = _overview(2026, 9)
+
+    assert rounds_to_zero.net_flow == Decimal("-0.01")
+    assert str(rounds_to_zero.net_flow) == "-0.01"
+    assert rounds_to_zero.savings_rate_percent == Decimal("0.00")
+    assert str(rounds_to_zero.savings_rate_percent) == "0.00"
+    assert rounds_to_zero.savings_rate_percent.is_signed() is False
+
+    _wire(
+        monkeypatch,
+        income=[_income(date(2026, 9, 1), "1000.00")],
+        expenses=[_expense(date(2026, 9, 2), "1000.10")],
+    )
+    small_negative = _overview(2026, 9)
+
+    assert small_negative.net_flow == Decimal("-0.10")
+    assert str(small_negative.savings_rate_percent) == "-0.01"
+
+    _wire(monkeypatch, expenses=[_expense(date(2026, 9, 2), "0.01")])
+    zero_income = _overview(2026, 9)
+
+    assert zero_income.net_flow == Decimal("-0.01")
+    assert zero_income.savings_rate_percent is None
+
+
 # Tests Decimal exactness and two-place representation: many cent amounts
 # sum exactly (no float drift) and the totals keep two decimal places.
 # Parameters:

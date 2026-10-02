@@ -382,6 +382,10 @@ def test_income_expense_trend_window_and_consistency(
     _freeze_today(monkeypatch)
     user_id = str(uuid4())
     _post_income(client, user_id, "2000.00", "2026-05-31")
+    # June: a tiny deficit whose savings rate rounds to zero - it must be
+    # serialized as "0.00", never "-0.00", while net_flow stays "-0.01".
+    _post_income(client, user_id, "1000000.00", "2026-06-10")
+    _post_expense(client, user_id, "1000000.01", "2026-06-11")
     _post_expense(client, user_id, "150.25", "2026-07-01")
     _post_income(client, user_id, "999.99", "2026-09-30", source="refund")
     _post_expense(client, user_id, "1200.00", "2026-09-30")
@@ -403,6 +407,11 @@ def test_income_expense_trend_window_and_consistency(
     assert body["buckets"][-1]["is_complete"] is False
     assert body["buckets"][-1]["expense_total"] == "0.00"
     assert body["buckets"][3]["unresolved_expense_count"] == 1
+    assert body["buckets"][1]["net_flow"] == "-0.01"
+    assert body["buckets"][1]["savings_rate_percent"] == "0.00"
+    june_overview = _get_overview(client, user_id, 2026, 6).json()
+    assert june_overview["net_flow"] == "-0.01"
+    assert june_overview["savings_rate_percent"] == "0.00"
 
     for bucket in body["buckets"]:
         year, month = int(bucket["period_start"][:4]), int(bucket["period_start"][5:7])
@@ -441,13 +450,14 @@ def test_income_expense_trend_validation_and_auth(
 
 
 # Tests user isolation through the API: another user's Income, Expenses,
-# and unresolved rows never affect the overview or the trend.
+# and unresolved rows never affect the overview or the trend, while that
+# user still sees their own records (positive control).
 # Parameters:
 # - client: FastAPI test client.
 # - monkeypatch: pytest fixture used to freeze the date.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
-# - None. The test passes if the user sees only an empty month.
+# - None. The test passes if each user sees only their own records.
 def test_financial_overview_and_trend_are_user_scoped(
     client: TestClient,
     monkeypatch: MonkeyPatch,
@@ -472,6 +482,22 @@ def test_financial_overview_and_trend_are_user_scoped(
         == ("0.00", "0.00", 0)
         for bucket in trend["buckets"]
     )
+
+    # Positive control: the other user does see their own records through
+    # both endpoints, so the zeros above come from user scoping, not from
+    # the records being invisible to everyone.
+    other_overview = _get_overview(client, other_user_id, 2026, 9).json()
+    other_september = client.get(
+        TREND_URL, headers=auth_headers(other_user_id), params={"count": 2},
+    ).json()["buckets"][0]
+
+    for figures in (other_overview, other_september):
+        assert figures["income_total"] == "9000.00"
+        assert figures["expense_total"] == "800.00"
+        assert (figures["income_count"], figures["expense_count"]) == (1, 1)
+        assert figures["unresolved_expense_count"] == 1
+    assert other_overview["data_status"] == "incomplete_data"
+    assert other_september["period_start"] == "2026-09-01"
 
 
 # Tests that reading the overview and the trend never resolves FX or calls
