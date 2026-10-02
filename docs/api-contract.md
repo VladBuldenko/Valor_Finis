@@ -1472,6 +1472,125 @@ Response (incomplete data):
   meaningful result for a linear pace model, not an error or missing-data
   state.
 
+Financial Overview
+
+GET /api/v1/analytics/financial-overview?year=2026&month=9
+
+VF-019B: Income, Expenses, Net (Income - Expenses), and savings rate for
+one calendar month, in the user's base currency. The detailed rules and
+decision record are in docs/modules/financial-overview.md.
+
+Query parameters:
+
+year   required integer, 2000..2100
+month  required integer, 1..12
+
+Out-of-range, missing, or non-integer values are 422. There is no public
+as_of: "today" is always the server date.
+
+Response:
+
+{
+  "income_total": "2500.00",
+  "expense_total": "1830.40",
+  "net_flow": "669.60",
+  "savings_rate_percent": "26.78",
+  "income_count": 2,
+  "expense_count": 41,
+  "unresolved_income_count": 0,
+  "unresolved_expense_count": 1,
+  "base_currency": "EUR",
+  "period_start": "2026-09-01",
+  "period_end": "2026-09-30",
+  "as_of": "2026-10-02",
+  "effective_end": "2026-09-30",
+  "period_state": "complete",
+  "data_status": "incomplete_data"
+}
+
+- Sources: only canonical Income and Expense records, Account-linked or
+  not. Account ledger rows (opening balances, adjustments, and the
+  projections of linked Income/Expenses), Account Transfers (planned or
+  posted), and Goal contributions/withdrawals are never included, so a
+  linked record is never counted twice. Income with source "refund" is
+  income; it is never subtracted from Expenses.
+- Dates: period_state "complete" (period_end < as_of) includes the whole
+  month; "in_progress" (the month contains as_of, also on its last day)
+  includes records through as_of inclusive, effective_end = as_of;
+  "future" (period_start > as_of) is a valid 200 with zero totals and
+  counts, savings_rate_percent null, and effective_end null.
+  Future-dated records are never included. monthly-summary is unchanged
+  and still counts its whole calendar month.
+- Money: totals sum each resolved record's persisted base_amount snapshot
+  (never the original mixed-currency amount, never re-resolved FX - reads
+  make no FX/network call). All amounts are strings with two decimal
+  places; an empty month is "0.00".
+- net_flow = income_total - expense_total; it may be negative or zero.
+  It is recorded income minus recorded expenses - NOT a bank-reconciled
+  cash flow, an Account balance change, available cash, or net worth.
+- savings_rate_percent = net_flow / income_total * 100, rounded to two
+  decimal places with ROUND_HALF_EVEN; negative values are returned as-is
+  (never clamped), and a rate that rounds to zero is "0.00", never
+  "-0.00"; null exactly when income_total is zero. It is unrelated to Goal
+  funding.
+- A record is unresolved when base_amount is null or its snapshot
+  base_currency differs from the user's base currency. It is excluded
+  from its sum, counted in unresolved_income_count /
+  unresolved_expense_count, and never treated as a known zero.
+  data_status is "incomplete_data" when either unresolved count is
+  greater than zero, otherwise "complete_data" (also for an empty month).
+- income_count / expense_count count only the resolved records included
+  in their totals.
+
+Income-Expense Trend
+
+GET /api/v1/analytics/income-expense-trend?count=6
+
+VF-019B: the same figures as Financial Overview for `count` consecutive
+calendar months, oldest first, ending with the month containing the
+server's current date.
+
+Query parameters:
+
+count  optional integer, default 6, 1..24 (anything else, including a
+       non-integer, is 422)
+
+Response:
+
+{
+  "base_currency": "EUR",
+  "as_of": "2026-10-02",
+  "count": 6,
+  "buckets": [
+    {
+      "income_total": "4500.00",
+      "expense_total": "2500.00",
+      "net_flow": "2000.00",
+      "savings_rate_percent": "44.44",
+      "income_count": 2,
+      "expense_count": 30,
+      "unresolved_income_count": 0,
+      "unresolved_expense_count": 0,
+      "period_start": "2026-05-01",
+      "period_end": "2026-05-31",
+      "effective_end": "2026-05-31",
+      "is_complete": true
+    }
+  ]
+}
+
+(one bucket shown; the response always has exactly `count` buckets)
+
+- Every month in the window is returned, including months with no
+  records. No future month is ever returned.
+- effective_end = min(period_end, as_of); is_complete = period_end <
+  as_of, so the current month - including on its last day - is not
+  complete and includes records through as_of only.
+- Each bucket's figures are identical to Financial Overview's for the
+  same month and date: same sources, money, savings-rate, unresolved,
+  and count rules. There is no per-bucket data_status; a bucket with
+  unresolved records has a non-zero unresolved count.
+
 Budget Status
 
 GET /api/v1/analytics/budget-status
@@ -2275,13 +2394,15 @@ linkage - "ledger-derived" describes Goal/Account balances (computed by
 summing many rows); Income's own amount/currency are never revalued
 through the Account link, only through this independent FX mechanism.
 
-Income does not yet feed any analytics endpoint. There is no cash-flow,
-net-income, or net-worth analytics surface in VF-017C - the existing
-Spending Forecast endpoint explicitly remains expense-only and continues
-to document itself as "never a cash-flow/income/savings/net-worth
-forecast." If a genuine income-aware analytics surface is built later,
-it will be new endpoints, not a silent change to what any existing
-endpoint's numbers mean.
+Income feeds analytics only through the dedicated VF-019B endpoints
+GET /api/v1/analytics/financial-overview and
+GET /api/v1/analytics/income-expense-trend (see Analytics), which sum the
+persisted base_amount snapshots described above. Every pre-existing
+analytics endpoint - including the Spending Forecast, which remains
+expense-only and "never a cash-flow/income/savings/net-worth forecast" -
+is unchanged: income-aware analytics were added as new endpoints, not as
+a silent change to what any existing endpoint's numbers mean. There is
+still no cash-flow reconciliation or net-worth surface.
 
 13. Error Contract
 

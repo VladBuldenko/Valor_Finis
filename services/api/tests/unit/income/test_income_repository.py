@@ -198,3 +198,64 @@ def test_get_income_by_id_for_update_raises_not_found_for_other_user(
             )
     finally:
         db_session.close()
+
+
+# Tests that get_income_in_date_range returns exactly the user's records
+# whose received_at falls inside the inclusive [start_date, end_date]
+# window (VF-019B) - both boundary days included, the days just outside
+# excluded.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if only the in-range records are returned.
+def test_get_income_in_date_range_is_inclusive_and_bounded(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        before = _create_income(db_session, user_id, received_at=date(2026, 8, 31))
+        first_day = _create_income(db_session, user_id, received_at=date(2026, 9, 1))
+        middle = _create_income(db_session, user_id, received_at=date(2026, 9, 15))
+        last_day = _create_income(db_session, user_id, received_at=date(2026, 9, 30))
+        after = _create_income(db_session, user_id, received_at=date(2026, 10, 1))
+
+        found = income_repository.get_income_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 30),
+        )
+
+        found_ids = {income.id for income in found}
+        assert found_ids == {first_day.id, middle.id, last_day.id}
+        assert before.id not in found_ids
+        assert after.id not in found_ids
+    finally:
+        db_session.close()
+
+
+# Tests that get_income_in_date_range never returns another user's income,
+# even on the same dates (VF-019B ownership).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if only the requesting user's record is returned.
+def test_get_income_in_date_range_is_user_scoped(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    other_user_id = uuid4()
+
+    try:
+        own = _create_income(db_session, user_id, received_at=date(2026, 9, 10))
+        _create_income(db_session, other_user_id, received_at=date(2026, 9, 10))
+
+        found = income_repository.get_income_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 30),
+        )
+
+        assert [income.id for income in found] == [own.id]
+    finally:
+        db_session.close()

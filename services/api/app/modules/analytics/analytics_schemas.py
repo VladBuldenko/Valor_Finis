@@ -804,3 +804,260 @@ class SpendingForecastResponse(BaseModel):
         ),
         examples=["882.35"],
     )
+
+class FinancialFlowFigures(BaseModel):
+    """
+    Shared income/expense figures of one calendar period (VF-019B).
+
+    What:
+        The monetary totals, Net (Income - Expenses), savings rate, and
+        resolved/unresolved counts for one period. Base class of
+        FinancialOverviewResponse and IncomeExpenseTrendBucket, so the
+        single-month overview and every trend bucket expose exactly the
+        same fields with exactly the same meaning.
+
+    Why:
+        Totals come only from canonical Income and Expense records -
+        never from Account ledger rows, Transfers, Goal transactions,
+        opening balances, or adjustments - summed from each resolved
+        record's persisted base_amount (historical FX snapshot). net_flow
+        is recorded income minus recorded expenses: it is NOT a
+        bank-reconciled cash flow, an Account balance change, available
+        cash, or net worth.
+    """
+
+    income_total: Decimal = Field(
+        ...,
+        description=(
+            "Sum of resolved Income base_amount in base_currency for the "
+            "included dates. Income with source \"refund\" is income. "
+            "Excludes unresolved Income; see unresolved_income_count."
+        ),
+        examples=["2500.00"],
+    )
+
+    expense_total: Decimal = Field(
+        ...,
+        description=(
+            "Sum of resolved Expense base_amount in base_currency for the "
+            "included dates. Excludes unresolved Expenses; see "
+            "unresolved_expense_count."
+        ),
+        examples=["1830.40"],
+    )
+
+    net_flow: Decimal = Field(
+        ...,
+        description=(
+            "Net (Income - Expenses): income_total - expense_total. May be "
+            "negative or zero. Not a reconciled cash flow."
+        ),
+        examples=["669.60"],
+    )
+
+    savings_rate_percent: Optional[Decimal] = Field(
+        default=None,
+        description=(
+            "net_flow / income_total * 100, rounded to 2 decimal places "
+            "(ROUND_HALF_EVEN). May be negative and is never clamped. Null "
+            "exactly when income_total is zero - including a period whose "
+            "only Income is unresolved. Unrelated to Goal funding."
+        ),
+        examples=["26.78"],
+    )
+
+    income_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of resolved Income records included in income_total.",
+        examples=[2],
+    )
+
+    expense_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of resolved Expense records included in expense_total.",
+        examples=[41],
+    )
+
+    unresolved_income_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of date-matching Income records excluded from "
+            "income_total because base_amount is NULL or their snapshot "
+            "base_currency differs from the user's base currency. Never "
+            "counted as zero-valued."
+        ),
+        examples=[0],
+    )
+
+    unresolved_expense_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of date-matching Expense records excluded from "
+            "expense_total for the same reasons as unresolved_income_count."
+        ),
+        examples=[1],
+    )
+
+
+class FinancialOverviewResponse(FinancialFlowFigures):
+    """
+    Schema for the single-month Financial Overview (VF-019B).
+
+    What:
+        Income, Expenses, Net (Income - Expenses), and savings rate for
+        one requested calendar month, in the user's base currency.
+
+    Why:
+        A complete month includes its whole date range; the month
+        containing the server's current date includes records through
+        as_of (inclusive) only; a month that has not started yet includes
+        nothing. Future-dated records are never included. This differs
+        deliberately from monthly-summary, which counts the whole calendar
+        month and is unchanged.
+    """
+
+    base_currency: str = Field(
+        ...,
+        description="The user's authoritative base currency, from financial settings.",
+        examples=["EUR"],
+    )
+
+    period_start: date = Field(
+        ...,
+        description="First day of the requested calendar month.",
+        examples=["2026-09-01"],
+    )
+
+    period_end: date = Field(
+        ...,
+        description="Last day of the requested calendar month.",
+        examples=["2026-09-30"],
+    )
+
+    as_of: date = Field(
+        ...,
+        description="The server's current date the overview was calculated against.",
+        examples=["2026-10-02"],
+    )
+
+    effective_end: Optional[date] = Field(
+        default=None,
+        description=(
+            "Inclusive last date included: period_end for a complete "
+            "month, as_of for the month in progress, null for a future "
+            "month."
+        ),
+        examples=["2026-09-30"],
+    )
+
+    period_state: Literal["complete", "in_progress", "future"] = Field(
+        ...,
+        description=(
+            "\"complete\" when period_end < as_of; \"in_progress\" when "
+            "the month contains as_of (including its last day); "
+            "\"future\" when period_start > as_of - all totals and counts "
+            "are then zero and savings_rate_percent is null."
+        ),
+        examples=["complete"],
+    )
+
+    data_status: Literal["complete_data", "incomplete_data"] = Field(
+        ...,
+        description=(
+            "\"incomplete_data\" when unresolved_income_count or "
+            "unresolved_expense_count is greater than zero: the totals are "
+            "then computed from resolved records only. \"complete_data\" "
+            "otherwise, including a period with no records."
+        ),
+        examples=["incomplete_data"],
+    )
+
+
+class IncomeExpenseTrendBucket(FinancialFlowFigures):
+    """
+    Schema for one calendar month of the income-expense trend (VF-019B).
+
+    What:
+        The same figures as FinancialOverviewResponse for one month of
+        the trend, with the same date inclusion rules.
+
+    Why:
+        Every month in the requested window is emitted, including months
+        with no records, so a client never reconstructs missing months.
+    """
+
+    period_start: date = Field(
+        ...,
+        description="First day of the calendar month.",
+        examples=["2026-05-01"],
+    )
+
+    period_end: date = Field(
+        ...,
+        description="Last day of the calendar month.",
+        examples=["2026-05-31"],
+    )
+
+    effective_end: date = Field(
+        ...,
+        description=(
+            "Inclusive last date included: min(period_end, as_of). For "
+            "the current month this is as_of, so future-dated records are "
+            "excluded."
+        ),
+        examples=["2026-05-31"],
+    )
+
+    is_complete: bool = Field(
+        ...,
+        description=(
+            "True when period_end < as_of. The current month - including "
+            "on its last day - is not complete."
+        ),
+        examples=[True],
+    )
+
+
+class IncomeExpenseTrendResponse(BaseModel):
+    """
+    Schema for the monthly income-expense trend (VF-019B).
+
+    What:
+        `count` consecutive calendar months of income/expense figures,
+        oldest first, ending with the month containing the server's
+        current date.
+
+    Why:
+        Answers how income, expenses, and Net (Income - Expenses) moved
+        over recent months, from the same canonical records and rules as
+        the single-month Financial Overview.
+    """
+
+    base_currency: str = Field(
+        ...,
+        description="The user's authoritative base currency, from financial settings.",
+        examples=["EUR"],
+    )
+
+    as_of: date = Field(
+        ...,
+        description="The server's current date the trend ends on.",
+        examples=["2026-10-02"],
+    )
+
+    count: int = Field(
+        ...,
+        ge=1,
+        le=24,
+        description="Number of monthly buckets returned.",
+        examples=[6],
+    )
+
+    buckets: list[IncomeExpenseTrendBucket] = Field(
+        ...,
+        description="Exactly `count` monthly buckets, chronological (oldest first).",
+    )

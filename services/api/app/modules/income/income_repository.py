@@ -95,6 +95,37 @@ def get_income(
     )
 
 
+# Returns income records for one user within an inclusive received_at
+# range, filtered at the database level.
+# This function exists for analytics reads that only need a bounded window
+# of history (VF-019B financial overview and income-expense trend) - unlike
+# get_income above, it never loads a user's entire lifetime of income just
+# to filter most of it back out in Python. Mirrors
+# expenses_repository.get_expenses_in_date_range.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter income records.
+# - start_date: inclusive lower bound on received_at.
+# - end_date: inclusive upper bound on received_at.
+# Returns:
+# - List of IncomeModel instances within the range, scoped to the user.
+def get_income_in_date_range(
+    db_session: Session,
+    user_id: UUID,
+    start_date: date,
+    end_date: date,
+) -> list[IncomeModel]:
+    return (
+        db_session.query(IncomeModel)
+        .filter(
+            IncomeModel.user_id == user_id,
+            IncomeModel.received_at >= start_date,
+            IncomeModel.received_at <= end_date,
+        )
+        .all()
+    )
+
+
 # Returns one income record by id and authenticated user id.
 # This function exists to enforce ownership at the database query level.
 # Parameters:
