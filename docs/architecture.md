@@ -386,7 +386,7 @@ Routes are thin; feature code lives in src/features/<feature>.
 
 The auth context owns only the session; routes behind sign-in are protected.
 
-TanStack Query owns server state; component state owns form/UI state. Mutations invalidate only the affected query families (for example, a linked Income/Expense change also refreshes the Account list and transaction history).
+TanStack Query owns server state; component state owns form/UI state. Mutations invalidate only the affected query families (for example, a linked Income/Expense change also refreshes the Account list and transaction history, and every Income/Expense change refreshes the Financial Overview queries).
 
 Money values stay strings end to end; the app never uses floating-point arithmetic for financial values.
 
@@ -756,7 +756,7 @@ Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
-Financial overview (Income/Expenses/Net) ✅ backend; mobile next
+Financial overview (Income/Expenses/Net) ✅ backend + mobile (device acceptance pending)
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -766,7 +766,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Financial overview mobile (VF-019C)
+Financial overview acceptance and docs sync (VF-019D)
       ↓
 Goal ↔ Account semantics discovery
       ↓
