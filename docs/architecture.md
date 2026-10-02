@@ -210,7 +210,7 @@ confirmation into an Expense (optionally linked to an Account).
 
 Analytics
 
-Reads financial data and returns derived summaries: monthly and category summaries in base currency, spending and category trends, the current-month spending forecast, budget status with period metrics, and goal progress. Analytics is read-only and expense-oriented; Income is not yet part of analytics.
+Reads financial data and returns derived summaries: monthly and category summaries in base currency, spending and category trends, the current-month spending forecast, budget status with period metrics, goal progress, and the Financial Overview (VF-019B): monthly Income, Expenses, Net (Income - Expenses), and savings rate, plus a monthly income-expense trend. Analytics is read-only. Income is part of analytics only through the Financial Overview endpoints, which read canonical Income and Expense records only - never Account ledger rows, Transfers, or Goal transactions - and sum persisted base_amount snapshots; Net is recorded income minus recorded expenses, not a reconciled cash flow (see docs/modules/financial-overview.md). Every pre-existing analytics endpoint keeps its expense-only meaning.
 
 5. Financial Ledger Architecture
 
@@ -268,7 +268,7 @@ AccountTransfer (canonical, same currency, same user)
                 credit AccountTransaction on the destination Account
                 (kind "transfer", both dated effective_date)
 
-A transfer moves the user's own money between two Accounts. It is neither Income nor Expense and never feeds expense analytics or budgets. Implemented (VF-018C):
+A transfer moves the user's own money between two Accounts. It is neither Income nor Expense and never feeds expense analytics, the Financial Overview, or budgets. Implemented (VF-018C):
 
 create: transfer_date <= server today creates a posted transfer and both projections in one database transaction; a later date creates a planned transfer with no ledger rows. There is no insufficient-funds check.
 
@@ -756,6 +756,7 @@ Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
+Financial overview (Income/Expenses/Net) ✅ backend; mobile next
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -765,9 +766,9 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Goal ↔ Account semantics discovery
+Financial overview mobile (VF-019C)
       ↓
-cash-flow / financial overview
+Goal ↔ Account semantics discovery
       ↓
 Evolution based on real usage
 
