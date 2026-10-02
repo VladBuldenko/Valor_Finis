@@ -14,6 +14,7 @@ import {
 import {
   getBudgetStatus,
   getCategorySummary,
+  getFinancialOverview,
   getGoalProgress,
   getMonthlySummary,
 } from "../analytics/analytics.service";
@@ -21,6 +22,11 @@ import type {
   BudgetStatusItem,
   GoalProgressItem,
 } from "../analytics/analytics.types";
+import {
+  formatNetFlow,
+  formatOverviewPeriodNote,
+} from "../analytics/financial-overview-presentation";
+import { useLocalCalendarMonth } from "../analytics/use-local-calendar-month";
 import { useAuth } from "../auth/auth-context";
 import { signOut } from "../auth/auth.service";
 import {
@@ -64,14 +70,14 @@ export function DashboardScreen() {
   const { session } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
+  // The device's local calendar month, re-read whenever the Dashboard
+  // regains focus (VF-019C), so returning to it after a month boundary
+  // moves every month-scoped card below to the new month.
+  const { year, month } = useLocalCalendarMonth();
 
-  // Locale-safe label for the period the monthly/category summary cards are
-  // scoped to (e.g. "September 2026"). This only clarifies what is already
-  // displayed -- it does not refresh the period while the screen stays
-  // mounted across a month boundary.
+  // Locale-safe label for the period the monthly/category summary and
+  // income/expenses cards are scoped to (e.g. "September 2026"). This only
+  // clarifies what is already displayed.
   const periodLabel = new Date(year, month - 1, 1).toLocaleDateString(
     "en-US",
     { month: "long", year: "numeric" },
@@ -84,6 +90,21 @@ export function DashboardScreen() {
   } = useQuery({
     queryKey: ["analytics", "monthly-summary", session?.user.id, year, month],
     queryFn: () => getMonthlySummary(year, month),
+    enabled: Boolean(session),
+  });
+
+  // Financial Overview for the same local month (VF-019C). Independent of
+  // monthly-summary above: that card counts the whole calendar month,
+  // including future-dated Expenses, while this one counts records through
+  // the server's current date -- so their expense figures may legitimately
+  // differ, and neither replaces the other.
+  const {
+    data: financialOverview,
+    isLoading: isFinancialOverviewLoading,
+    error: financialOverviewError,
+  } = useQuery({
+    queryKey: ["analytics", "financial-overview", session?.user.id, year, month],
+    queryFn: () => getFinancialOverview(year, month),
     enabled: Boolean(session),
   });
 
@@ -219,6 +240,78 @@ export function DashboardScreen() {
               ) : null}
             </>
           ) : null}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Income and expenses</Text>
+
+          <Text style={styles.secondaryText}>{periodLabel}</Text>
+
+          {isFinancialOverviewLoading ? (
+            <ActivityIndicator style={styles.loader} />
+          ) : financialOverviewError ? (
+            <Text style={styles.errorText}>
+              Unable to load income and expenses.
+            </Text>
+          ) : financialOverview ? (
+            <>
+              <Text style={styles.secondaryText}>
+                {formatOverviewPeriodNote(financialOverview)}
+              </Text>
+
+              {financialOverview.data_status === "incomplete_data" ? (
+                <Text style={styles.noticeText}>
+                  Incomplete data: some records could not be counted in{" "}
+                  {financialOverview.base_currency} and are not included in
+                  these totals.
+                </Text>
+              ) : null}
+
+              {/* Backend figures rendered as returned -- Net is never
+                  recomputed here. */}
+              <View style={styles.categoryList}>
+                <View style={styles.categoryRow}>
+                  <Text style={styles.categoryName}>Income</Text>
+                  <Text style={styles.categoryAmount}>
+                    {formatAmount(
+                      financialOverview.income_total,
+                      financialOverview.base_currency,
+                    )}
+                  </Text>
+                </View>
+
+                <View style={styles.categoryRow}>
+                  <Text style={styles.categoryName}>Expenses</Text>
+                  <Text style={styles.categoryAmount}>
+                    {formatAmount(
+                      financialOverview.expense_total,
+                      financialOverview.base_currency,
+                    )}
+                  </Text>
+                </View>
+
+                <View style={styles.categoryRow}>
+                  <View style={styles.categoryDetails}>
+                    <Text style={styles.categoryName}>
+                      Net (Income - Expenses)
+                    </Text>
+                  </View>
+                  <Text style={styles.categoryAmount}>
+                    {formatNetFlow(
+                      financialOverview.net_flow,
+                      financialOverview.base_currency,
+                    )}
+                  </Text>
+                </View>
+              </View>
+            </>
+          ) : null}
+
+          <Link href="/overview" asChild>
+            <Pressable accessibilityRole="button" style={styles.button}>
+              <Text style={styles.buttonText}>Financial Overview</Text>
+            </Pressable>
+          </Link>
         </View>
 
         <View style={styles.card}>

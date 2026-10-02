@@ -40,6 +40,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="overview"
+        options={{
+          title: "Financial Overview",
+        }}
+      />
+      <Stack.Screen
         name="budgets"
         options={{
           title: "Budgets",
