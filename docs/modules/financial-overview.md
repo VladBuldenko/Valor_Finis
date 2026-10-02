@@ -169,7 +169,9 @@ savings rate, FX conversions, or any total. Amounts stay strings end to end.
   - "Monthly history" section (`income-expense-trend`, count 6): the
     buckets in backend order with the same figures; a bucket shows the
     incomplete warning when its unresolved counts are non-zero (buckets
-    have no data_status).
+    have no data_status). The window is the last 6 months ending with the
+    current server month, as the backend anchors it; the month selected
+    above does not change it, and the screen says so under the heading.
   - The two sections load, fail, and retry (`refetch`) independently.
 - Dashboard: an "Income and expenses" card for the device's current local
   month (Income, Expenses, Net, backend currency, incomplete-data notice)

@@ -270,6 +270,11 @@ export function FinancialOverviewScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Monthly history</Text>
 
+          <Text style={styles.secondaryText}>
+            Last 6 months, ending with the current server month. This history
+            does not change when you select a month above.
+          </Text>
+
           {isTrendLoading ? (
             <ActivityIndicator style={styles.loader} />
           ) : trendError ? (
