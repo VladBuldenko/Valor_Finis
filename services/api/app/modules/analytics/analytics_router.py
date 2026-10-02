@@ -11,7 +11,9 @@ from app.modules.analytics.analytics_schemas import (
     BudgetStatusItem,
     CategorySummaryItem,
     CategoryTrendResponse,
+    FinancialOverviewResponse,
     GoalProgressItem,
+    IncomeExpenseTrendResponse,
     MonthlySummaryResponse,
     SpendingForecastResponse,
     SpendingTrendResponse,
@@ -32,6 +34,11 @@ router = APIRouter(
 # category-trend (VF-015C), which use identical period/count semantics.
 SPENDING_TREND_DEFAULT_COUNTS = {"day": 30, "week": 12, "month": 6}
 SPENDING_TREND_MAXIMUM_COUNTS = {"day": 366, "week": 104, "month": 24}
+
+# Monthly buckets of the income-expense trend (VF-019B): the same default
+# and maximum as spending-trend's month period.
+INCOME_EXPENSE_TREND_DEFAULT_COUNT = 6
+INCOME_EXPENSE_TREND_MAXIMUM_COUNT = 24
 
 
 # Resolves the effective bucket count for a trend request, applying the
@@ -289,6 +296,91 @@ def get_spending_forecast(
     return analytics_service.get_spending_forecast(
         db_session=db_session,
         user_id=current_user.id,
+        as_of=date.today(),
+    )
+
+
+# Returns the Financial Overview of one calendar month through the API
+# (VF-019B): Income, Expenses, Net (Income - Expenses), and savings rate in
+# the user's base currency.
+# This function exists to expose the backend-authoritative overview to
+# mobile and web clients. It is always calculated against the server's
+# current date - there is no public as_of parameter. A month that has not
+# started yet is a valid request ("future", all zeros), not an error.
+# Parameters:
+# - year: calendar year of the requested month.
+# - month: calendar month (1-12).
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy database session injected by FastAPI.
+# Returns:
+# - FinancialOverviewResponse for the requested month.
+@router.get(
+    "/financial-overview",
+    response_model=FinancialOverviewResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_financial_overview(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Calendar year of the requested month.",
+        examples=[2026],
+    ),
+    month: int = Query(
+        ...,
+        ge=1,
+        le=12,
+        description="Calendar month (1-12) of the requested month.",
+        examples=[9],
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> FinancialOverviewResponse:
+    return analytics_service.get_financial_overview(
+        db_session=db_session,
+        user_id=current_user.id,
+        year=year,
+        month=month,
+        as_of=date.today(),
+    )
+
+
+# Returns the monthly income-expense trend through the API (VF-019B).
+# This function exists to expose `count` consecutive calendar months of
+# Income, Expenses, Net (Income - Expenses), and savings rate, oldest
+# first, ending with the month containing the server's current date -
+# with exactly the same figures and date rules as financial-overview.
+# Parameters:
+# - count: number of monthly buckets, 1..24 (default 6). Anything else -
+#   including a non-integer - is a 422 from request validation.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy database session injected by FastAPI.
+# Returns:
+# - IncomeExpenseTrendResponse with `count` monthly buckets.
+@router.get(
+    "/income-expense-trend",
+    response_model=IncomeExpenseTrendResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_income_expense_trend(
+    count: int = Query(
+        default=INCOME_EXPENSE_TREND_DEFAULT_COUNT,
+        ge=1,
+        le=INCOME_EXPENSE_TREND_MAXIMUM_COUNT,
+        description=(
+            "Number of monthly buckets to return, ending with the current "
+            "month. Defaults to 6; maximum 24."
+        ),
+        examples=[6],
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> IncomeExpenseTrendResponse:
+    return analytics_service.get_income_expense_trend(
+        db_session=db_session,
+        user_id=current_user.id,
+        count=count,
         as_of=date.today(),
     )
 

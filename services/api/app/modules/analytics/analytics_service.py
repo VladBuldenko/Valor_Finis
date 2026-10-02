@@ -1,7 +1,7 @@
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal
-from typing import Optional
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Callable, Iterable, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -13,7 +13,11 @@ from app.modules.analytics.analytics_schemas import (
     CategorySummaryItem,
     CategoryTrendItem,
     CategoryTrendResponse,
+    FinancialFlowFigures,
+    FinancialOverviewResponse,
     GoalProgressItem,
+    IncomeExpenseTrendBucket,
+    IncomeExpenseTrendResponse,
     MonthlySummaryResponse,
     PeriodOverPeriodComparison,
     SpendingForecastResponse,
@@ -34,6 +38,7 @@ from app.modules.expenses import expenses_repository
 from app.modules.financial_settings import financial_settings_service
 from app.modules.goals import goal_repository as goals_repository
 from app.modules.goals import goal_transaction_repository
+from app.modules.income import income_repository
 
 
 BUCKET_AMOUNT_DECIMAL_PLACES = Decimal("0.00")
@@ -868,3 +873,329 @@ def get_goal_progress(
         )
 
     return goal_progress_items
+
+# ---------------------------------------------------------------------------
+# VF-019B Financial Overview: Income, Expenses, Net (Income - Expenses),
+# savings rate
+# ---------------------------------------------------------------------------
+#
+# Totals come ONLY from the canonical income and expenses tables. Account
+# ledger rows (including the Income/Expense projections of linked records,
+# opening balances, and manual adjustments), Account Transfers, and Goal
+# transactions are never read here, so none of them can be counted as
+# Income or Expense, and a linked record can never be counted twice.
+# Account-linked and unlinked records are included alike. Amounts are the
+# persisted base_amount snapshots - FX is never resolved or recomputed on
+# this read path.
+
+MONEY_DECIMAL_PLACES = Decimal("0.01")
+
+FINANCIAL_PERIOD_COMPLETE = "complete"
+FINANCIAL_PERIOD_IN_PROGRESS = "in_progress"
+FINANCIAL_PERIOD_FUTURE = "future"
+
+DATA_STATUS_COMPLETE = "complete_data"
+DATA_STATUS_INCOMPLETE = "incomplete_data"
+
+
+# Returns whether a canonical Income or Expense record has a base-currency
+# amount that may be summed.
+# This function exists as the single definition of "resolved" for the
+# financial overview: base_amount is present AND was snapshotted in the
+# user's current base currency. Anything else is unresolved - excluded
+# from sums and counted, never treated as a known zero. This is the same
+# rule the expense analytics above apply inline.
+# Parameters:
+# - record: an IncomeModel or ExpenseModel (or equivalent).
+# - base_currency: the user's authoritative base currency.
+# Returns:
+# - True if the record's base_amount can be summed in base_currency.
+def _is_resolved_in_base_currency(record, base_currency: str) -> bool:
+    return record.base_amount is not None and record.base_currency == base_currency
+
+
+# Sums one side (Income or Expenses) of a period.
+# This function exists so Income and Expenses are aggregated by exactly
+# the same resolved/unresolved rule.
+# Parameters:
+# - records: the side's records already limited to the period's dates.
+# - base_currency: the user's authoritative base currency.
+# Returns:
+# - (total, resolved_count, unresolved_count); total has two decimal
+#   places and is 0.00 when nothing resolved matched.
+def _summarize_flow_side(
+    records: Iterable,
+    base_currency: str,
+) -> tuple[Decimal, int, int]:
+    total = Decimal("0.00")
+    resolved_count = 0
+    unresolved_count = 0
+
+    for record in records:
+        if not _is_resolved_in_base_currency(record, base_currency):
+            unresolved_count += 1
+            continue
+
+        total += record.base_amount
+        resolved_count += 1
+
+    return (
+        total.quantize(MONEY_DECIMAL_PLACES, rounding=ROUND_HALF_EVEN),
+        resolved_count,
+        unresolved_count,
+    )
+
+
+# Calculates the savings rate of a period.
+# This function exists to keep the one division in the financial overview
+# explicit: net_flow / income_total * 100, rounded to two decimal places
+# with ROUND_HALF_EVEN (the project's existing Decimal rounding). Negative
+# rates are returned as-is, never clamped. A zero income_total - no
+# resolved Income at all - has no defined rate and yields None rather than
+# a division by zero or a fabricated 0/100.
+# Parameters:
+# - net_flow: income_total - expense_total.
+# - income_total: resolved Income total of the period.
+# Returns:
+# - The savings rate percentage, or None when income_total is zero.
+def _calculate_savings_rate_percent(
+    net_flow: Decimal,
+    income_total: Decimal,
+) -> Optional[Decimal]:
+    if income_total == 0:
+        return None
+
+    return (net_flow * Decimal("100") / income_total).quantize(
+        MONEY_DECIMAL_PLACES,
+        rounding=ROUND_HALF_EVEN,
+    )
+
+
+# Builds the income/expense figures of one period from its records.
+# This function exists as the single calculation behind both the
+# single-month overview and every trend bucket, so the two can never
+# disagree for the same dates.
+# Parameters:
+# - income_records: Income records already limited to the period's dates.
+# - expense_records: Expense records already limited to the period's dates.
+# - base_currency: the user's authoritative base currency.
+# Returns:
+# - FinancialFlowFigures with totals, Net (Income - Expenses), savings
+#   rate, and resolved/unresolved counts.
+def _build_financial_flow_figures(
+    income_records: Iterable,
+    expense_records: Iterable,
+    base_currency: str,
+) -> FinancialFlowFigures:
+    income_total, income_count, unresolved_income_count = _summarize_flow_side(
+        income_records, base_currency,
+    )
+    expense_total, expense_count, unresolved_expense_count = _summarize_flow_side(
+        expense_records, base_currency,
+    )
+    net_flow = income_total - expense_total
+
+    return FinancialFlowFigures(
+        income_total=income_total,
+        expense_total=expense_total,
+        net_flow=net_flow,
+        savings_rate_percent=_calculate_savings_rate_percent(net_flow, income_total),
+        income_count=income_count,
+        expense_count=expense_count,
+        unresolved_income_count=unresolved_income_count,
+        unresolved_expense_count=unresolved_expense_count,
+    )
+
+
+# Groups records by the first day of the calendar month of their date.
+# This function exists so the trend makes one pass over one bounded result
+# set instead of re-scanning every record for every month.
+# Parameters:
+# - records: Income or Expense records.
+# - record_date: returns the record's financial date (received_at or
+#   expense_date).
+# Returns:
+# - Dictionary from month start date to that month's records.
+def _group_by_month_start(
+    records: Iterable,
+    record_date: Callable,
+) -> dict[date, list]:
+    grouped: dict[date, list] = defaultdict(list)
+
+    for record in records:
+        financial_date = record_date(record)
+        grouped[date(financial_date.year, financial_date.month, 1)].append(record)
+
+    return grouped
+
+
+# Calculates the Financial Overview of one calendar month for the
+# authenticated user (VF-019B).
+# This function exists to answer "how much came in, how much went out, and
+# what is left" for a month: Income, Expenses, Net (Income - Expenses),
+# and savings rate in the user's base currency.
+#
+# Date semantics: a complete month (period_end < as_of) includes its whole
+# date range; the month containing as_of includes records through as_of
+# inclusive ("in_progress", also on its last day); a month starting after
+# as_of is "future" and includes nothing - it is not an error, so a client
+# whose local month is ahead of the server date gets zeros, not a 422.
+# Future-dated records are therefore never included. monthly-summary keeps
+# its own whole-month semantics and is deliberately not changed.
+#
+# data_status is "incomplete_data" whenever any date-matching record is
+# unresolved; the totals then cover the resolved records only.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter records.
+# - year: requested calendar year.
+# - month: requested calendar month (1-12).
+# - as_of: reference "today". The caller (the router) passes the server
+#   date - this function stays a pure, deterministic function of its
+#   arguments.
+# Returns:
+# - FinancialOverviewResponse for the requested month.
+def get_financial_overview(
+    db_session: Session,
+    user_id: UUID,
+    year: int,
+    month: int,
+    as_of: date,
+) -> FinancialOverviewResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    month_window = calendar_period.resolve_period_bounds(
+        period=calendar_period.MONTH,
+        as_of=date(year, month, 1),
+    )
+    period_start = month_window.period_start
+    period_end = month_window.period_end
+
+    income_records: list = []
+    expense_records: list = []
+    effective_end: Optional[date] = None
+
+    if period_start > as_of:
+        period_state = FINANCIAL_PERIOD_FUTURE
+    else:
+        effective_end = min(period_end, as_of)
+        period_state = (
+            FINANCIAL_PERIOD_COMPLETE if period_end < as_of else FINANCIAL_PERIOD_IN_PROGRESS
+        )
+
+        income_records = income_repository.get_income_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=period_start,
+            end_date=effective_end,
+        )
+        expense_records = expenses_repository.get_expenses_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=period_start,
+            end_date=effective_end,
+        )
+
+    figures = _build_financial_flow_figures(income_records, expense_records, base_currency)
+    has_unresolved = (
+        figures.unresolved_income_count > 0 or figures.unresolved_expense_count > 0
+    )
+
+    return FinancialOverviewResponse(
+        **figures.model_dump(),
+        base_currency=base_currency,
+        period_start=period_start,
+        period_end=period_end,
+        as_of=as_of,
+        effective_end=effective_end,
+        period_state=period_state,
+        data_status=DATA_STATUS_INCOMPLETE if has_unresolved else DATA_STATUS_COMPLETE,
+    )
+
+
+# Calculates the monthly income-expense trend for the authenticated user
+# (VF-019B).
+# This function exists to show how Income, Expenses, and Net (Income -
+# Expenses) moved over recent calendar months, with exactly the same
+# figures and date semantics as get_financial_overview: every bucket's
+# effective_end is min(period_end, as_of), so the current month includes
+# records through as_of only.
+#
+# One bounded query per side covers the whole window - from the first
+# bucket's start through as_of, so future-dated records are excluded at
+# the database level - and records are grouped by month in a single pass.
+# Every requested month is emitted, including months with no records.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter records.
+# - count: number of monthly buckets. Must be >= 1; the upper bound is the
+#   router's responsibility.
+# - as_of: reference "today" - the last bucket is the month containing it.
+#   The caller (the router) passes the server date.
+# Returns:
+# - IncomeExpenseTrendResponse with `count` buckets, oldest first.
+def get_income_expense_trend(
+    db_session: Session,
+    user_id: UUID,
+    count: int,
+    as_of: date,
+) -> IncomeExpenseTrendResponse:
+    base_currency = financial_settings_service.get_base_currency(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    calendar_periods = calendar_period.resolve_recent_periods(
+        period=calendar_period.MONTH,
+        as_of=as_of,
+        count=count,
+    )
+    window_start = calendar_periods[0].period_start
+
+    income_by_month = _group_by_month_start(
+        income_repository.get_income_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=window_start,
+            end_date=as_of,
+        ),
+        lambda income: income.received_at,
+    )
+    expenses_by_month = _group_by_month_start(
+        expenses_repository.get_expenses_in_date_range(
+            db_session=db_session,
+            user_id=user_id,
+            start_date=window_start,
+            end_date=as_of,
+        ),
+        lambda expense: expense.expense_date,
+    )
+
+    buckets: list[IncomeExpenseTrendBucket] = []
+
+    for window in calendar_periods:
+        figures = _build_financial_flow_figures(
+            income_by_month.get(window.period_start, []),
+            expenses_by_month.get(window.period_start, []),
+            base_currency,
+        )
+
+        buckets.append(
+            IncomeExpenseTrendBucket(
+                **figures.model_dump(),
+                period_start=window.period_start,
+                period_end=window.period_end,
+                effective_end=min(window.period_end, as_of),
+                is_complete=window.period_end < as_of,
+            )
+        )
+
+    return IncomeExpenseTrendResponse(
+        base_currency=base_currency,
+        as_of=as_of,
+        count=count,
+        buckets=buckets,
+    )
