@@ -38,6 +38,11 @@ import { useLocalCalendarMonth } from "./use-local-calendar-month";
 // Months of history shown below the selected month (the backend default).
 const FINANCIAL_HISTORY_MONTHS = 6;
 
+// Earliest month the backend accepts: financial-overview validates
+// year >= 2000 (422 otherwise), so navigation never goes before January
+// 2000, which itself stays selectable.
+const EARLIEST_OVERVIEW_MONTH: CalendarMonth = { year: 2000, month: 1 };
+
 // The month selection is either "the current month" -- which follows the
 // device's local month, so revisiting the screen after a month boundary
 // shows the new month -- or one specific earlier month the user navigated
@@ -131,6 +136,8 @@ export function FinancialOverviewScreen() {
       ? currentMonth
       : selection.month;
   const isAtCurrentMonth = isSameCalendarMonth(selectedMonth, currentMonth);
+  const isAtEarliestMonth =
+    compareCalendarMonths(selectedMonth, EARLIEST_OVERVIEW_MONTH) <= 0;
 
   // Every key carries the user id, and both queries run only with a
   // session, so one account's figures can never show for another.
@@ -169,7 +176,13 @@ export function FinancialOverviewScreen() {
     enabled: Boolean(session),
   });
 
+  // Never moves before EARLIEST_OVERVIEW_MONTH -- enforced here as well as
+  // by the disabled control.
   function handlePreviousMonth() {
+    if (isAtEarliestMonth) {
+      return;
+    }
+
     setSelection({ kind: "month", month: previousCalendarMonth(selectedMonth) });
   }
 
@@ -198,8 +211,10 @@ export function FinancialOverviewScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Previous month"
+            accessibilityState={{ disabled: isAtEarliestMonth }}
+            disabled={isAtEarliestMonth}
             onPress={handlePreviousMonth}
-            style={styles.monthButton}
+            style={[styles.monthButton, isAtEarliestMonth && styles.monthButtonDisabled]}
           >
             <Text style={styles.monthButtonText}>‹ Previous</Text>
           </Pressable>
