@@ -1,7 +1,8 @@
 # Financial Overview — Contract and Decision Record (VF-019)
 
-Status: backend implemented (VF-019B). Mobile screen not implemented yet
-(VF-019C). Discovery: VF-019A.
+Status: backend implemented (VF-019B); mobile Financial Overview screen
+and Dashboard card implemented (VF-019C, see section 10). Manual device
+acceptance is pending (VF-019D). Discovery: VF-019A.
 
 The exact request/response shapes are in `docs/api-contract.md`
 (section 10, "Financial Overview" and "Income-Expense Trend"). This
@@ -146,9 +147,49 @@ Goal funding.
   bounded queries; composite indexes or SQL aggregation are only worth
   revisiting after measuring real data volumes.
 
-## 10. Out of scope / follow-ups
+## 10. Mobile (VF-019C)
 
-- Mobile Financial Overview screen and Dashboard card (VF-019C).
+The mobile client only renders backend values; it never computes Net, the
+savings rate, FX conversions, or any total. Amounts stay strings end to end.
+
+- Screen: `app/(app)/overview/index.tsx` ("Financial Overview",
+  `src/features/analytics/financial-overview-screen.tsx`).
+  - Month selector (Previous / month label / Next) over calendar months,
+    including year changes; Next is disabled at the device's current local
+    month. The selection is "current month" or one specific earlier month;
+    "current month" follows the device's local month, which is re-read when
+    the screen regains focus (`useLocalCalendarMonth`, no timer).
+  - "Income and expenses" section for the selected month
+    (`financial-overview`): Income, Expenses, Net (Income - Expenses) with
+    a textual surplus/deficit/break-even label, savings rate ("Unavailable"
+    when the backend returns null), record counts, the backend period line
+    (complete / in progress through effective_end / future), an
+    "Incomplete data" warning with the unresolved counts when
+    `data_status` is `incomplete_data`, and an empty-state note.
+  - "Monthly history" section (`income-expense-trend`, count 6): the
+    buckets in backend order with the same figures; a bucket shows the
+    incomplete warning when its unresolved counts are non-zero (buckets
+    have no data_status). The window is the last 6 months ending with the
+    current server month, as the backend anchors it; the month selected
+    above does not change it, and the screen says so under the heading.
+  - The two sections load, fail, and retry (`refetch`) independently.
+- Dashboard: an "Income and expenses" card for the device's current local
+  month (Income, Expenses, Net, backend currency, incomplete-data notice)
+  with a "Financial Overview" button. The existing "This month"
+  monthly-summary card is unchanged; the two may show different expense
+  figures for the current month (see section 4). The Dashboard's month is
+  also re-read on focus.
+- Query keys: `["analytics", "financial-overview", userId, year, month]`
+  and `["analytics", "income-expense-trend", userId, count]`, enabled only
+  with a session.
+- Invalidation: every successful Income create/update/delete
+  (`income-cache.ts`, regardless of Account link) and every Expense
+  mutation (`expense-cache.ts`, which Receipt confirmation also uses)
+  invalidates both families. Transfers, Account adjustments, and Goal
+  mutations do not, because they never change these figures.
+
+## 11. Out of scope / follow-ups
+
 - Category and Income-source breakdowns.
 - Bank cash-flow reconciliation, net worth, projected balances.
 - Changing `monthly-summary`'s whole-month semantics (would be a separate,

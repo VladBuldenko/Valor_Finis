@@ -180,3 +180,64 @@ export type MonthlySummary = {
     average_daily_spending: string | null;
     projected_spending: string | null;
   };
+
+  // Mirrors backend Financial Overview / Income-Expense Trend (VF-019B,
+  // services/api/app/modules/analytics/analytics_schemas.py; contract in
+  // docs/modules/financial-overview.md). Every Decimal/date field stays a
+  // string -- the backend is the sole authority on every total, Net,
+  // savings rate, count, and period state. Mobile only renders them.
+  export type FinancialPeriodState = "complete" | "in_progress" | "future";
+  export type FinancialDataStatus = "complete_data" | "incomplete_data";
+
+  // The figures shared by the single-month overview and every trend
+  // bucket. Totals cover canonical Income/Expense records only, summed
+  // from resolved base-currency snapshots. net_flow is Net (Income -
+  // Expenses) -- recorded income minus recorded expenses, never a
+  // reconciled cash flow, Account balance, or net worth. Never recompute it
+  // or the savings rate client-side.
+  export type FinancialFlowFigures = {
+    income_total: string;
+    expense_total: string;
+    net_flow: string;
+    // Null exactly when there is no resolved income in the period -- never
+    // render that as "0%". A rate that rounds to zero is "0.00", never
+    // "-0.00".
+    savings_rate_percent: string | null;
+    income_count: number;
+    expense_count: number;
+    // Records excluded from the totals because they have no base-currency
+    // snapshot (or one in another base currency) -- never zero-valued.
+    unresolved_income_count: number;
+    unresolved_expense_count: number;
+  };
+
+  // A complete month covers its whole range; the month in progress covers
+  // records through as_of (effective_end); a "future" month is a valid
+  // all-zero response with effective_end null -- not an error.
+  export type FinancialOverviewResponse = FinancialFlowFigures & {
+    base_currency: string;
+    period_start: string;
+    period_end: string;
+    as_of: string;
+    effective_end: string | null;
+    period_state: FinancialPeriodState;
+    data_status: FinancialDataStatus;
+  };
+
+  // A trend bucket has no data_status: a bucket is incomplete exactly when
+  // one of its unresolved counts is greater than zero.
+  export type IncomeExpenseTrendBucket = FinancialFlowFigures & {
+    period_start: string;
+    period_end: string;
+    effective_end: string;
+    is_complete: boolean;
+  };
+
+  // Exactly `count` monthly buckets, oldest first, ending with the
+  // server's current month -- never re-sorted or filtered client-side.
+  export type IncomeExpenseTrendResponse = {
+    base_currency: string;
+    as_of: string;
+    count: number;
+    buckets: IncomeExpenseTrendBucket[];
+  };

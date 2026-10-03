@@ -6,8 +6,10 @@ import type { QueryClient } from "@tanstack/react-query";
  *
  * Always invalidated: ["expenses", userId] and every analytics family an
  * Expense feeds (monthly/category summaries, budget status, spending and
- * category trends, spending forecast). These are prefix matches, so every
- * cached period/count variant is covered.
+ * category trends, spending forecast, and the Financial Overview and its
+ * income-expense trend). These are prefix matches, so every cached
+ * period/count variant is covered. Receipt confirmation creates an
+ * Expense and refreshes through this same helper.
  *
  * The Account caches are invalidated only when the mutation touched an
  * Account ledger, i.e. when the Expense was linked before OR is linked
@@ -51,6 +53,13 @@ export function invalidateExpenseQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: ["analytics", "spending-forecast", userId],
+    }),
+    // VF-019B/C: Financial Overview counts every Expense, linked or not.
+    queryClient.invalidateQueries({
+      queryKey: ["analytics", "financial-overview", userId],
+    }),
+    queryClient.invalidateQueries({
+      queryKey: ["analytics", "income-expense-trend", userId],
     }),
   ];
 
