@@ -559,12 +559,14 @@ def _month_figures(client: TestClient, user_id: str, year: int, month: int) -> d
     return {field: body[field] for field in FIGURE_FIELDS}
 
 
-# Tests that the overview and the trend follow every Income mutation
-# (VF-019D): create, an amount change, a date move to another month,
-# detaching from the Account, and delete - for an Account-linked and an
-# unlinked Income. The linked Income's ledger projection really exists
-# (the Account balance follows it) yet is never counted a second time, and
-# another user's Income never leaks in (positive control at the end).
+# Tests that the overview and the trend follow one Income mutation
+# sequence (VF-019D): create an Account-linked and an unlinked Income,
+# change the linked Income's amount, move the unlinked Income to another
+# month, detach the linked Income from the Account, then delete it - so
+# the delete runs after detaching, not while linked. While linked, its
+# ledger projection really exists (the Account balance follows it) yet is
+# never counted a second time, and another user's Income never leaks in
+# (positive control at the end).
 # Parameters:
 # - client: FastAPI test client.
 # - monkeypatch: pytest fixture used to freeze the date.
@@ -637,11 +639,13 @@ def test_financial_overview_follows_income_mutations(
     assert (other_september["income_total"], other_september["income_count"]) == ("9999.00", 1)
 
 
-# Tests that the overview and the trend follow every Expense mutation
-# (VF-019D): create, an amount change, attaching an unlinked Expense to the
-# Account, a date move into the current month, and delete. Net and the
-# savings rate move with the totals, attaching never double-counts through
-# the new ledger projection, and another user's Expense never leaks in.
+# Tests that the overview and the trend follow one Expense mutation
+# sequence (VF-019D): create an Account-linked and an unlinked Expense,
+# change the linked Expense's amount, attach the unlinked Expense to the
+# Account, move it into the current month, then delete the originally
+# linked Expense while it is still linked. Net and the savings rate move
+# with the totals, attaching never double-counts through the new ledger
+# projection, and another user's Expense never leaks in.
 # Parameters:
 # - client: FastAPI test client.
 # - monkeypatch: pytest fixture used to freeze the date.

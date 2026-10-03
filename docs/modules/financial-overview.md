@@ -218,13 +218,26 @@ savings rate, FX conversions, or any total. Amounts stay strings end to end.
   today only. For the current month their expense figures can differ.
 - **Device refresh acceptance outstanding.** Automatic refresh after
   Income/Expense create/update/delete and Receipt confirmation is not yet
-  confirmed on a physical device. Current evidence, which is not device
-  acceptance: every mutation call site invalidates both query families
-  (code inspection), the invalidation helpers were checked against a real
-  TanStack `QueryClient` (all months and counts for the user invalidated,
-  other users and unrelated families untouched), and backend regression
-  tests show the API figures follow every Income/Expense mutation. Status:
-  pending verification on the first suitable real transaction.
+  confirmed on a physical device. Current evidence, none of which is
+  device acceptance:
+  - *Call-site wiring (static code inspection).* Each of the six
+    Income/Expense mutations (create/update/delete) and Receipt
+    confirmation calls the shared invalidation helper from its `onSuccess`
+    with the session user id - seven calls in total.
+  - *Invalidation helpers (one-off local check).* During VF-019D the
+    helpers were exercised against a real TanStack `QueryClient`: all
+    months and counts for the user were invalidated, other users and
+    unrelated families were untouched. The scratch script was not
+    committed and is not an automated regression test.
+  - *API figures (backend integration tests).* Two tests in
+    `test_financial_overview_router.py` cover one Income and one Expense
+    mutation sequence: create (Account-linked and unlinked), amount
+    change, month move, detaching an Income, attaching an Expense, and
+    delete (the Income after it was detached, the Expense while still
+    linked). They do not cover every linkage permutation or currency
+    changes.
+
+  Status: pending verification on the first suitable real transaction.
 
 ## 12. Out of scope / follow-ups
 
