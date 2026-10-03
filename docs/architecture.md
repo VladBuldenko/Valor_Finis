@@ -210,7 +210,7 @@ confirmation into an Expense (optionally linked to an Account).
 
 Analytics
 
-Reads financial data and returns derived summaries: monthly and category summaries in base currency, spending and category trends, the current-month spending forecast, budget status with period metrics, goal progress, and the Financial Overview (VF-019B): monthly Income, Expenses, Net (Income - Expenses), and savings rate, plus a monthly income-expense trend. Analytics is read-only. Income is part of analytics only through the Financial Overview endpoints, which read canonical Income and Expense records only - never Account ledger rows, Transfers, or Goal transactions - and sum persisted base_amount snapshots; Net is recorded income minus recorded expenses, not a reconciled cash flow (see docs/modules/financial-overview.md). Every pre-existing analytics endpoint keeps its expense-only meaning.
+Reads financial data and returns derived summaries: monthly and category summaries in base currency, spending and category trends, the current-month spending forecast, budget status with period metrics, goal progress, and the Financial Overview (VF-019B): monthly Income, Expenses, Net (Income - Expenses), and savings rate, plus a monthly income-expense trend. Analytics is read-only. Income is part of analytics only through the Financial Overview endpoints, which read canonical Income and Expense records only - never Account ledger rows, Transfers, or Goal transactions - and sum persisted base_amount snapshots; Net is recorded income minus recorded expenses, not a reconciled cash flow (see docs/modules/financial-overview.md, including its known limitations). Every pre-existing analytics endpoint keeps its expense-only meaning.
 
 5. Financial Ledger Architecture
 
@@ -756,7 +756,7 @@ Test database safety guard            ✅
 Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
-Financial overview (Income/Expenses/Net) ✅ backend + mobile (device acceptance pending)
+Financial overview (Income/Expenses/Net) ✅ backend + mobile; device refresh acceptance pending (first suitable real transaction)
 Goal ↔ Account semantics              pending product discovery
 Web client                            later
 
@@ -766,8 +766,6 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Financial overview acceptance and docs sync (VF-019D)
-      ↓
 Goal ↔ Account semantics discovery
       ↓
 Evolution based on real usage

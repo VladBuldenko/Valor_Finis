@@ -1,8 +1,15 @@
 # Financial Overview — Contract and Decision Record (VF-019)
 
-Status: backend implemented (VF-019B); mobile Financial Overview screen
-and Dashboard card implemented (VF-019C, see section 10). Manual device
-acceptance is pending (VF-019D). Discovery: VF-019A.
+Status: implemented — backend (VF-019B, PR #67), mobile Financial Overview
+screen and Dashboard card (VF-019C, PR #68), final integration, regression
+tests, and documentation (VF-019D). Discovery: VF-019A.
+
+Device acceptance: rendering of the Dashboard card and the Financial
+Overview, month selection and navigation, and the monthly history with its
+explanatory text are confirmed on a physical iPhone. The automatic refresh
+after Income/Expense create/update/delete and after Receipt confirmation is
+**pending verification on the first suitable real transaction** (see
+section 11).
 
 The exact request/response shapes are in `docs/api-contract.md`
 (section 10, "Financial Overview" and "Income-Expense Trend"). This
@@ -156,7 +163,8 @@ savings rate, FX conversions, or any total. Amounts stay strings end to end.
   `src/features/analytics/financial-overview-screen.tsx`).
   - Month selector (Previous / month label / Next) over calendar months,
     including year changes; Next is disabled at the device's current local
-    month. The selection is "current month" or one specific earlier month;
+    month, and Previous at January 2000, the earliest month the backend
+    accepts (year >= 2000). The selection is "current month" or one specific earlier month;
     "current month" follows the device's local month, which is re-read when
     the screen regains focus (`useLocalCalendarMonth`, no timer).
   - "Income and expenses" section for the selected month
@@ -188,7 +196,37 @@ savings rate, FX conversions, or any total. Amounts stay strings end to end.
   invalidates both families. Transfers, Account adjustments, and Goal
   mutations do not, because they never change these figures.
 
-## 11. Out of scope / follow-ups
+## 11. Known limitations
+
+- **Server/device date boundary (D13).** "Today" is the server date. Around
+  midnight the device's local month can differ from the server's: a month
+  the server has not reached yet returns `future` with zeros (not an
+  error), and the current month's `effective_end` follows the server date.
+- **Dashboard refresh after midnight.** The Dashboard re-reads its local
+  month when it regains focus, but within the same month it does not
+  refetch on a day change by itself (`staleTime` 0, no app-focus refetch
+  configured). Until the next data change, remount, or app restart, the
+  card can show figures "through" the previous day - the same as the other
+  Dashboard analytics cards.
+- **Non-atomic reads.** The overview reads Income and Expenses in two
+  separate queries, so a write committed between them can appear on one
+  side only for that single response. Not a concern for a read-only
+  summary; the next read is consistent.
+- **monthly-summary calendar semantics.** The legacy `monthly-summary`
+  (Dashboard "This month") counts the whole calendar month, including
+  future-dated Expenses; the overview counts the current month through
+  today only. For the current month their expense figures can differ.
+- **Device refresh acceptance outstanding.** Automatic refresh after
+  Income/Expense create/update/delete and Receipt confirmation is not yet
+  confirmed on a physical device. Current evidence, which is not device
+  acceptance: every mutation call site invalidates both query families
+  (code inspection), the invalidation helpers were checked against a real
+  TanStack `QueryClient` (all months and counts for the user invalidated,
+  other users and unrelated families untouched), and backend regression
+  tests show the API figures follow every Income/Expense mutation. Status:
+  pending verification on the first suitable real transaction.
+
+## 12. Out of scope / follow-ups
 
 - Category and Income-source breakdowns.
 - Bank cash-flow reconciliation, net worth, projected balances.

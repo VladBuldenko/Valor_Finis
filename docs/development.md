@@ -373,7 +373,7 @@ Valor Finis API
       ↓
 PostgreSQL
 
-Shared API clients/types should be generated or derived from the API contract when frontend development begins.
+Client types mirror the API contract: the mobile client keeps strict TypeScript types aligned with the backend response schemas, and all business data goes through the FastAPI client.
 
 ✅ Definition of Done
 
@@ -403,17 +403,11 @@ independent deployment
 clear organizational ownership
 🎯 Current Direction
 
-The backend MVP is implemented.
+The backend is implemented and deployed in production, and the mobile client implements the core finance flows, including Account Transfers and the Financial Overview.
 
-Current priorities:
+Current priorities (docs/roadmap.md is the authoritative direction):
 
-Documentation
+Goal ↔ Account semantics product discovery
     ↓
-Production Supabase verification
-    ↓
-Backend deployment
-    ↓
-Web / Mobile integration
-    ↓
-Improve the API based on real client usage
+Improve the API and the mobile app based on real usage
 💡 Final Rule
