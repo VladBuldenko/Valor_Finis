@@ -535,3 +535,181 @@ def test_financial_overview_reads_never_call_fx(
     resolve_spy.assert_not_called()
     ecb_get.assert_not_called()
     nbu_get.assert_not_called()
+
+
+def _patch(client: TestClient, user_id: str, url: str, payload: dict[str, Any]) -> None:
+    response = client.patch(url, headers=auth_headers(user_id), json=payload)
+    assert response.status_code == 200, response.text
+
+
+def _delete(client: TestClient, user_id: str, url: str) -> None:
+    response = client.delete(url, headers=auth_headers(user_id))
+    assert response.status_code == 204, response.text
+
+
+def _account_balance(client: TestClient, user_id: str, account_id: str) -> Decimal:
+    response = client.get("/api/v1/accounts", headers=auth_headers(user_id))
+    assert response.status_code == 200, response.text
+    [account] = [account for account in response.json() if account["id"] == account_id]
+    return Decimal(account["current_balance"])
+
+
+def _month_figures(client: TestClient, user_id: str, year: int, month: int) -> dict[str, Any]:
+    body = _get_overview(client, user_id, year, month).json()
+    return {field: body[field] for field in FIGURE_FIELDS}
+
+
+# Tests that the overview and the trend follow one Income mutation
+# sequence (VF-019D): create an Account-linked and an unlinked Income,
+# change the linked Income's amount, move the unlinked Income to another
+# month, detach the linked Income from the Account, then delete it - so
+# the delete runs after detaching, not while linked. While linked, its
+# ledger projection really exists (the Account balance follows it) yet is
+# never counted a second time, and another user's Income never leaks in
+# (positive control at the end).
+# Parameters:
+# - client: FastAPI test client.
+# - monkeypatch: pytest fixture used to freeze the date.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if every step shows the expected figures.
+def test_financial_overview_follows_income_mutations(
+    client: TestClient,
+    monkeypatch: MonkeyPatch,
+    clean_database: None,
+) -> None:
+    _freeze_today(monkeypatch)
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    checking = _post_account(client, user_id, "Checking")
+    _post_income(client, other_user_id, "9999.00", "2026-09-15")
+
+    linked = _post_income(client, user_id, "1000.00", "2026-09-10", account_id=checking["id"])
+    unlinked = _post_income(client, user_id, "200.00", "2026-09-12", source="freelance")
+
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["income_total"], september["income_count"]) == ("1200.00", 2)
+    assert (september["net_flow"], september["savings_rate_percent"]) == ("1200.00", "100.00")
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("1000.00")
+
+    # Update the linked Income's amount: counted once, projection follows.
+    _patch(client, user_id, f"/api/v1/income/{linked['id']}", {"amount": "1500.00"})
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["income_total"], september["income_count"]) == ("1700.00", 2)
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("1500.00")
+
+    # Move the unlinked Income to August: it leaves September for August.
+    _patch(client, user_id, f"/api/v1/income/{unlinked['id']}", {"received_at": "2026-08-20"})
+    september = _month_figures(client, user_id, 2026, 9)
+    august = _month_figures(client, user_id, 2026, 8)
+    assert (september["income_total"], september["income_count"]) == ("1500.00", 1)
+    assert (august["income_total"], august["income_count"]) == ("200.00", 1)
+
+    # Detach the linked Income: the projection disappears, the Income stays.
+    _patch(client, user_id, f"/api/v1/income/{linked['id']}", {"account_id": None})
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["income_total"], september["income_count"]) == ("1500.00", 1)
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("0")
+
+    # Delete it: September has no income left, so the rate is unavailable.
+    _delete(client, user_id, f"/api/v1/income/{linked['id']}")
+    september = _month_figures(client, user_id, 2026, 9)
+    assert september == {
+        "income_total": "0.00",
+        "expense_total": "0.00",
+        "net_flow": "0.00",
+        "savings_rate_percent": None,
+        "income_count": 0,
+        "expense_count": 0,
+        "unresolved_income_count": 0,
+        "unresolved_expense_count": 0,
+    }
+
+    trend = client.get(TREND_URL, headers=auth_headers(user_id), params={"count": 3}).json()
+    assert [
+        (bucket["period_start"], bucket["income_total"], bucket["income_count"])
+        for bucket in trend["buckets"]
+    ] == [
+        ("2026-08-01", "200.00", 1),
+        ("2026-09-01", "0.00", 0),
+        ("2026-10-01", "0.00", 0),
+    ]
+
+    other_september = _month_figures(client, other_user_id, 2026, 9)
+    assert (other_september["income_total"], other_september["income_count"]) == ("9999.00", 1)
+
+
+# Tests that the overview and the trend follow one Expense mutation
+# sequence (VF-019D): create an Account-linked and an unlinked Expense,
+# change the linked Expense's amount, attach the unlinked Expense to the
+# Account, move it into the current month, then delete the originally
+# linked Expense while it is still linked. Net and the savings rate move
+# with the totals, attaching never double-counts through the new ledger
+# projection, and another user's Expense never leaks in.
+# Parameters:
+# - client: FastAPI test client.
+# - monkeypatch: pytest fixture used to freeze the date.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if every step shows the expected figures.
+def test_financial_overview_follows_expense_mutations(
+    client: TestClient,
+    monkeypatch: MonkeyPatch,
+    clean_database: None,
+) -> None:
+    _freeze_today(monkeypatch)
+    user_id = str(uuid4())
+    other_user_id = str(uuid4())
+    checking = _post_account(client, user_id, "Checking")
+    _post_expense(client, other_user_id, "777.00", "2026-09-07")
+    _post_income(client, user_id, "1000.00", "2026-09-01")
+
+    linked = _post_expense(client, user_id, "300.00", "2026-09-05", account_id=checking["id"])
+    unlinked = _post_expense(client, user_id, "45.50", "2026-09-06")
+
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["expense_total"], september["expense_count"]) == ("345.50", 2)
+    assert (september["net_flow"], september["savings_rate_percent"]) == ("654.50", "65.45")
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("-300.00")
+
+    # Update the linked Expense's amount.
+    _patch(client, user_id, f"/api/v1/expenses/{linked['id']}", {"amount": "400.00"})
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["expense_total"], september["expense_count"]) == ("445.50", 2)
+    assert (september["net_flow"], september["savings_rate_percent"]) == ("554.50", "55.45")
+
+    # Attach the unlinked Expense to the Account: a projection is created,
+    # the Expense is still counted exactly once.
+    _patch(client, user_id, f"/api/v1/expenses/{unlinked['id']}", {"account_id": checking["id"]})
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["expense_total"], september["expense_count"]) == ("445.50", 2)
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("-445.50")
+
+    # Move it into the current month: it leaves September for October.
+    _patch(client, user_id, f"/api/v1/expenses/{unlinked['id']}", {"expense_date": "2026-10-01"})
+    september = _month_figures(client, user_id, 2026, 9)
+    october = _get_overview(client, user_id, 2026, 10).json()
+    assert (september["expense_total"], september["expense_count"]) == ("400.00", 1)
+    assert (september["net_flow"], september["savings_rate_percent"]) == ("600.00", "60.00")
+    assert october["period_state"] == "in_progress"
+    assert (october["expense_total"], october["expense_count"]) == ("45.50", 1)
+    assert (october["net_flow"], october["savings_rate_percent"]) == ("-45.50", None)
+
+    # Delete the first Expense: September keeps only its income.
+    _delete(client, user_id, f"/api/v1/expenses/{linked['id']}")
+    september = _month_figures(client, user_id, 2026, 9)
+    assert (september["expense_total"], september["expense_count"]) == ("0.00", 0)
+    assert (september["net_flow"], september["savings_rate_percent"]) == ("1000.00", "100.00")
+    assert _account_balance(client, user_id, checking["id"]) == Decimal("-45.50")
+
+    trend = client.get(TREND_URL, headers=auth_headers(user_id), params={"count": 2}).json()
+    assert [
+        (bucket["period_start"], bucket["income_total"], bucket["expense_total"], bucket["net_flow"])
+        for bucket in trend["buckets"]
+    ] == [
+        ("2026-09-01", "1000.00", "0.00", "1000.00"),
+        ("2026-10-01", "0.00", "45.50", "-45.50"),
+    ]
+
+    other_september = _month_figures(client, other_user_id, 2026, 9)
+    assert (other_september["expense_total"], other_september["expense_count"]) == ("777.00", 1)

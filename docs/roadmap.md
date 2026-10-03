@@ -9,8 +9,9 @@ It focuses on major product milestones rather than small implementation tasks. T
 Backend (FastAPI modular monolith)        ✅ Implemented, deployed in production
 Mobile client (Expo / React Native)       ✅ Implemented for the core finance flows
 Financial ledger / money-flow foundation  ✅ Implemented
-Account Transfers                         ⏳ Next — specification/discovery first
-Goal ↔ Account semantics                  ⏳ Requires product discovery
+Account Transfers                         ✅ Implemented (VF-018, backend + mobile)
+Financial Overview                        ✅ Implemented (VF-019, backend + mobile); device refresh acceptance pending
+Goal ↔ Account semantics                  ⏳ Next — requires product discovery
 Web client                                Later
 
 Valor Finis has moved beyond a CRUD MVP into a financial ledger / money-flow foundation. It is not feature-complete.
@@ -55,7 +56,9 @@ Budgets v2 — weekly/monthly/yearly periods, versioned history (BudgetVersion),
 
 Goals v2 — GoalTransaction ledger (opening balance, contributions, withdrawals); balance is ledger-derived and never negative; overfunding allowed; archive instead of delete once history exists
 
-Accounts — checking/savings/cash; AccountTransaction ledger (opening balance, manual adjustments, income and expense projections); balance is ledger-derived and may be negative; archive instead of delete once history exists
+Accounts — checking/savings/cash; AccountTransaction ledger (opening balance, manual adjustments, income, expense, and transfer projections); balance is ledger-derived and may be negative; archive instead of delete once history exists
+
+Account Transfers — same-currency moves between the user's own Accounts; planned (no ledger effect) or posted (a source debit and a destination credit); manual posting of planned transfers; create idempotency; hard delete; a transfer is neither Income nor an Expense
 
 Income — salary/freelance/refund/gift/other, historical FX snapshot, optional Account link (credit projection)
 
@@ -73,7 +76,9 @@ Budget status with period metrics (pace, projection, risk)
 
 Goal progress
 
-Income is not yet part of any analytics endpoint; there is no cash-flow or net-income analytics yet.
+Financial Overview (VF-019B) — monthly Income, Expenses, Net (Income - Expenses), and savings rate, plus a monthly income-expense trend, from canonical Income and Expense records only (never Account ledger rows, Transfers, or Goal transactions)
+
+Income feeds analytics only through the Financial Overview. Net is recorded income minus recorded expenses; there is still no bank-reconciled or true cash-flow analytics.
 
 2.5 Mobile Client (apps/mobile)
 
@@ -97,6 +102,10 @@ Income — list/create/edit/delete with optional Account link
 
 Receipts — upload, review, and confirmation with an optional Account link
 
+Account Transfers — list (planned and posted), create, manual post with an explicit effective date, delete; transfer rows with their counterparty Account in Account history
+
+Financial Overview — month navigation, Income/Expenses/Net/savings rate for the selected month, 6-month history, and an income/expenses/Net card on the Dashboard
+
 2.6 Receipts Status
 
 Receipt upload, OCR, and confirmation are implemented and remain available. Further Receipt/OCR expansion is deferred for now and is not the next product milestone. This is a prioritization decision, not a technical deprecation.
@@ -118,6 +127,12 @@ EXPENSE
 = money spent
 = may optionally project a debit into an Account
 
+TRANSFER
+= money moved between two of the user's own Accounts (same currency)
+= NOT Income and NOT an Expense
+= posted: a debit on the source and a credit on the destination Account
+= planned: no ledger effect until posted
+
 BUDGET
 = a spending allocation / limit
 = NOT stored cash
@@ -129,37 +144,21 @@ GOAL
 
 Income and Expense are the canonical records; their AccountTransaction rows are synchronized projections. GoalTransaction and AccountTransaction are separate ledgers.
 
+The Financial Overview's Net (Income - Expenses) is recorded income minus recorded expenses. It is not a bank reconciliation, a true cash flow, an Account balance, or net worth.
+
 4. Current Product Phase
 
 Financial ledger / money-flow foundation
 
-Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Goals track savings progress on their own ledger. The next work extends how money moves between Accounts.
+Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Money can also move between the user's own Accounts through transfers, and the Financial Overview summarizes recorded income versus expenses. Goals track savings progress on their own ledger. The next step is product discovery for Goal ↔ Account semantics.
 
-5. Next Milestone — Account Transfers
+5. Completed Milestones — Account Transfers and Financial Overview
 
-Status: not implemented. The next step is specification/discovery, before any implementation.
+Account Transfers (VF-018): approved contract (VF-018A, PR #61), schema foundation (VF-018B, PR #62), API with create idempotency (VF-018C, PR #63), manual posting (VF-018D, PR #64), and mobile (VF-018E, PR #65). Same-currency only. The contract and decision record are in docs/modules/account-transfers.md.
 
-Likely initial direction:
+Financial Overview (VF-019): discovery (VF-019A), backend (VF-019B, PR #67), mobile (VF-019C, PR #68), and final integration/documentation (VF-019D). The contract and decision record are in docs/modules/financial-overview.md. Physical-device acceptance of the automatic refresh after Income/Expense create/update/delete and Receipt confirmation is pending verification on the first suitable real transaction. Supporting evidence, none of which is device acceptance: static inspection of the mutation call-site wiring, two backend integration tests covering specific Income and Expense mutation sequences, and a one-off local check of the invalidation helpers against a real TanStack QueryClient (scratch script not committed; not an automated regression test). Details are in docs/modules/financial-overview.md section 11.
 
-Account A
-   debit
-      ↓
-Transfer
-      ↓
-   credit
-Account B
-
-The initial scope should preferably be same-currency transfers only, unless discovery decides otherwise.
-
-Planned sequence:
-
-Account Transfers discovery/specification
-        ↓
-Account Transfers backend
-        ↓
-Account Transfers mobile
-
-6. After Transfers — Goal ↔ Account Semantics
+6. Next — Goal ↔ Account Semantics
 
 Goals are not connected to Accounts today. Before any cash integration, product discovery must answer an open question:
 
@@ -175,11 +174,7 @@ This is not decided. Goal funding from Accounts is not implemented and must not 
 
 These are product opportunities, not current commitments:
 
-true cash-flow analytics
-
-net income
-
-savings rate
+true cash-flow analytics (bank-reconciled; distinct from the implemented Net (Income - Expenses) and savings rate)
 
 consolidated account activity
 
@@ -193,23 +188,15 @@ advanced receipt automation
 
 8. Current Development Direction
 
-Current implemented finance foundation
-        ↓
-Documentation/state synchronization
-        ↓
-Account Transfers discovery/specification
-        ↓
-Account Transfers backend
-        ↓
-Account Transfers mobile
+Current implemented finance foundation (including Account Transfers and the Financial Overview)
         ↓
 Goal/Account semantics discovery
         ↓
-possible Goal cash/earmarking integration
-        ↓
-cash-flow / financial overview
+possible Goal cash/earmarking integration (only if discovery approves it)
         ↓
 later product capabilities
+
+The Financial Overview was deliberately prioritized before Goal ↔ Account semantics discovery (VF-019 decision Q10).
 
 Mobile remains the primary client. The web client comes later and is not the immediate next client milestone.
 
@@ -224,6 +211,10 @@ additional production hardening
 authentication/password security settings where applicable
 
 Receipt/OCR edge-case handling (deferred together with further Receipt work)
+
+User timezone semantics: "today" is the server date, so the device and the server can disagree around midnight (planned transfers, effective dates, Financial Overview month state)
+
+Financial Overview known limitations (Dashboard refresh after midnight, non-atomic reads, monthly-summary calendar semantics, pending device refresh acceptance) are listed in docs/modules/financial-overview.md
 
 10. Engineering Principles
 

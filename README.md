@@ -14,10 +14,11 @@ Users can:
 - record expenses (money spent) and income (money received);
 - track real-world accounts (checking, savings, cash) whose balances are derived from a transaction ledger;
 - optionally link an expense or income to the account it affected;
+- move money between their own accounts with planned or posted transfers;
 - manage categories and recurring budgets;
 - fund and track savings goals through a goal transaction ledger;
 - upload receipts, run OCR, and confirm them into expenses;
-- analyze spending in their base currency.
+- analyze spending, and recorded income versus expenses, in their base currency.
 
 The backend is deployed in production. The mobile app implements the core finance flows. See `docs/roadmap.md` for the current state and direction.
 
@@ -42,6 +43,13 @@ The backend is deployed in production. The mobile app implements the core financ
 - Balance derived from the AccountTransaction ledger (may be negative)
 - Optional opening balance, immutable manual adjustments
 - Archive instead of delete once history exists; currency locked after history
+
+### Account Transfers
+- Move money between two of the user's own Accounts in the same currency
+- Planned transfers (future date, no ledger effect) and posted transfers (a debit on the source and a credit on the destination Account)
+- Manual posting of a planned transfer (the effective date defaults to the server date; the mobile app always sends it explicitly); no automatic scheduler
+- Create idempotency via a client request id; hard delete removes a posted transfer's ledger rows
+- A transfer is neither Income nor an Expense and never appears in income, expense, budget, or Financial Overview figures
 
 ### Categories
 - Full CRUD
@@ -77,6 +85,9 @@ Goals are not connected to Accounts.
 - Current-month spending forecast
 - Budget status
 - Goal progress
+- Financial Overview: monthly Income, Expenses, Net (Income - Expenses), and savings rate, plus a monthly income-expense trend, from canonical Income and Expense records only
+
+Net is recorded income minus recorded expenses. It is not a bank-reconciled cash flow, an account balance, or net worth.
 
 ---
 
@@ -313,7 +324,7 @@ npx expo start --lan
 
 It reads the API URL and public Supabase settings from its local environment (for example `EXPO_PUBLIC_API_URL`). Before changing mobile code, read `apps/mobile/AGENTS.md`.
 
-Implemented screens: sign-in, dashboard, expenses, income, accounts (with transaction history and adjustments), categories, budgets, goals (with funding history), analytics, and receipt upload/review.
+Implemented screens: sign-in, dashboard (including an income/expenses/Net card), expenses, income, accounts (with transaction history and adjustments), account transfers (create, manual post, delete), categories, budgets, goals (with funding history), analytics, Financial Overview (month selection and monthly history), and receipt upload/review.
 
 Mobile checks:
 
@@ -374,7 +385,7 @@ Stop on the first failure:
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valor_test python -m pytest -x -v
 ```
 
-The suite includes unit and integration tests (both against real PostgreSQL) for authentication, expenses, income, accounts and the account ledger, categories, budgets, goals and the goal ledger, receipts and OCR, FX, analytics, ownership rules, concurrency, database behavior, and exception handling. Tests never depend on live FX provider availability.
+The suite includes unit and integration tests (both against real PostgreSQL) for authentication, expenses, income, accounts and the account ledger, account transfers, categories, budgets, goals and the goal ledger, receipts and OCR, FX, analytics (including the Financial Overview), ownership rules, concurrency, database behavior, and exception handling. Tests never depend on live FX provider availability.
 
 ---
 
@@ -409,6 +420,7 @@ Main resources:
 /api/v1/expenses
 /api/v1/income
 /api/v1/accounts
+/api/v1/account-transfers
 /api/v1/budgets
 /api/v1/goals
 /api/v1/receipts
@@ -424,9 +436,9 @@ See `docs/api-contract.md` for the contract and `docs/database-schema.md` for th
 ## Status
 
 - Backend: implemented and deployed in production (Render, with Supabase Auth, PostgreSQL, and Storage); production hardening performed, with further operational/security hardening ongoing.
-- Mobile: core finance flows implemented.
-- Current phase: financial ledger / money-flow foundation — not feature-complete.
-- Next milestone: Account Transfers (specification first).
+- Mobile: core finance flows implemented, including Account Transfers and the Financial Overview.
+- Current phase: financial ledger / money-flow foundation — not feature-complete. Account Transfers (VF-018) and the Financial Overview (VF-019) are implemented; physical-device acceptance of the Financial Overview refresh after Income/Expense changes is pending verification on the first suitable real transaction.
+- Next: Goal ↔ Account semantics product discovery (not decided; Goals are not connected to Accounts).
 
 See `docs/roadmap.md`.
 

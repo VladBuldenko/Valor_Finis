@@ -1,16 +1,19 @@
 # Account Transfers — Approved Contract (VF-018A)
 
-Status: **approved contract, not implemented.**
-Base: `main` at `6adb3d6` (after PR #60, VF-DOC-01).
+Status: **approved contract, implemented** in VF-018B–VF-018E (PRs #62–#65):
+schema foundation (VF-018B), create/list/delete API with create idempotency
+(VF-018C), manual posting (VF-018D), and mobile (VF-018E). Approved in
+VF-018A (PR #61).
+Base of the original contract: `main` at `6adb3d6` (after PR #60, VF-DOC-01).
 Decision record: D1–D19 (see section 31).
 
 This document is the single source of truth for the VF-018 Account Transfers
-block. VF-018B–VF-018E must be implementable from it without repeating
-product discovery. Nothing described here exists in code yet: every endpoint,
-table, column, error, and test below is future work unless a later slice says
-otherwise. `docs/api-contract.md`, `docs/database-schema.md`,
-`docs/architecture.md`, `docs/roadmap.md`, and `README.md` are updated by the
-implementation slices, not by VF-018A.
+block and is kept as the approved contract and decision record. It was
+written before implementation, so its wording describes the planned work
+("future", "will") in places; the implemented behavior follows it. Where the
+current API, schema, or architecture is concerned, `docs/api-contract.md`,
+`docs/database-schema.md`, and `docs/architecture.md` describe the code as it
+is.
 
 ---
 
@@ -1287,7 +1290,8 @@ Read `apps/mobile/AGENTS.md` and the Expo SDK 57 documentation first.
 ## 30. Implementation slicing
 
 Each slice is a separate branch created from an up-to-date `main` after the
-previous slice is merged. Nothing below is implemented yet.
+previous slice is merged. All slices below through VF-018E are implemented
+(PRs #61–#65); the "Later" row remains future work.
 
 | Slice | Scope |
 |---|---|
