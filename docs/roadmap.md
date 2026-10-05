@@ -11,7 +11,8 @@ Mobile client (Expo / React Native)       ✅ Implemented for the core finance f
 Financial ledger / money-flow foundation  ✅ Implemented
 Account Transfers                         ✅ Implemented (VF-018, backend + mobile)
 Financial Overview                        ✅ Implemented (VF-019, backend + mobile); device refresh acceptance pending
-Goal ↔ Account semantics                  ⏳ Next — requires product discovery
+Smart Goals & Rules (VF-020)              ⏳ Next — contract approved (VF-020A); implementation not started
+Financial Connections & Import (VF-021)   Later — separate stream; discovery may run in parallel
 Web client                                Later
 
 Valor Finis has moved beyond a CRUD MVP into a financial ledger / money-flow foundation. It is not feature-complete.
@@ -150,7 +151,7 @@ The Financial Overview's Net (Income - Expenses) is recorded income minus record
 
 Financial ledger / money-flow foundation
 
-Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Money can also move between the user's own Accounts through transfers, and the Financial Overview summarizes recorded income versus expenses. Goals track savings progress on their own ledger. The next step is product discovery for Goal ↔ Account semantics.
+Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Money can also move between the user's own Accounts through transfers, and the Financial Overview summarizes recorded income versus expenses. Goals track savings progress on their own ledger. Goal ↔ Account semantics discovery is complete: the approved VF-020A contract defines the next implementation stages, none of which is implemented yet.
 
 5. Completed Milestones — Account Transfers and Financial Overview
 
@@ -158,17 +159,27 @@ Account Transfers (VF-018): approved contract (VF-018A, PR #61), schema foundati
 
 Financial Overview (VF-019): discovery (VF-019A), backend (VF-019B, PR #67), mobile (VF-019C, PR #68), and final integration/documentation (VF-019D). The contract and decision record are in docs/modules/financial-overview.md. Physical-device acceptance of the automatic refresh after Income/Expense create/update/delete and Receipt confirmation is pending verification on the first suitable real transaction. Supporting evidence, none of which is device acceptance: static inspection of the mutation call-site wiring, two backend integration tests covering specific Income and Expense mutation sequences, and a one-off local check of the invalidation helpers against a real TanStack QueryClient (scratch script not committed; not an automated regression test). Details are in docs/modules/financial-overview.md section 11.
 
-6. Next — Goal ↔ Account Semantics
+6. Next — VF-020 Smart Goals & Rules
 
-Goals are not connected to Accounts today. Before any cash integration, product discovery must answer an open question:
+Goals are not connected to Accounts today. Goal funding from Accounts is not implemented and must not be assumed until VF-020C ships.
 
-Is funding a Goal:
+Product discovery asked whether funding a Goal means (1) moving actual money out of an Account into a real destination, or (2) earmarking money that remains physically in the Account. The approved VF-020A contract (docs/modules/smart-goals-rules.md) answers it for VF-020: earmarking (an Account-linked reservation that moves no money) alongside the existing tracked-only Goal progress. Moving money is not part of VF-020, and internal rules never initiate payments or transfers.
 
-1. moving actual money out of an Account into a real destination, or
+The contract is approved for documentation and implementation planning only. Each stage needs its own implementation authorization:
 
-2. earmarking money that remains physically in the Account?
+1. VF-020A — Smart Goals & Rules contract (approved)
 
-This is not decided. Goal funding from Accounts is not implemented and must not be assumed.
+2. VF-020B — Goals hardening
+
+3. VF-020C — Goal Account allocations (reservations, as-of capacity)
+
+4. VF-020D — Goal priorities
+
+5. VF-020E — Rules engine: durable outbox, AUTO and CONFIRM internal allocation rules; unattended AUTO requires a durable periodic dispatcher
+
+6. VF-020F — Mobile completion and acceptance
+
+VF-021 — Financial Connections & Import is a separate strategic stream: consent-driven, read-only bank/application connections, import, reconciliation and statistics. Its discovery may run in parallel with VF-020; implementation is gated by provider, security, privacy and legal readiness.
 
 7. Later Capabilities
 
@@ -186,15 +197,19 @@ web client
 
 advanced receipt automation
 
+Push notifications and scheduled (calendar-based) rules are not part of the first VF-020 release; each requires its own prerequisites (see docs/modules/smart-goals-rules.md).
+
 8. Current Development Direction
 
 Current implemented finance foundation (including Account Transfers and the Financial Overview)
         ↓
-Goal/Account semantics discovery
+VF-020A Smart Goals & Rules contract (approved)
         ↓
-possible Goal cash/earmarking integration (only if discovery approves it)
+VF-020B Goals hardening → VF-020C Goal Account allocations → VF-020D Goal priorities → VF-020E Rules engine → VF-020F Mobile & acceptance
         ↓
 later product capabilities
+
+In parallel: VF-021 Financial Connections & Import discovery (implementation gated separately).
 
 The Financial Overview was deliberately prioritized before Goal ↔ Account semantics discovery (VF-019 decision Q10).
 

@@ -16,6 +16,10 @@ Users do not understand where their money goes and cannot control spending.
 
 ## MVP Scope
 
+The MVP Scope and Out of Scope lists below are the original MVP scope and are
+kept as historical context. The current planned scope is described in
+"Current Scope Update (2026-10-05)" at the end of this document.
+
 - add expense
 - view expenses
 - categorize expenses
@@ -50,3 +54,36 @@ Users do not understand where their money goes and cannot control spending.
 - filters work
 - limits are calculated
 - goals show progress
+
+---
+
+## Current Scope Update (2026-10-05)
+
+The product has grown beyond the original MVP scope (accounts, income,
+transfers, analytics and the Financial Overview are implemented). Two future
+milestones change the original "Out of Scope" items. Neither is implemented yet.
+
+### VF-020 Smart Goals & Rules (approved contract, not implemented)
+
+- The VF-020A contract is approved for documentation and implementation
+  planning: `docs/modules/smart-goals-rules.md`. Implementation is authorized
+  separately, stage by stage.
+- Goals will be able to reserve (earmark) money that stays in an Account,
+  alongside the existing tracked-only Goal progress. A reservation never moves
+  money.
+- "Automation" is now in planned scope only as internal allocation rules: each
+  rule runs in `AUTO` or `CONFIRM` mode, and both modes create or propose
+  internal Goal reservations only.
+- Bank and payment movement remains excluded: rules never initiate payments,
+  transfers, direct debits or any change to a bank account.
+
+### VF-021 Financial Connections & Import (separate future milestone)
+
+- "Banking integrations" are now planned as a separate milestone: consent-driven,
+  read-only connections to supported banks or financial applications, import,
+  reconciliation and statistics.
+- VF-021 is gated by provider, security, privacy and legal readiness. Its
+  discovery may run in parallel with VF-020; no integration is implemented or
+  authorized yet.
+
+AI recommendations and investments remain out of scope.
