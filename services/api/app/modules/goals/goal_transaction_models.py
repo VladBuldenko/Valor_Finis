@@ -46,9 +46,11 @@ class GoalTransactionModel(Base):
         goal_id: Goal this transaction belongs to. RESTRICT on delete, not
             CASCADE, so a Goal's financial history cannot silently
             disappear if the Goal row is deleted.
-        user_id: Owner of the goal. Denormalized, no FK, matching the
-            Supabase-owned-identity pattern used on every other
-            user-owned table (see budget_versions.user_id).
+        user_id: Owner of the goal. Denormalized: there is no users table
+            to reference, matching the Supabase-owned-identity pattern used
+            on every other user-owned table (see budget_versions.user_id).
+            Since VF-020B2 the composite FK (goal_id, user_id) ->
+            goals(id, user_id) requires it to equal the goal's owner.
         type: One of opening_balance, contribution, withdrawal. Enforced
             at the database level via CHECK, not only application
             validation. opening_balance is reserved for migration/system

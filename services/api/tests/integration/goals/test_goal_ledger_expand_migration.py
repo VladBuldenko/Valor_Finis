@@ -1,4 +1,5 @@
 import importlib.util
+import re
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -181,10 +182,13 @@ def test_expand_adds_constraints_and_keeps_simple_goal_fk(clean_database: None) 
 
     definitions = {name: definition for name, definition in rows}
     assert definitions["uq_goals_id_user_id"] == "UNIQUE (id, user_id)"
-    assert "'^[A-Z]{3}$'" in definitions["ck_goals_currency_format"]
-    assert "'active'" in definitions["ck_goals_status_valid"]
-    assert "'completed'" in definitions["ck_goals_status_valid"]
-    assert "'archived'" in definitions["ck_goals_status_valid"]
+    # The quoted literals of each CHECK are compared as exact sets, so an
+    # extra allowed status (for example 'draft') or a changed pattern fails.
+    currency_check = definitions["ck_goals_currency_format"]
+    assert set(re.findall(r"'([^']*)'", currency_check)) == {"^[A-Z]{3}$"}
+    assert " ~ " in currency_check
+    status_check = definitions["ck_goals_status_valid"]
+    assert set(re.findall(r"'([^']*)'", status_check)) == {"active", "completed", "archived"}
     assert definitions["fk_goal_transactions_goal_id_user_id"] == (
         "FOREIGN KEY (goal_id, user_id) REFERENCES goals(id, user_id) ON DELETE RESTRICT"
     )
@@ -317,7 +321,11 @@ def test_goal_currency_check_accepts_only_ascii_uppercase(
         ("completed", True),
         ("archived", True),
         ("paused", False),
+        ("draft", False),
+        ("deleted", False),
         ("ACTIVE", False),
+        ("Active", False),
+        ("", False),
     ],
 )
 def test_goal_status_check_accepts_only_known_statuses(

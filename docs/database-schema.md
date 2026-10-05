@@ -2852,7 +2852,14 @@ PostgreSQL
 │   └── FK category_id → categories (ON DELETE RESTRICT)
 │
 ├── goals
-│   └── PK id
+│   ├── PK id
+│   └── UNIQUE id + user_id (VF-020B2, composite FK target)
+│
+├── goal_transactions
+│   ├── PK id
+│   ├── FK goal_id → goals (ON DELETE RESTRICT)
+│   ├── FK (goal_id, user_id) → goals (id, user_id) (ON DELETE RESTRICT, VF-020B2)
+│   └── UNIQUE user_id + client_request_id (VF-020B2)
 │
 ├── accounts
 │   ├── PK id
