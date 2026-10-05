@@ -3,7 +3,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,6 +59,16 @@ class GoalTransactionModel(Base):
             opening_balance rows this is set to the source Goal's own
             created_at (not migration execution time), since the opening
             balance represents pre-existing state, not a new event.
+
+    Note (VF-020B2): the goal_transactions table also has three nullable
+    columns that are deliberately NOT mapped here yet - currency (backfilled
+    from the owning goal for existing rows), effective_date and
+    client_request_id (NULL for existing rows), plus the unique constraint
+    uq_goal_transactions_user_id_client_request_id on (user_id,
+    client_request_id). They are mapped in VF-020B3. Until then the ORM
+    neither selects nor writes them, so this code also runs against a
+    database where the VF-020B2 migration has not been applied yet; rows
+    created meanwhile get NULL in all three columns.
     """
 
     __tablename__ = "goal_transactions"
@@ -64,6 +83,15 @@ class GoalTransactionModel(Base):
             "ix_goal_transactions_goal_id_created_at",
             "goal_id",
             "created_at",
+        ),
+        # Composite ownership FK (VF-020B2): the row's user_id must equal
+        # its goal's user_id at the database level. The single-column
+        # goal_id FK below is kept as additional defense.
+        ForeignKeyConstraint(
+            ["goal_id", "user_id"],
+            ["goals.id", "goals.user_id"],
+            name="fk_goal_transactions_goal_id_user_id",
+            ondelete="RESTRICT",
         ),
     )
 

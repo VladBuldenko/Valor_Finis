@@ -840,7 +840,8 @@ VARCHAR(3)
 
 no
 
-Default EUR
+Default EUR; exactly three ASCII uppercase letters
+(ck_goals_currency_format, VF-020B2)
 
 target_date
 
@@ -856,7 +857,8 @@ VARCHAR(30)
 
 no
 
-Default active
+Default active; one of active, completed, archived
+(ck_goals_status_valid, VF-020B2)
 
 created_at
 
@@ -879,6 +881,21 @@ Constraints
 ck_goals_target_amount_positive
 
 target_amount > 0
+
+ck_goals_status_valid (VF-020B2)
+
+status IN ('active', 'completed', 'archived')
+
+ck_goals_currency_format (VF-020B2)
+
+currency ~ '^[A-Z]{3}$' - exactly three ASCII uppercase letters
+(PostgreSQL regex ranges are evaluated by character code, so non-ASCII
+letters such as "É" never match)
+
+uq_goals_id_user_id (VF-020B2)
+
+UNIQUE (id, user_id) - target of the goal_transactions composite
+ownership foreign key (see 6.1)
 
 Indexes
 
@@ -995,7 +1012,9 @@ UUID
 
 no
 
-Resource owner (denormalized, no FK, matching every other table)
+Resource owner (denormalized; there is no users table to reference).
+Since VF-020B2 the composite FK fk_goal_transactions_goal_id_user_id
+requires it to equal the owning goal's user_id.
 
 type
 
@@ -1032,10 +1051,47 @@ no
 For backfilled opening_balance rows, set to the source Goal's own
 created_at, not migration execution time
 
+currency
+
+VARCHAR(3)
+
+yes
+
+Added in VF-020B2. Existing rows were backfilled from the owning goal's
+currency. Not yet mapped or written by the application (see the
+VF-020B2 expand note below); becomes NOT NULL in VF-020B4.
+
+effective_date
+
+DATE
+
+yes
+
+Added in VF-020B2. NULL for every existing row: it was deliberately not
+derived from created_at, which is a recording time, not a proven
+business date. Not yet mapped or written by the application.
+
+client_request_id
+
+UUID
+
+yes
+
+Added in VF-020B2 as the foundation for idempotent goal transaction
+creation. NULL for every existing row. Not yet mapped or written by the
+application.
+
 Constraints
 
 ck_goal_transactions_amount_positive: amount > 0
 ck_goal_transactions_type_valid: type IN ('opening_balance', 'contribution', 'withdrawal')
+fk_goal_transactions_goal_id_user_id (VF-020B2): (goal_id, user_id) →
+goals(id, user_id), ON DELETE RESTRICT - a goal transaction can never
+belong to a different user than its goal. The single-column goal_id FK
+above is kept as additional defense.
+uq_goal_transactions_user_id_client_request_id (VF-020B2): UNIQUE
+(user_id, client_request_id) - a non-null key is unique per user; NULLs
+are distinct, so any number of rows may have no key
 
 Indexes
 
@@ -1051,6 +1107,20 @@ received exactly one opening_balance row (amount = that current_amount,
 created_at = the Goal's own created_at) when this table was introduced.
 Goals with current_amount == 0 received no row - no money is manufactured.
 See alembic/versions/e90a257f987b_add_goal_transactions_and_backfill.py.
+
+VF-020B2 expand note (temporary state): migration 1e921a4a4412 is the
+backward-compatible expand step of the VF-020B rollout. It added the three
+nullable columns above, backfilled currency for existing rows, and added
+the goals CHECKs, uq_goals_id_user_id, the composite ownership FK and the
+client_request_id uniqueness. Until VF-020B3, the application does not map
+the three new columns: SQLAlchemy neither selects nor writes them, so the
+same code also runs against a database where 1e921a4a4412 has not been
+applied yet. During that window, goal transactions created by the
+application get NULL in currency, effective_date and client_request_id.
+VF-020B3 maps the columns and always writes currency; VF-020B4 fills any
+remaining currency NULLs from the owning goal and then makes currency
+NOT NULL. Downgrading 1e921a4a4412 drops the three columns and their
+values.
 
 7. Accounts
 
@@ -2359,6 +2429,7 @@ budgets
 goals
    │
    └──< goal_transactions.goal_id
+        (also (goal_id, user_id) → goals(id, user_id), VF-020B2)
 
 accounts
    │
@@ -2446,6 +2517,8 @@ Expense.amount > 0
 Budget.limit_amount > 0
 
 Goal.target_amount > 0
+Goal.status is one of active/completed/archived (VF-020B2)
+Goal.currency is exactly three ASCII uppercase letters (VF-020B2)
 
 Receipt.status is valid
 Receipt.total_amount_detected > 0 when present
@@ -2462,6 +2535,9 @@ BudgetVersion.change_reason is valid
 
 GoalTransaction.amount > 0
 GoalTransaction.type is valid
+GoalTransaction.user_id equals its goal's user_id (composite FK, VF-020B2)
+At most one GoalTransaction per (user_id, client_request_id) when the key
+is not NULL (VF-020B2)
 
 Account.type is one of checking/savings/cash
 Account.status is one of active/archived
