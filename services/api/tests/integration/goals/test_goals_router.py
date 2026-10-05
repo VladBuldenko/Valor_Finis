@@ -489,7 +489,9 @@ def test_create_goal_endpoint_normalizes_lowercase_currency(
 # - invalid_currency: currency that is not exactly three ASCII letters.
 # Returns:
 # - None. The test passes if the request is rejected and no goal exists.
-@pytest.mark.parametrize("invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR"])
+@pytest.mark.parametrize(
+    "invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR", "ıNR", "uſd"],
+)
 def test_create_goal_endpoint_rejects_invalid_currency(
     client: TestClient,
     clean_database: None,
@@ -516,7 +518,9 @@ def test_create_goal_endpoint_rejects_invalid_currency(
 # - invalid_currency: currency that is not exactly three ASCII letters.
 # Returns:
 # - None. The test passes if the request is rejected and the currency is still EUR.
-@pytest.mark.parametrize("invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR"])
+@pytest.mark.parametrize(
+    "invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR", "ıNR", "uſd"],
+)
 def test_update_goal_endpoint_rejects_invalid_currency(
     client: TestClient,
     clean_database: None,

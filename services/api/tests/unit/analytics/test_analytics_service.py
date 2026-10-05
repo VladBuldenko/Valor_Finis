@@ -2988,7 +2988,7 @@ def test_get_goal_progress_calculates_remaining_amount_and_progress_percent(
         ),
     ]
 
-    def fake_get_goals(db_session: object, user_id=None):
+    def fake_get_goals(db_session: object, user_id):
         return goals
 
     def fake_get_ledger_balances_for_user(db_session: object, user_id):
@@ -3056,10 +3056,15 @@ def test_analytics_service_returns_empty_results_when_no_data_exists(
         "get_categories",
         fake_get_empty_items,
     )
+    # get_goals requires user_id (VF-020B1), so it gets its own fake with
+    # the same mandatory parameter instead of the shared optional one.
+    def fake_get_no_goals(db_session: object, user_id):
+        return []
+
     monkeypatch.setattr(
         analytics_service.goals_repository,
         "get_goals",
-        fake_get_empty_items,
+        fake_get_no_goals,
     )
 
     def fake_get_ledger_balances_for_user(db_session: object, user_id):

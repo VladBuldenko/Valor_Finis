@@ -321,6 +321,7 @@ def test_create_goal_transaction_endpoint_rejects_contribution_to_archived_goal(
         headers=auth_headers(user_id),
     )
     assert archive_response.status_code == 200, archive_response.text
+    assert archive_response.json()["status"] == "archived"
 
     response = client.post(
         f"/api/v1/goals/{goal['id']}/transactions",
@@ -351,11 +352,13 @@ def test_create_goal_transaction_endpoint_allows_withdrawal_from_archived_goal(
     user_id = str(uuid4())
     goal = create_goal(client=client, user_id=user_id)
     create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=100)
-    client.patch(
+    archive_response = client.patch(
         f"/api/v1/goals/{goal['id']}",
         json={"status": "archived"},
         headers=auth_headers(user_id),
     )
+    assert archive_response.status_code == 200, archive_response.text
+    assert archive_response.json()["status"] == "archived"
 
     response = client.post(
         f"/api/v1/goals/{goal['id']}/transactions",
@@ -380,11 +383,13 @@ def test_create_goal_transaction_endpoint_allows_contribution_to_completed_goal(
 ) -> None:
     user_id = str(uuid4())
     goal = create_goal(client=client, user_id=user_id)
-    client.patch(
+    complete_response = client.patch(
         f"/api/v1/goals/{goal['id']}",
         json={"status": "completed"},
         headers=auth_headers(user_id),
     )
+    assert complete_response.status_code == 200, complete_response.text
+    assert complete_response.json()["status"] == "completed"
 
     response = client.post(
         f"/api/v1/goals/{goal['id']}/transactions",

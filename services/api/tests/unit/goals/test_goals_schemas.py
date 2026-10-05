@@ -234,7 +234,9 @@ def test_goal_create_rejects_invalid_status() -> None:
 # Goal currency codes that both GoalCreate and GoalUpdate must reject
 # (VF-020B1): too short, too long, digits/symbols, non-ASCII letters, and
 # whitespace (" EUR" fails the 3-character length check before
-# normalization; " EU" is trimmed to an invalid 2-letter code).
+# normalization; " EU" is trimmed to an invalid 2-letter code). "ıNR" and
+# "uſd" contain non-ASCII letters that str.upper() would turn into ASCII
+# ("INR", "USD"), so they prove the ASCII check runs on the input.
 INVALID_GOAL_CURRENCIES = [
     "EU",
     "EURO",
@@ -243,6 +245,8 @@ INVALID_GOAL_CURRENCIES = [
     "ÉUR",
     "éur",
     "ÄÖÜ",
+    "ıNR",
+    "uſd",
     " EU",
     " EUR",
     "E R",

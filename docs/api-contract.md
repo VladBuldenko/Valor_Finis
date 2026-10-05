@@ -703,8 +703,8 @@ currency
 
 no
 
-default EUR; trimmed and normalized to uppercase; must then be exactly
-three ASCII letters A-Z (VF-020B1)
+default EUR; trimmed; must contain only ASCII characters; normalized to
+uppercase; must then be exactly three ASCII letters A-Z (VF-020B1)
 
 target_date
 
@@ -724,7 +724,9 @@ current_amount in this request is rejected (422).
 Goal currency validation (VF-020B1): "eur" is accepted and stored as
 "EUR". Any value that is not exactly three ASCII letters after trimming
 and uppercasing - for example "EU", "EURO", "12$", "E1R" or "ÉUR" - is
-rejected with 422. A value with surrounding whitespace that is longer
+rejected with 422. Input containing any non-ASCII character is rejected
+before uppercasing, so values such as "ıNR" or "uſd" are also 422 even
+though uppercasing would turn them into "INR" or "USD". A value with surrounding whitespace that is longer
 than three characters (for example " EUR") fails the three-character
 length check and is also rejected with 422. The same rule applies to
 currency in PATCH /api/v1/goals/{goal_id}.

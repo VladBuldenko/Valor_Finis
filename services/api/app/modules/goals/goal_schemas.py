@@ -20,18 +20,27 @@ GOAL_CURRENCY_CODE_PATTERN = re.compile(r"[A-Z]{3}")
 # Normalizes and validates a Goal currency code (VF-020B1).
 # This function exists because a Goal currency must be a plain three-letter
 # ASCII code: "eur" is accepted as "EUR", while values such as "12$",
-# "E1R" or "ÉUR" are rejected with a validation error (422). It is
+# "E1R", "ÉUR" or "ıNR" are rejected with a validation error (422). It is
 # deliberately stricter than the Account/Income/Expense validators, whose
 # str.isalpha() check also accepts non-ASCII letters; those are unchanged.
+# The input is checked for non-ASCII characters BEFORE uppercasing, because
+# str.upper() maps a few non-ASCII letters to ASCII ("ı" -> "I",
+# "ſ" -> "S") and would otherwise let "ıNR" pass as "INR".
 # Parameters:
 # - value: currency code received from the client, already length-checked
 #   by the field's min_length/max_length constraints.
 # Returns:
 # - The normalized uppercase currency code.
 # Raises:
-# - ValueError: when the normalized value is not exactly three ASCII letters.
+# - ValueError: when the trimmed input contains a non-ASCII character or
+#   the normalized value is not exactly three ASCII letters.
 def normalize_and_validate_goal_currency_code(value: str) -> str:
-    normalized = value.strip().upper()
+    stripped = value.strip()
+
+    if not stripped.isascii():
+        raise ValueError("currency must be exactly 3 ASCII letters (A-Z).")
+
+    normalized = stripped.upper()
 
     if GOAL_CURRENCY_CODE_PATTERN.fullmatch(normalized) is None:
         raise ValueError("currency must be exactly 3 ASCII letters (A-Z).")
@@ -104,9 +113,13 @@ class GoalBase(BaseModel):
         Why:
             Prevents storing the same currency in different formats.
             GoalResponse inherits this lenient normalization on purpose:
-            reading an already stored goal must never fail validation.
-            Client input is checked strictly by GoalCreate and GoalUpdate,
-            which override this validator (VF-020B1).
+            it does not enforce the strict ASCII rule that GoalCreate and
+            GoalUpdate apply to client input (VF-020B1), so a goal stored
+            earlier with a three-character value that fails the new rule
+            (for example "12$") stays readable. The field's length
+            constraints still apply to responses; the quality of stored
+            historical currency data is verified separately by the
+            VF-020B2 production preflight.
 
         Parameters:
             value: Currency code received from the client.
