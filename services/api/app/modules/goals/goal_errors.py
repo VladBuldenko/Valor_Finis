@@ -29,6 +29,23 @@ class GoalInsufficientFundsError(Exception):
     pass
 
 
+class GoalArchivedError(Exception):
+    """
+    Raised when a contribution is attempted on an archived goal.
+
+    What:
+        Represents a forbidden contribution in the goals module.
+
+    Why:
+        An archived goal is retired (VF-020A P10): it keeps its full
+        transaction history and still allows withdrawals, but it must not
+        receive new money. The check runs in the service while the goal row
+        is locked, so it cannot race with a concurrent archive.
+    """
+
+    pass
+
+
 class GoalCurrencyImmutableError(Exception):
     """
     Raised when an actual currency change is attempted on a goal that

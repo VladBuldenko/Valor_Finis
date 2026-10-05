@@ -298,3 +298,98 @@ def test_goal_transactions_endpoint_has_no_mutation_methods(
     # Assert
     assert patch_response.status_code == 405
     assert delete_response.status_code == 405
+
+
+# Tests that the API rejects a contribution to an archived goal with 409
+# and writes nothing (VF-020B1, VF-020A P10).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the response is 409 with the archived-goal
+#   message and the transaction history is unchanged.
+def test_create_goal_transaction_endpoint_rejects_contribution_to_archived_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    goal = create_goal(client=client, user_id=user_id)
+    create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=100)
+    archive_response = client.patch(
+        f"/api/v1/goals/{goal['id']}",
+        json={"status": "archived"},
+        headers=auth_headers(user_id),
+    )
+    assert archive_response.status_code == 200, archive_response.text
+
+    response = client.post(
+        f"/api/v1/goals/{goal['id']}/transactions",
+        json={"type": "contribution", "amount": 50},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Archived goal cannot receive contributions."
+    history = client.get(
+        f"/api/v1/goals/{goal['id']}/transactions",
+        headers=auth_headers(user_id),
+    ).json()
+    assert len(history) == 1
+
+
+# Tests that the API still allows a withdrawal from an archived goal
+# (VF-020B1, VF-020A P10).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the withdrawal is created with 201.
+def test_create_goal_transaction_endpoint_allows_withdrawal_from_archived_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    goal = create_goal(client=client, user_id=user_id)
+    create_goal_transaction(client=client, user_id=user_id, goal_id=goal["id"], amount=100)
+    client.patch(
+        f"/api/v1/goals/{goal['id']}",
+        json={"status": "archived"},
+        headers=auth_headers(user_id),
+    )
+
+    response = client.post(
+        f"/api/v1/goals/{goal['id']}/transactions",
+        json={"type": "withdrawal", "amount": 40},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["type"] == "withdrawal"
+
+
+# Tests that the API still accepts a contribution to a completed goal
+# (VF-020B1 leaves VF-020A P11 unchanged).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the contribution is created with 201.
+def test_create_goal_transaction_endpoint_allows_contribution_to_completed_goal(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    goal = create_goal(client=client, user_id=user_id)
+    client.patch(
+        f"/api/v1/goals/{goal['id']}",
+        json={"status": "completed"},
+        headers=auth_headers(user_id),
+    )
+
+    response = client.post(
+        f"/api/v1/goals/{goal['id']}/transactions",
+        json={"type": "contribution", "amount": 25},
+        headers=auth_headers(user_id),
+    )
+
+    assert response.status_code == 201, response.text

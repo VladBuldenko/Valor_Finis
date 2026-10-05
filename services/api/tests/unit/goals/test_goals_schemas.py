@@ -229,3 +229,104 @@ def test_goal_create_rejects_invalid_status() -> None:
     # Act / Assert
     with pytest.raises(ValidationError):
         GoalCreate(**invalid_data)
+
+
+# Goal currency codes that both GoalCreate and GoalUpdate must reject
+# (VF-020B1): too short, too long, digits/symbols, non-ASCII letters, and
+# whitespace (" EUR" fails the 3-character length check before
+# normalization; " EU" is trimmed to an invalid 2-letter code).
+INVALID_GOAL_CURRENCIES = [
+    "EU",
+    "EURO",
+    "12$",
+    "E1R",
+    "ÉUR",
+    "éur",
+    "ÄÖÜ",
+    " EU",
+    " EUR",
+    "E R",
+    "",
+]
+
+
+# Tests that valid Goal currency codes are accepted and normalized to
+# uppercase on both create and update (VF-020B1).
+# Parameters:
+# - raw_currency: currency code as sent by the client.
+# - expected: normalized currency code.
+# Returns:
+# - None. The test passes if both schemas store the normalized code.
+@pytest.mark.parametrize(
+    ("raw_currency", "expected"),
+    [("EUR", "EUR"), ("eur", "EUR"), ("uSd", "USD")],
+)
+def test_goal_schemas_accept_and_normalize_ascii_currency(
+    raw_currency: str,
+    expected: str,
+) -> None:
+    created = GoalCreate(
+        name="Vacation",
+        target_amount=Decimal("2000"),
+        currency=raw_currency,
+    )
+    updated = GoalUpdate(currency=raw_currency)
+
+    assert created.currency == expected
+    assert updated.currency == expected
+
+
+# Tests that GoalCreate rejects every currency that is not exactly three
+# ASCII letters after normalization (VF-020B1).
+# Parameters:
+# - raw_currency: invalid currency code.
+# Returns:
+# - None. The test passes if ValidationError is raised.
+@pytest.mark.parametrize("raw_currency", INVALID_GOAL_CURRENCIES)
+def test_goal_create_rejects_invalid_currency(raw_currency: str) -> None:
+    with pytest.raises(ValidationError):
+        GoalCreate(
+            name="Vacation",
+            target_amount=Decimal("2000"),
+            currency=raw_currency,
+        )
+
+
+# Tests that GoalUpdate rejects every currency that is not exactly three
+# ASCII letters after normalization (VF-020B1).
+# Parameters:
+# - raw_currency: invalid currency code.
+# Returns:
+# - None. The test passes if ValidationError is raised.
+@pytest.mark.parametrize("raw_currency", INVALID_GOAL_CURRENCIES)
+def test_goal_update_rejects_invalid_currency(raw_currency: str) -> None:
+    with pytest.raises(ValidationError):
+        GoalUpdate(currency=raw_currency)
+
+
+# Tests that GoalResponse does not reject an already stored currency that
+# the stricter input validation would refuse (VF-020B1).
+# This test exists because goals stored before VF-020B1 may hold such a
+# value, and reading them (GET /api/v1/goals) must keep working instead of
+# failing response validation with a 500. Only client input is strict.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if the response keeps the stored value.
+def test_goal_response_accepts_stored_legacy_currency() -> None:
+    now = datetime.now(timezone.utc)
+
+    response = GoalResponse(
+        id=uuid4(),
+        user_id=uuid4(),
+        name="Legacy goal",
+        target_amount=Decimal("100"),
+        current_amount=Decimal("0"),
+        currency="12$",
+        target_date=None,
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert response.currency == "12$"
