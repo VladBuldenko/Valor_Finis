@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal, Optional
@@ -10,6 +11,41 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+# Exactly three ASCII uppercase letters. Python's [A-Z] never matches
+# non-ASCII letters, unlike str.isalpha().
+GOAL_CURRENCY_CODE_PATTERN = re.compile(r"[A-Z]{3}")
+
+
+# Normalizes and validates a Goal currency code (VF-020B1).
+# This function exists because a Goal currency must be a plain three-letter
+# ASCII code: "eur" is accepted as "EUR", while values such as "12$",
+# "E1R", "ÉUR" or "ıNR" are rejected with a validation error (422). It is
+# deliberately stricter than the Account/Income/Expense validators, whose
+# str.isalpha() check also accepts non-ASCII letters; those are unchanged.
+# The input is checked for non-ASCII characters BEFORE uppercasing, because
+# str.upper() maps a few non-ASCII letters to ASCII ("ı" -> "I",
+# "ſ" -> "S") and would otherwise let "ıNR" pass as "INR".
+# Parameters:
+# - value: currency code received from the client, already length-checked
+#   by the field's min_length/max_length constraints.
+# Returns:
+# - The normalized uppercase currency code.
+# Raises:
+# - ValueError: when the trimmed input contains a non-ASCII character or
+#   the normalized value is not exactly three ASCII letters.
+def normalize_and_validate_goal_currency_code(value: str) -> str:
+    stripped = value.strip()
+
+    if not stripped.isascii():
+        raise ValueError("currency must be exactly 3 ASCII letters (A-Z).")
+
+    normalized = stripped.upper()
+
+    if GOAL_CURRENCY_CODE_PATTERN.fullmatch(normalized) is None:
+        raise ValueError("currency must be exactly 3 ASCII letters (A-Z).")
+
+    return normalized
 
 
 class GoalBase(BaseModel):
@@ -76,6 +112,14 @@ class GoalBase(BaseModel):
 
         Why:
             Prevents storing the same currency in different formats.
+            GoalResponse inherits this lenient normalization on purpose:
+            it does not enforce the strict ASCII rule that GoalCreate and
+            GoalUpdate apply to client input (VF-020B1), so a goal stored
+            earlier with a three-character value that fails the new rule
+            (for example "12$") stays readable. The field's length
+            constraints still apply to responses; the quality of stored
+            historical currency data is verified separately by the
+            VF-020B2 production preflight.
 
         Parameters:
             value: Currency code received from the client.
@@ -103,6 +147,30 @@ class GoalCreate(GoalBase):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        """
+        Normalizes and validates the currency code of a new goal.
+
+        What:
+            Converts currency values such as eur to EUR and rejects
+            anything that is not exactly three ASCII letters.
+
+        Why:
+            Prevents storing the same currency in different formats and
+            prevents invalid codes such as 12$ or ÉUR from being stored
+            (VF-020B1). Overrides GoalBase's lenient normalizer for input.
+
+        Parameters:
+            value: Currency code received from the client.
+
+        Returns:
+            Uppercase three-letter ASCII currency code.
+        """
+
+        return normalize_and_validate_goal_currency_code(value)
 
 
 class GoalUpdate(BaseModel):
@@ -160,25 +228,27 @@ class GoalUpdate(BaseModel):
     @classmethod
     def normalize_currency(cls, value: Optional[str]) -> Optional[str]:
         """
-        Normalizes the currency code to uppercase.
+        Normalizes and validates the currency code.
 
         What:
-            Converts currency values such as eur to EUR.
+            Converts currency values such as eur to EUR and rejects
+            anything that is not exactly three ASCII letters.
 
         Why:
-            Prevents storing the same currency in different formats.
+            Prevents storing the same currency in different formats and
+            prevents invalid codes such as 12$ or ÉUR from being stored.
 
         Parameters:
             value: Optional currency code received from the client.
 
         Returns:
-            Uppercase currency code or None.
+            Uppercase three-letter ASCII currency code or None.
         """
 
         if value is None:
             return value
 
-        return value.strip().upper()
+        return normalize_and_validate_goal_currency_code(value)
 
     @model_validator(mode="after")
     def validate_update_payload(self) -> "GoalUpdate":

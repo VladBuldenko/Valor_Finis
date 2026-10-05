@@ -174,6 +174,8 @@ Goals
 
 Owns savings goals and their GoalTransaction ledger (opening balance, contributions, withdrawals). A Goal's balance is derived from its ledger. Goals are not connected to Accounts.
 
+Every Goal read and write is scoped to the authenticated user; the goals repository has no query path that returns other users' goals (VF-020B1). An archived Goal rejects new contributions with 409 but still allows withdrawals; active and completed Goals accept both. Transaction writes and status changes lock the owned Goal row (SELECT ... FOR UPDATE), so a contribution racing an archive is serialized and the outcome is always consistent.
+
 Accounts
 
 Owns Accounts (checking, savings, cash) and the AccountTransaction ledger: opening balance, manual adjustments, and the Income/Expense/Transfer projections. An Account's balance is derived from its ledger and may be negative.

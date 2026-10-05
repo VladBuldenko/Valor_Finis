@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals.goal_errors import (
+    GoalArchivedError,
     GoalCurrencyImmutableError,
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
@@ -255,16 +256,24 @@ def delete_goal(
 # transaction:
 #   1. lock the owned Goal row (SELECT ... FOR UPDATE) so two concurrent
 #      writes never validate against the same stale balance;
-#   2. calculate the current ledger balance from goal_transactions;
-#   3. for a withdrawal, reject if it would take the balance negative;
-#   4. insert the new append-only transaction;
-#   5. commit once.
+#   2. reject a contribution to an archived goal (VF-020A P10);
+#   3. calculate the current ledger balance from goal_transactions;
+#   4. for a withdrawal, reject if it would take the balance negative;
+#   5. insert the new append-only transaction;
+#   6. commit once.
 # The Goal row itself is never written here (VF-016G) - its balance is
 # never stored anywhere, only ever computed from goal_transactions, so it
 # cannot drift from the ledger. The row lock is still essential: it is
 # what serializes this write against a concurrent one on the same Goal
 # (see get_goal_by_id_for_update), independent of whether anything on the
 # Goal row itself changes.
+#
+# Archived-goal rule (VF-020B1): an archived goal accepts withdrawals but
+# no contributions; active and completed goals accept both. The status is
+# read from the locked row, and archiving (update_goal) takes the same row
+# lock, so a contribution and a concurrent archive are serialized: either
+# the contribution commits first and the archive follows, or the archive
+# commits first and the contribution is rejected.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
@@ -274,6 +283,7 @@ def delete_goal(
 # - GoalTransactionResponse for the newly created transaction.
 # Raises:
 # - GoalNotFoundError: when goal does not exist or does not belong to the user.
+# - GoalArchivedError: when a contribution targets an archived goal.
 # - GoalInsufficientFundsError: when a withdrawal exceeds the current balance.
 def create_goal_transaction(
     db_session: Session,
@@ -281,13 +291,15 @@ def create_goal_transaction(
     transaction_data: GoalTransactionCreate,
     user_id: UUID,
 ) -> GoalTransactionResponse:
-    # The return value is not needed - only the row lock and the
-    # existence/ownership check this call performs matter here.
-    goal_repository.get_goal_by_id_for_update(
+    goal_model = goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
         goal_id=goal_id,
         user_id=user_id,
     )
+
+    if goal_model.status == "archived" and transaction_data.type == "contribution":
+        db_session.rollback()
+        raise GoalArchivedError()
 
     current_balance = goal_transaction_repository.calculate_ledger_balance(
         db_session=db_session,

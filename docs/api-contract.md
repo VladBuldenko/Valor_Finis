@@ -703,7 +703,8 @@ currency
 
 no
 
-default EUR; normalized to uppercase
+default EUR; trimmed; must contain only ASCII characters; normalized to
+uppercase; must then be exactly three ASCII letters A-Z (VF-020B1)
 
 target_date
 
@@ -719,6 +720,16 @@ active, completed, archived; default active; never auto-derived
 
 Every new Goal is created with current_amount = 0.00. Sending
 current_amount in this request is rejected (422).
+
+Goal currency validation (VF-020B1): "eur" is accepted and stored as
+"EUR". Any value that is not exactly three ASCII letters after trimming
+and uppercasing - for example "EU", "EURO", "12$", "E1R" or "ÉUR" - is
+rejected with 422. Input containing any non-ASCII character is rejected
+before uppercasing, so values such as "ıNR" or "uſd" are also 422 even
+though uppercasing would turn them into "INR" or "USD". A value with surrounding whitespace that is longer
+than three characters (for example " EUR") fails the three-character
+length check and is also rejected with 422. The same rule applies to
+currency in PATCH /api/v1/goals/{goal_id}.
 
 Update Goal
 
@@ -842,10 +853,21 @@ Conflict ("Withdrawal exceeds the current goal balance.").
 Overfunding above target_amount is allowed for contributions - there is no
 upper bound on a Goal's balance.
 
+Archived goals (VF-020B1): a contribution to a Goal whose status is
+archived is rejected with 409 Conflict ("Archived goal cannot receive
+contributions.") and nothing is written. Withdrawals from an archived Goal
+remain allowed under the same balance rule (a withdrawal above the balance
+is still 409). Active and completed Goals accept both contributions and
+withdrawals. Existing transactions of an archived Goal are never changed.
+
 Every write locks the owned Goal row (SELECT ... FOR UPDATE) before
-calculating the balance from transaction history, so two concurrent
-requests against the same Goal are serialized and can never both validate
-against the same stale balance.
+checking the Goal's status and calculating the balance from transaction
+history, so two concurrent requests against the same Goal are serialized
+and can never both validate against the same stale balance. Archiving a
+Goal (PATCH status="archived") takes the same row lock, so a contribution
+and a concurrent archive are serialized: either the contribution commits
+first and the archive follows, or the archive commits first and the
+contribution is rejected with 409.
 
 Transactions are append-only: there is no PATCH or DELETE for an existing
 transaction. A correction is represented later by a new, opposite

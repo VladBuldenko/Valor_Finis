@@ -40,6 +40,7 @@ from app.modules.fx.fx_errors import (
     FxRateUnavailableError,
 )
 from app.modules.goals.goal_errors import (
+    GoalArchivedError,
     GoalCurrencyImmutableError,
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
@@ -182,6 +183,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalInsufficientFundsError: (
         status.HTTP_409_CONFLICT,
         "Withdrawal exceeds the current goal balance.",
+    ),
+    GoalArchivedError: (
+        status.HTTP_409_CONFLICT,
+        "Archived goal cannot receive contributions.",
     ),
     GoalCurrencyImmutableError: (
         status.HTTP_409_CONFLICT,

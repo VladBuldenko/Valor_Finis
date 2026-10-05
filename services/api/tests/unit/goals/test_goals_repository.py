@@ -1,6 +1,7 @@
+import inspect
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -202,3 +203,18 @@ def test_goal_model_has_no_current_amount_column() -> None:
     column_names = {column.name for column in GoalModel.__table__.columns}
 
     assert "current_amount" not in column_names
+
+
+# Tests that get_goals has a mandatory user scope (VF-020B1).
+# This test exists because the repository used to accept user_id=None and
+# then returned every user's goals. The parameter must now be required and
+# typed as a UUID, so no caller can reach an unscoped query by omission.
+# Parameters:
+# - None.
+# Returns:
+# - None. The test passes if user_id has no default and is typed as UUID.
+def test_get_goals_requires_user_id() -> None:
+    user_id_parameter = inspect.signature(goal_repository.get_goals).parameters["user_id"]
+
+    assert user_id_parameter.default is inspect.Parameter.empty
+    assert user_id_parameter.annotation is UUID

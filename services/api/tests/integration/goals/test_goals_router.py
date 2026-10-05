@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.helpers import auth_headers, create_goal, create_goal_transaction
@@ -455,3 +456,85 @@ def test_delete_goal_endpoint_rejects_other_user_goal(
     # Assert
     assert response.status_code == 404
     assert response.json()["detail"] == "Goal not found."
+
+
+# Tests that the API normalizes a lowercase Goal currency to uppercase
+# (VF-020B1).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the goal is created with currency EUR.
+def test_create_goal_endpoint_normalizes_lowercase_currency(
+    client: TestClient,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/goals",
+        headers=auth_headers(user_id),
+        json={"name": "Vacation", "target_amount": 2000, "currency": "eur"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["currency"] == "EUR"
+
+
+# Tests that the API rejects an invalid Goal currency on create with 422
+# and stores nothing (VF-020B1).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - invalid_currency: currency that is not exactly three ASCII letters.
+# Returns:
+# - None. The test passes if the request is rejected and no goal exists.
+@pytest.mark.parametrize(
+    "invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR", "ıNR", "uſd"],
+)
+def test_create_goal_endpoint_rejects_invalid_currency(
+    client: TestClient,
+    clean_database: None,
+    invalid_currency: str,
+) -> None:
+    user_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/goals",
+        headers=auth_headers(user_id),
+        json={"name": "Vacation", "target_amount": 2000, "currency": invalid_currency},
+    )
+
+    assert response.status_code == 422
+    goals_response = client.get("/api/v1/goals", headers=auth_headers(user_id))
+    assert goals_response.json() == []
+
+
+# Tests that the API rejects an invalid Goal currency on update with 422
+# and leaves the goal unchanged (VF-020B1).
+# Parameters:
+# - client: FastAPI test client.
+# - clean_database: fixture that clears database tables before and after the test.
+# - invalid_currency: currency that is not exactly three ASCII letters.
+# Returns:
+# - None. The test passes if the request is rejected and the currency is still EUR.
+@pytest.mark.parametrize(
+    "invalid_currency", ["EU", "EURO", "12$", "E1R", "ÉUR", "ıNR", "uſd"],
+)
+def test_update_goal_endpoint_rejects_invalid_currency(
+    client: TestClient,
+    clean_database: None,
+    invalid_currency: str,
+) -> None:
+    user_id = str(uuid4())
+    goal = create_goal(client=client, user_id=user_id)
+
+    response = client.patch(
+        f"/api/v1/goals/{goal['id']}",
+        headers=auth_headers(user_id),
+        json={"currency": invalid_currency},
+    )
+
+    assert response.status_code == 422
+    goals_response = client.get("/api/v1/goals", headers=auth_headers(user_id))
+    assert goals_response.json()[0]["currency"] == "EUR"

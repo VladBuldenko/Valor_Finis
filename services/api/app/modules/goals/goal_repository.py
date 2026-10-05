@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -41,24 +40,26 @@ def create_goal(
     return goal_model
 
 
-# Returns financial goal database records.
+# Returns the financial goal database records of one user.
 # This function exists to isolate PostgreSQL read operations
-# from business logic and HTTP handling.
+# from business logic and HTTP handling. The user scope is mandatory
+# (VF-020B1): there is no "all users" query path, so a caller can never
+# read another user's goals by omitting the user id.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
-# - user_id: optional user identifier used to filter goals.
+# - user_id: authenticated user identifier whose goals are returned.
 # Returns:
-# - List of GoalModel instances from the database.
+# - List of the user's GoalModel instances, newest first.
 def get_goals(
     db_session: Session,
-    user_id: Optional[UUID] = None,
+    user_id: UUID,
 ) -> list[GoalModel]:
-    query = db_session.query(GoalModel)
-
-    if user_id is not None:
-        query = query.filter(GoalModel.user_id == user_id)
-
-    return query.order_by(GoalModel.created_at.desc()).all()
+    return (
+        db_session.query(GoalModel)
+        .filter(GoalModel.user_id == user_id)
+        .order_by(GoalModel.created_at.desc())
+        .all()
+    )
 
 
 # Returns one financial goal by goal id and authenticated user id.
