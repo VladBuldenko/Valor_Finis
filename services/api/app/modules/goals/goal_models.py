@@ -3,7 +3,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Numeric, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +52,21 @@ class GoalModel(Base):
 
     __table_args__ = (
         CheckConstraint("target_amount > 0", name="ck_goals_target_amount_positive"),
+        # VF-020B2: database-level guards for values the API already
+        # validates - the status literal and a currency of exactly three
+        # ASCII uppercase letters.
+        CheckConstraint(
+            "status IN ('active','completed','archived')",
+            name="ck_goals_status_valid",
+        ),
+        CheckConstraint(
+            "currency ~ '^[A-Z]{3}$'",
+            name="ck_goals_currency_format",
+        ),
+        # Composite-unique FK target (VF-020B2): lets goal_transactions
+        # carry a (goal_id, user_id) -> goals(id, user_id) foreign key, so a
+        # goal transaction can never belong to another user than its goal.
+        UniqueConstraint("id", "user_id", name="uq_goals_id_user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
