@@ -131,7 +131,7 @@ P34 (reversal after a trigger change) is **superseded by P47**.
 | P37 | Invalid rule → `blocked` executions | PROPOSED | VF-020E |
 | P38 | Credit-card / liability accounts outside VF-020 | PROPOSED / EXT research | VF-021 |
 | P41–P43 | User timezone (deferred); v1 triggers = Income events + outbox + drain; in-app channel | PROPOSED | VF-020E |
-| **P52** | Strict per-user FIFO with head-of-line blocking by failed events | **PROPOSED**, to be finalized during dispatcher implementation and review | VF-020E |
+| **P52** | Strict per-user FIFO with head-of-line blocking by unfinished events, including `failed_retryable` events waiting for backoff; events deferred by a future `not_before` do not block | **PROPOSED**, to be finalized during dispatcher implementation and review | VF-020E |
 | P53 | Retention of processed events as provenance | PROPOSED (VF-021 data: EXT) | VF-020E / VF-021 |
 | P57 | Goal deletion referenced by a rule → 409; rule deletion only without executions | PROPOSED | VF-020C/E |
 | P58 | `effective_date` of linked rows = today only | PROPOSED | VF-020B/C |
@@ -281,6 +281,11 @@ unallocated(A)             = balance_as_of(A, D) − reserved(A)
 reservable(A)              = unallocated(A) − scheduled_outflows(A, D) − planned_transfer_out(A)
 active_holds(A)            = Σ planned item amounts on A of proposals in 'awaiting_confirmation' with expires_at > now
 rule_capacity(A)           = reservable(A) − floor(A) − active_holds(A)
+                             -- AUTO executions and creation of NEW CONFIRM proposals
+prior_holds(A, X)          = Σ active holds on A of proposals ordered before proposal X (§11.3);
+                             X's own hold is never included
+confirm_capacity(A, X)     = reservable(A) − floor(A) − prior_holds(A, X)
+                             -- confirmation of an existing proposal X
 ```
 
 - `balance_as_of` is not a competing balance: it is the same ledger read with a
@@ -290,8 +295,11 @@ rule_capacity(A)           = reservable(A) − floor(A) − active_holds(A)
   Transfer requires `effective_date ≤ today`, so its projections land in
   `balance_as_of` and it leaves `planned_transfer_out` in the same transaction.
 - Planned **incoming** Transfers and future-dated credits are never added.
-- Holds reduce only `rule_capacity`; they are not part of `reserved`,
+- `reservable` is the capacity before rule-specific constraints. Holds reduce
+  only `rule_capacity` and `confirm_capacity`; they are not part of `reserved`,
   `unallocated` or `reservable` (P55).
+- A proposal never counts its own hold against its confirmation:
+  `confirm_capacity` excludes it by construction (§11.3).
 - All amounts are Decimal in the Account currency; a Transfer, a linked
   reservation and the Account always share one currency (INV-08, P06).
 
@@ -309,7 +317,7 @@ rule_capacity(A)           = reservable(A) − floor(A) − active_holds(A)
 | 8 | Negative balance | Allowed (INV-04). `reservable ≤ 0` → new reservations get 409; releases are always allowed. |
 | 9 | Archived Account | All figures are computed and shown; new linked contributions → 409 (P09); rules are `blocked`. |
 | 10 | Overcommitted | `allocation_status = overcommitted` ⇔ `reserved > 0 ∧ unallocated < 0`. Warning `scheduled_shortfall` (PROPOSED term) ⇔ `reserved > 0 ∧ unallocated ≥ 0 ∧ reservable < 0`. `negative_balance` is a separate flag. |
-| 11 | Manual vs rule allocations | Manual reservations are limited by `reservable` (P04); the floor only warns (P56) and holds do not apply (P55). Rule-generated allocations (AUTO and confirmations) are limited by `rule_capacity` (§11.3). |
+| 11 | Manual vs rule allocations | Manual reservations are limited by `reservable` (P04); the floor only warns (P56) and holds do not apply (P55). AUTO executions and the creation of new CONFIRM proposals are limited by `rule_capacity`. Confirming an existing proposal X is limited by `confirm_capacity(A, X)`, which excludes X's own hold (§11.3). The floor is strict in both rule cases. |
 | 12 | Safety floor | `MINIMUM_UNALLOCATED_FLOOR` per Account (§10.6). |
 | 13 | Date rollover | Figures change without writes; deferred events become due (§12); overcommitment may appear or disappear; history is never rewritten; Financial Overview rollover is unaffected. |
 | 14 | Timezone | Server date; device and server may disagree near midnight (D13); a user timezone is deferred (P41). |
@@ -402,7 +410,9 @@ re-execution of historical Income.
 ### 10.5 Precedence (APPROVED P48), applied inside one coordinated transaction (§14)
 
 1. Ownership and hard invariants (E1–E10, active statuses, currency, idempotency).
-2. `rule_capacity` of the source Account (reservable − floor − active holds).
+2. `rule_capacity` of the source Account (reservable − floor − active holds)
+   for AUTO executions and new proposals; a later confirmation uses
+   `confirm_capacity` (§8.1, §11.3).
 3. Rule order: `execution_order`, `created_at`, `id` (P28).
 4. Goal priority inside the rule (§9).
 5. Caps: per target → target remainder → rule total.
@@ -462,20 +472,51 @@ with `received_at` = today, linked to CHK.
 
 ### 11.3 Soft capacity holds (APPROVED P55)
 
-- Each proposal gets a monotonically increasing `hold_sequence`, assigned at
-  creation in processing order (event order, then P48 rule order).
-- A proposal's hold is active while it is `awaiting_confirmation` and
-  `expires_at > now`; it ends on `executed`, `rejected`, `expired` or
+**Approved semantics (P55):**
+
+- A pending proposal holds capacity softly while it is `awaiting_confirmation`
+  and `expires_at > now`; the hold ends on `executed`, `rejected`, `expired` or
   `cancelled` (including `superseded`).
-- Later rule evaluations (AUTO and new proposals) subtract **all** active holds
-  on the Account: `rule_capacity = reservable − floor − active_holds`.
-- Confirming proposal X requires `confirm_capacity(X) ≥ Σ planned amounts of X`, where
-  `confirm_capacity(X) = reservable − floor − Σ(active holds on the Account with hold_sequence < X.hold_sequence)`.
-  X never counts against itself; proposals created after X already accounted
-  for X's hold.
-- Holds do not block Expenses, Transfers or manual reservations; a manual
-  reservation may consume the underlying capacity, which is why every
-  confirmation fully revalidates.
+- A hold is not reserved money, changes no Account balance and never blocks an
+  Expense, a Transfer or a manual reservation.
+- Later rule evaluations (AUTO executions and the creation of new proposals)
+  subtract **all** active holds on the Account:
+  `rule_capacity(A) = reservable(A) − floor(A) − active_holds(A)` (§8.1).
+  This keeps P48 priority: a higher-order CONFIRM rule is not overtaken by a
+  lower-order AUTO rule.
+- A proposal never counts its own hold against its confirmation.
+
+**Confirmation capacity:**
+
+- Confirming proposal X revalidates the real current capacity and requires
+  `confirm_capacity(A, X) ≥ Σ planned amounts of X`, where
+  `confirm_capacity(A, X) = reservable(A) − floor(A) − prior_holds(A, X)` (§8.1).
+- X's own hold is excluded by construction.
+- Holds of proposals ordered **before** X still reduce X's capacity.
+- Holds of proposals created **after** X do not: those proposals were computed
+  with X's hold already subtracted, so a later (lower-priority) hold cannot
+  retroactively defeat an earlier proposal merely because it exists (S44).
+- `reservable` reflects current reality: an Expense, a Transfer (posted or
+  planned outgoing) or a manual reservation made after the proposal was created
+  may consume the capacity, so a confirmation can still legitimately become
+  stale (§11.4, S39).
+
+**Deterministic hold order (PROPOSED implementation candidate):**
+
+- The requirement is semantic: proposals have a stable, deterministic order
+  ("ordered before X") that follows processing order: the order of their
+  triggering events, then P48 rule order within one event, then a stable
+  tie-break. Across events this follows the dispatcher order, which depends on
+  P52 (PROPOSED).
+- The mechanism is **not** an approved product decision. Candidates:
+  - a stored `hold_sequence` assigned at proposal creation;
+  - a stored tuple (triggering event `occurred_at`, rule-order snapshot, stable
+    tie-break such as the execution id);
+  - another equivalent deterministic mechanism.
+- It is selected during VF-020E design and review together with P52 and the
+  concurrency implementation. Whatever is chosen should capture the order at
+  proposal creation, so that later edits of rule order do not change the
+  precedence of existing proposals.
 
 ### 11.4 Confirmation procedure
 
@@ -484,7 +525,7 @@ Under locks (L0 → execution → Goals → Account):
 1. the rule is enabled, valid and at the proposal's version;
 2. the source Income still exists, matches the snapshot and is still eligible;
 3. the Goals and the Account are active;
-4. the §11.3 confirmation capacity covers exactly the proposed amounts.
+4. `confirm_capacity(A, X)` (§8.1, §11.3) covers exactly the proposed amounts.
 
 If all hold: `executed`, GoalTransactions written, hold ended. Otherwise 409
 and `cancelled (stale)`, hold ended, nothing written. Nothing is silently
@@ -542,7 +583,8 @@ execution uniqueness (§13), not from delivery.
    `lease_expires_at = now + lease`, only if the event is due. Counting attempts
    before processing bounds events that crash the process.
 2. **Process** (one transaction per event, §14): L0 → event `FOR UPDATE` →
-   verify it is still claimed and is the user's oldest due event (P52) → rules →
+   verify it is still claimed and, under the proposed strict FIFO (P52, §14.4),
+   that no older unfinished event of the same user blocks it → rules →
    executions → Goals → Account → writes → `processed` → commit.
 3. **Technical error:** rollback, then a short transaction sets
    `failed_retryable` with `next_attempt_at` per backoff; `deadlock_detected`
@@ -552,6 +594,13 @@ execution uniqueness (§13), not from delivery.
 
 "Due" = `pending` with `not_before ≤ now`; or `failed_retryable` with
 `next_attempt_at ≤ now`; or `processing` with `lease_expires_at < now`.
+
+Selection under the proposed strict FIFO (P52): for each user, the dispatcher
+considers the oldest unfinished event (`pending`, `processing`,
+`failed_retryable`) in (`occurred_at`, `id`) order, skipping events deferred by
+a future `not_before`. If that event is due, it is processed. If it is not due
+(a `failed_retryable` event waiting for `next_attempt_at`, or a `processing`
+event with an active lease), the user's newer events wait.
 
 Backoff (PROPOSED): `max_attempts = 6`, delays 1 min, 5 min, 30 min, 2 h, 12 h,
 then `dead`. Lease: 5 minutes.
@@ -593,9 +642,9 @@ events per user.
 
 ### 12.8 Operational readiness
 
-Metrics: counts per event status; age of the oldest due event; processing time;
-attempt distribution. Alerts: oldest due event older than ~3× the dispatcher
-cadence (with (c) enabled); any `dead` event. A runbook for `dead` events.
+Metrics: counts per event status; age of the oldest unfinished, non-deferred
+event; processing time; attempt distribution. Alerts: such an event older than
+~3× the dispatcher cadence (with (c) enabled); any `dead` event. A runbook for `dead` events.
 Logs contain no amounts or personal data beyond identifiers.
 
 ### 12.9 Retention
@@ -671,7 +720,8 @@ but only within the provenance and window rules of §15–§16.
 
 **Design (PROPOSED): 1 + 3.** All rules of one event are processed in one
 transaction in P48 order with a running capacity; events of one user are
-serialized by the user lock L0, FIFO among due events (P52).
+serialized by the user lock L0, in strict per-user FIFO order (P52, PROPOSED;
+§14.4).
 
 ### 14.2 Global lock order
 
@@ -712,7 +762,7 @@ W2 (drain) start together.
 ```
 t0  W1: claim E (processing, attempts=1)     W2: claim fails (E is processing, lease active)
 t1  W1: BEGIN; L0(user) acquired
-t2  W1: E FOR UPDATE; oldest due event of the user? yes
+t2  W1: E FOR UPDATE; any older unfinished event of the user blocking E (P52)? no
 t3  W1: load enabled rules [R1, R2] ordered by (execution_order, created_at, id)
 t4  W1: insert-or-get executions (R1, income), (R2, income) FOR UPDATE
 t5  W1: lock Goals {G1, G3} ascending; lock CHK
@@ -729,11 +779,18 @@ neither violates P48 within the event.
 
 ### 14.4 Separate events for one Account
 
-Serialized by L0 in FIFO order among due events (`occurred_at`, `id`). A failed
-event blocks newer **due** events of the same user until it succeeds or becomes
-`dead` (P52, PROPOSED). Events deferred by `not_before` do not block. FIFO
-applies to *committed* events; an event that commits after a newer one was
-processed is processed when it becomes visible.
+Serialized by L0. Proposed strict per-user FIFO (P52, **PROPOSED**, finalized
+during dispatcher implementation and review), in (`occurred_at`, `id`) order:
+
+- A user's older unfinished event (`pending`, `processing`, `failed_retryable`)
+  blocks that user's newer events.
+- Exception: an event deferred because its business date has not arrived yet
+  (`not_before` in the future) does **not** block currently due newer events.
+- A technical retry in `failed_retryable` **does** block newer events
+  (head-of-line), including while it waits for `next_attempt_at`.
+- Once it becomes `dead`, newer events continue.
+- FIFO applies to *committed* events; an event that commits after a newer one
+  was processed is processed when it becomes visible.
 
 ---
 
@@ -893,7 +950,7 @@ index `(account_id) WHERE account_id IS NOT NULL`.
 | `financial_events` | `id`, `user_id`, `event_type`, `aggregate_type`, `aggregate_id` (soft reference), `origin`, `ingestion_mode`, snapshot (`snap_amount NUMERIC(12,2)`, `snap_currency`, `snap_received_at`, `snap_account_id`, `snap_income_source`, `snap_aggregate_updated_at`), `occurred_at`, `status`, `not_before`, `attempts`, `next_attempt_at`, `lease_expires_at`, `last_error_code`, `processed_at`, `outcome_summary JSONB` (codes only). Partial `UNIQUE(aggregate_id) WHERE event_type = 'income.created'`; partial index `(user_id, occurred_at, id)` on non-terminal statuses; index `(status, not_before, next_attempt_at)`; CHECKs on enumerations |
 | `financial_rules` | `id`, `user_id`, `name`, `rule_type`, `status`, `execution_mode`, `execution_order`, `version`, `active_since`, `effective_from`, `source_account_id` (composite FK to accounts), `policy`, `percent`, `cap_at_target`, `allow_partial`, `income_sources text[]` (CHECK subset), `floor_amount NUMERIC(12,2)` (floor type only; per-type CHECK), timestamps; `uq(id, user_id)` |
 | `financial_rule_goal_targets` | `rule_id`, `user_id`, `goal_id` (composite FKs to rule and Goal), `amount_or_cap NUMERIC(12,2) NULL`, `position` |
-| `rule_executions` | `id`, `user_id`, `rule_id` (composite FK RESTRICT), `rule_version`, parameter snapshot, `source_type`, `source_id` (**soft reference**: Income CRUD is never blocked and history survives deletion), `triggering_event_id`, source snapshot, capacity snapshot (`reservable`, `floor`, `holds`), `status`, `reason_code`, `hold_sequence BIGINT` (identity), `expires_at`, `decided_at`, timestamps; `UNIQUE(user_id, rule_id, source_type, source_id)`; `uq(id, user_id)` |
+| `rule_executions` | `id`, `user_id`, `rule_id` (composite FK RESTRICT), `rule_version`, parameter snapshot, `source_type`, `source_id` (**soft reference**: Income CRUD is never blocked and history survives deletion), `triggering_event_id`, source snapshot, capacity snapshot (`reservable`, `floor`, `holds`), `status`, `reason_code`, hold-order key (**PROPOSED implementation candidate**, §11.3: e.g. `hold_sequence BIGINT` or an ordering tuple), `expires_at`, `decided_at`, timestamps; `UNIQUE(user_id, rule_id, source_type, source_id)`; `uq(id, user_id)` |
 | `rule_execution_items` | `execution_id`, `user_id`, `goal_id`, `account_id`, `position`, `planned_amount`, `applied_amount NULL`, `goal_transaction_id NULL UNIQUE` |
 | `rule_execution_audit` | `id`, `execution_id`, `user_id`, `code`, `actor` (system/user), `related_event_id`, `details` (codes), `created_at`; append-only |
 | `rule_alerts` | `user_id`, `rule_id`, `subject_type`, `subject_id`, `period_key`, `level`, `created_at`, `acknowledged_at`; `UNIQUE(rule_id, subject_type, subject_id, period_key, level)` |
@@ -1128,7 +1185,7 @@ R = reserved, U = unallocated, RS = reservable.
 | S23 | Rule active since 10-05 (`effective_from` 10-05); on 10-10 a salary dated 10-07 is entered | manual/live (10-07 ≥ 10-03), E5 ✓ → eligible. A salary dated 09-28 → manual/historical, E5 ✗ | P46, P51 |
 | S24 | Same Income event processed twice | one execution; replay | §13 |
 | S25 | RS 600; R1 500 (order 1), R2 400 (order 2), FIXED | R1 500; R2 `skipped`; with partial on R2: 100 | P29, P48 |
-| S26 | CONFIRM proposal 600 → Expense 4,000 → confirm | B 1,000; R 500; U 500; confirmation capacity −500 → 409; `cancelled (stale)`; no writes | §11 |
+| S26 | CONFIRM proposal 600 → Expense 4,000 → confirm | B 1,000; R 500; U 500; `confirm_capacity` = 500 − 1,000 (floor) − 0 = −500 → 409; `cancelled (stale)`; no writes | §11 |
 | S27 | Contribution to an archived Goal | 409 (P10; currently allowed → regression test) | P10 |
 | S28 | Income commits; the API crashes before dispatch | event stays `pending`; processed at the next drain or by the periodic dispatcher; one execution; no invented money | F1 |
 | S29 | Crash in AUTO after staging writes for three targets | rollback: no goal rows, no execution row; lease expires → retry → exactly one set of rows; nothing partial presented as success | F1, F2 |
@@ -1140,12 +1197,13 @@ R = reserved, U = unallocated, RS = reservable.
 | S35 | Proposal created with capacity; an Expense then reduces it | confirmation revalidates → 409, `cancelled (stale)`; no partial writes | §11 |
 | S36 | (after S1) planned Transfer CHK→SAV 800, `planned_date` 10-20 | no ledger rows: current 2,000; B 2,000; U 1,500; planned out 800; **RS 700**; SAV RS unchanged (planned incoming ignored). After posting on 10-20: CHK B 1,200, planned out 0, U 700, RS 700 (no double subtraction) | P49 |
 | S37 | AUTO active since 10-01; on 10-10 a salary dated 09-20 is entered | manual/historical (09-20 < 10-03) and E5 ✗ → no execution; Income recorded normally and counted in Overview | P46, P51 |
-| S38 | RS 600, floor 0; one event: R1 (order 1, CONFIRM) FIXED G1 500, R2 (order 2, AUTO) FIXED G3 400 | proposal X with hold 500; R2 sees 100 → `skipped`. Confirm X: 600 − 0 (no earlier holds) ≥ 500 → executed; R 500; hold ended; own hold not double-counted | P55, P48 |
-| S39 | As S38 before confirmation; the user manually reserves 300 for G2 | allowed (holds do not block manual): RS 300. Confirm X: 300 < 500 → 409, `cancelled (stale)`; nothing written | P55 |
+| S38 | RS 600, floor 0; one event: R1 (order 1, CONFIRM) FIXED G1 500, R2 (order 2, AUTO) FIXED G3 400 | proposal X with hold 500; R2 sees `rule_capacity` 100 → `skipped`. Confirm X: `confirm_capacity` = 600 − 0 − 0 (own hold excluded; no prior holds) = 600 ≥ 500 → executed; R 500; hold ended | P55, P48 |
+| S39 | As S38 before confirmation; the user manually reserves 300 for G2 | allowed (holds do not block manual): RS 300. Confirm X: `confirm_capacity` = 300 − 0 − 0 = 300 < 500 → 409, `cancelled (stale)`; nothing written | P55 |
 | S40 | RS 1,500, floor 1,000; manual reservations | 800 → allowed with a floor warning (RS 700 < floor); 1,600 → 409 (exceeds reservable; the floor override never creates money) | P56, P04 |
 | S41 | Proposal created 10-10, expires 10-17; confirm on 10-18 | `expired` returned; no GoalTransaction; the hold stopped counting at 10-17 | P54 |
 | S42 | Manual Income created 10-10 | `received_at` 10-03 → manual/live (inclusive boundary); 10-02 → manual/historical | P51 |
 | S43 | Income committed; after-response task lost; user inactive for 3 days | without the periodic dispatcher: AUTO runs at the next drain, against capacity at that time; with it: within the configured cadence (target ≈ 10 min) | P50 |
+| S44 | RS 600, floor 0; one event: R1 (order 1, CONFIRM) FIXED G1 500 → X; R2 (order 2, CONFIRM) FIXED G3 100 → Y (`rule_capacity` 600 − 500 = 100); then an Expense 80 today → RS 520 | Confirm X: `confirm_capacity` = 520 − 0 − 0 (Y is ordered after X and does not count) = 520 ≥ 500 → executed. Confirm Y: RS 20 (X now reserved), prior holds 0 → 20 < 100 → `cancelled (stale)`. Counting Y's later hold against X would have given 420 < 500 and wrongly defeated the higher-priority X | P55, P48 |
 
 ---
 
@@ -1169,7 +1227,8 @@ are independent literals, never copies of production formulas.
 | Priority | S25/S31 deterministic; reorder |
 | Income CRUD | every row of §15.3 |
 | Provenance | S23, S32, S33, S37, S42; reclassification; Income without a creation event |
-| Proposals | expiry (S41), stale (S26/S35/S39), superseded, source_changed; holds (S38) incl. no self double counting |
+| Proposals | expiry (S41), stale (S26/S35/S39), superseded, source_changed; holds: `rule_capacity` for AUTO and new proposals, `confirm_capacity` excluding the own hold (S38), later holds never defeating an earlier proposal (S44); hold order deterministic for the chosen mechanism |
+| Dispatcher FIFO (P52, if selected) | an older `failed_retryable` event waiting for backoff blocks newer events of the same user; an event deferred by a future `not_before` does not; after `dead`, newer events proceed |
 | Capacity | future credits/debits (S7/S8); planned Transfers (S36) incl. no double subtraction after posting; date rollover; floor strict for rules, warning for manual (S18/S40) |
 | Lifecycle | archived Goal (P10 regression), archived Account, delete or currency change with references (S13) |
 | Budgets | transitions, deduplication, no duplicated limits |
@@ -1245,7 +1304,7 @@ matching the implemented state, the user performs the merge.
 | P49 | Planned Transfers in capacity | planned outgoing Transfers reduce `reservable`; planned incoming ignored; read model only; no ledger rows invented | **APPROVED** |
 | P50 | Durable periodic dispatcher | required before unattended AUTO is presented as guaranteed; mechanism selected and verified in VF-020E; target cadence ≈ 10 min (5–15) | **APPROVED** (mechanism: technical verification) |
 | P51 | Live manual Income window | N = 7 days, inclusive; older manual entries historical; no override in v1 | **APPROVED** |
-| P52 | Per-user FIFO with head-of-line blocking | strict FIFO, bounded by `max_attempts`; to be finalized during dispatcher implementation and review | PROPOSED |
+| P52 | Per-user FIFO with head-of-line blocking | older unfinished events block newer ones, including `failed_retryable` events waiting for backoff; events deferred by a future `not_before` do not block; after `dead`, newer events continue (bounded by `max_attempts`); to be finalized during dispatcher implementation and review | PROPOSED |
 | P53 | Event retention | keep processed events as provenance until the user's data is deleted; VF-021 per legal review | PROPOSED / EXT |
 | P54 | Proposal expiry | 7 days; lazy expiry | **APPROVED** |
 | P55 | Soft capacity hold | holds reduce later rule capacity only; not reserved; never block real operations or manual reservations; full revalidation at confirmation | **APPROVED** |
@@ -1325,7 +1384,9 @@ No integration code before G2 and G5.
 | Planned incoming Transfers and future credits never add capacity | PASS |
 | Goal and Account money never double-counted | PASS (FIN-002, §7.2, §7.5) |
 | Soft hold never presented as a reservation | PASS (§8.1, §11.3) |
-| Own hold not counted at confirmation | PASS (§11.3, S38) |
+| Own hold not counted at confirmation; one definition of `confirm_capacity` | PASS (§8.1, §11.3, S38, S44) |
+| Hold-order mechanism (`hold_sequence` or equivalent) not presented as approved | PASS (§11.3, §19.3: PROPOSED implementation candidate) |
+| FIFO and retry backoff consistent (P52 PROPOSED) | PASS (§12.4, §14.4, §27) |
 | Manual floor override cannot bypass P04 | PASS (§10.6, S40) |
 | Historical Income cannot become AUTO-eligible | PASS (E4/E5/E6, §16, S32/S37/S42) |
 | P50 not hard-coded to one hosting provider | PASS (§12.5) |
