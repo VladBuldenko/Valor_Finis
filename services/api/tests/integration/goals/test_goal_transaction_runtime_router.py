@@ -124,14 +124,20 @@ def test_today_and_past_effective_dates_return_201(
     assert response.json()["effective_date"] == requested
 
 
-# Tests that tomorrow's date is rejected with 422 and nothing is written.
+# Tests that a new request with tomorrow's date is rejected with 422 and
+# nothing is written - without a key and with a key that is not used yet.
 # Parameters:
+# - extra: key field of the request (none, or a fresh unused key).
 # - client: FastAPI test client.
 # - monkeypatch: pytest fixture used to pin the server date.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the request is rejected and history is empty.
+@pytest.mark.parametrize(
+    "extra", [{}, {"client_request_id": str(uuid4())}], ids=["no-key", "free-key"],
+)
 def test_future_effective_date_returns_422(
+    extra: dict,
     client: TestClient,
     monkeypatch,
     clean_database: None,
@@ -142,7 +148,7 @@ def test_future_effective_date_returns_422(
 
     response = _post(
         client, user_id, goal["id"],
-        {"type": "contribution", "amount": 10, "effective_date": "2026-10-06"},
+        {"type": "contribution", "amount": 10, "effective_date": "2026-10-06", **extra},
     )
 
     assert response.status_code == 422
@@ -207,6 +213,42 @@ def test_keyed_create_replay_and_conflict_statuses(
     assert replay.json() == first.json()
     assert conflict.status_code == 409
     assert conflict.json()["detail"] == (
+        "client_request_id has already been used for a different goal transaction."
+    )
+    assert [t["id"] for t in _history(client, user_id, goal["id"])] == [first.json()["id"]]
+
+
+# Tests the date rules of a key that is already bound (VF-020B3 M1): on
+# the next day, a replay stating the stored date is 200, while a replay
+# stating a different date that is also in the future is 409 - the bound
+# key answers for its original payload before any date validation - and
+# only the original row exists.
+# Parameters:
+# - client: FastAPI test client.
+# - monkeypatch: pytest fixture used to pin the server date.
+# - clean_database: fixture that clears database tables before and after the test.
+# Returns:
+# - None. The test passes if the statuses and the history match.
+def test_bound_key_explicit_dates_replay_200_or_conflict_409(
+    client: TestClient,
+    monkeypatch,
+    clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    goal = create_goal(client=client, user_id=user_id)
+    body = {"type": "contribution", "amount": 25, "client_request_id": str(uuid4())}
+
+    _freeze_today(monkeypatch, MONDAY)
+    first = _post(client, user_id, goal["id"], body)
+    _freeze_today(monkeypatch, TUESDAY)
+    same_date = _post(client, user_id, goal["id"], {**body, "effective_date": "2026-10-05"})
+    future_date = _post(client, user_id, goal["id"], {**body, "effective_date": "2026-10-07"})
+
+    assert first.status_code == 201
+    assert same_date.status_code == 200
+    assert same_date.json()["id"] == first.json()["id"]
+    assert future_date.status_code == 409
+    assert future_date.json()["detail"] == (
         "client_request_id has already been used for a different goal transaction."
     )
     assert [t["id"] for t in _history(client, user_id, goal["id"])] == [first.json()["id"]]

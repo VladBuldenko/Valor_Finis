@@ -1,7 +1,9 @@
 // Focused tests for goal-transaction-attempts.ts (VF-020B3). They use only
 // Node's built-in test runner -- no extra dependency -- and import the
-// TypeScript helper directly through Node's type stripping (Node >= 22.18):
-//   node --test src/features/goals/goal-transaction-attempts.test.mjs
+// TypeScript helper directly through Node's type stripping (default from
+// Node 22.18; the pinned Node 22.13 needs the flag, which later versions
+// still accept):
+//   node --experimental-strip-types --test src/features/goals/goal-transaction-attempts.test.mjs
 // This file is plain JavaScript on purpose: the app's tsconfig has no Node
 // types and does not allow ".ts" import paths, and changing either just for
 // tests is out of scope. The helper itself stays fully type-checked by tsc.

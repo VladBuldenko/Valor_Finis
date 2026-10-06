@@ -134,8 +134,11 @@ class GoalTransactionEffectiveDateInFutureError(Exception):
 
     Why:
         effective_date records when the money actually moved, so it can be
-        today or any past date but never a future one. It is checked before
-        the goal is looked up, so it takes precedence over 404/409.
+        today or any past date but never a future one. It applies to new
+        requests only: a client_request_id that already identifies a stored
+        transaction is resolved first, as a replay or an idempotency
+        conflict (409). For a new request it is checked before the goal is
+        looked up, so it takes precedence over 404 and lifecycle 409s.
     """
 
     pass

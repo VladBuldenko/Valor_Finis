@@ -375,9 +375,11 @@ PostgreSQL
 
 Client types mirror the API contract: the mobile client keeps strict TypeScript types aligned with the backend response schemas, and all business data goes through the FastAPI client.
 
-The mobile app has no test framework dependency. Pure helper modules can have focused tests written as plain JavaScript for Node's built-in test runner, which imports the TypeScript helper through Node's type stripping (Node >= 22.18), for example (from apps/mobile):
+The mobile app has no test framework dependency. Pure helper modules can have focused tests written as plain JavaScript for Node's built-in test runner, which imports the TypeScript helper through Node's type stripping. Type stripping is on by default from Node 22.18; the project's pinned Node (apps/mobile/.nvmrc 22.13.0, engines >=22.13.0) needs the --experimental-strip-types flag for it, which newer versions still accept. The flagged form therefore works on every supported version (from apps/mobile):
 
-node --test src/features/goals/goal-transaction-attempts.test.mjs
+node --experimental-strip-types --test src/features/goals/goal-transaction-attempts.test.mjs
+
+On Node 22.18 or later the flag can be omitted. Both forms were verified locally on Node 22.23.2; Node may print a MODULE_TYPELESS_PACKAGE_JSON warning, which does not affect the result.
 
 ✅ Definition of Done
 

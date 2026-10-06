@@ -141,12 +141,15 @@ def test_today_and_past_effective_dates_are_accepted(
         db_session.close()
 
 
-# Tests that a future effective_date is rejected and nothing is written.
+# Tests that a new request with a future effective_date is rejected and
+# nothing is written - without a key and with a key that is not used yet.
 # Parameters:
+# - key: request key (None, or a fresh unused key).
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
 # - None. The test passes if the error is raised and no row exists.
-def test_future_effective_date_is_rejected(clean_database: None) -> None:
+@pytest.mark.parametrize("key", [None, uuid4()], ids=["no-key", "free-key"])
+def test_future_effective_date_is_rejected(key: Optional[UUID], clean_database: None) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
@@ -154,27 +157,31 @@ def test_future_effective_date_is_rejected(clean_database: None) -> None:
         goal = _create_goal(db_session, user_id)
 
         with pytest.raises(GoalTransactionEffectiveDateInFutureError):
-            _create(db_session, goal.id, user_id, _request(effective_date=TUESDAY))
+            _create(db_session, goal.id, user_id, _request(effective_date=TUESDAY, key=key))
 
         assert _row_count(db_session, user_id) == 0
     finally:
         db_session.close()
 
 
-# Tests that the future-date rule is checked before the goal lookup, so it
-# takes precedence over not-found.
+# Tests that for a new request the future-date rule is checked before the
+# goal lookup, so it takes precedence over not-found - with or without a
+# (free) key.
 # Parameters:
+# - key: request key (None, or a fresh unused key).
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
 # - None. The test passes if the future-date error is raised.
+@pytest.mark.parametrize("key", [None, uuid4()], ids=["no-key", "free-key"])
 def test_future_effective_date_takes_precedence_over_missing_goal(
+    key: Optional[UUID],
     clean_database: None,
 ) -> None:
     db_session = SessionLocal()
 
     try:
         with pytest.raises(GoalTransactionEffectiveDateInFutureError):
-            _create(db_session, uuid4(), uuid4(), _request(effective_date=TUESDAY))
+            _create(db_session, uuid4(), uuid4(), _request(effective_date=TUESDAY, key=key))
     finally:
         db_session.close()
 
@@ -394,6 +401,34 @@ def test_explicit_date_replay_must_match_stored_date(clean_database: None) -> No
             _create(
                 db_session, goal.id, user_id,
                 _request(key=key, effective_date=TUESDAY), as_of=TUESDAY,
+            )
+
+        assert _row_count(db_session, user_id) == 1
+    finally:
+        db_session.close()
+
+
+# Tests that a key already bound to a transaction answers for its original
+# payload before any date validation: a replay stating a different date
+# that is also in the future is an idempotency conflict (409), not a
+# future-date rejection (422), and nothing is written (VF-020B3 M1).
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# Returns:
+# - None. The test passes if the conflict is raised and one row remains.
+def test_bound_key_with_future_different_date_is_conflict(clean_database: None) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+    key = uuid4()
+
+    try:
+        goal = _create_goal(db_session, user_id)
+        _create(db_session, goal.id, user_id, _request(key=key), as_of=MONDAY)
+
+        with pytest.raises(GoalTransactionIdempotencyConflictError):
+            _create(
+                db_session, goal.id, user_id,
+                _request(key=key, effective_date=date(2026, 10, 7)), as_of=TUESDAY,
             )
 
         assert _row_count(db_session, user_id) == 1

@@ -360,31 +360,35 @@ def _resolve_existing_transaction(
 # This function exists as the single write path for balance-changing goal
 # transactions (VF-016C). The whole write is one service-owned database
 # transaction:
-#   1. resolve effective_date (omitted -> server date) and reject a future
-#      date (422) before any lookup;
-#   2. with a key: fast lookup by (user_id, client_request_id), no row
+#   1. with a key: fast lookup by (user_id, client_request_id), no row
 #      locks - an existing transaction is resolved as replay (200) or
-#      conflict (409) with NO goal lifecycle or balance validation
-#      (VF-020B3); when nothing is found, the lookup's transaction is ended
-#      so the goal is always locked before goal_transactions is touched;
+#      conflict (409) FIRST, before any other validation: a key that is
+#      already bound always answers for its original payload, so a replay
+#      stating a different (even future) effective_date is a 409, and goal
+#      lifecycle and balance are never re-checked (VF-020B3). When nothing
+#      is found, the lookup's transaction is ended so the goal is always
+#      locked before goal_transactions is touched;
+#   2. only for a new request (no key, or a key not yet used): reject a
+#      future effective_date (422) - before the goal lookup, so an invalid
+#      date is 422 rather than 404;
 #   3. lock the owned Goal row (SELECT ... FOR UPDATE; missing or foreign
 #      goal -> 404) so two concurrent writes never validate against the
 #      same stale balance;
 #   4. with a key: second lookup under the goal lock - a same-key request
 #      for this goal may have committed while this one waited - resolved
-#      exactly like step 2;
+#      exactly like step 1;
 #   5. reject a contribution to an archived goal (VF-020A P10);
 #   6. calculate the current ledger balance; reject a withdrawal that would
 #      take it negative;
 #   7. insert the append-only transaction with currency copied from the
-#      locked goal (never from the client), the resolved effective_date and
-#      the key;
+#      locked goal (never from the client), the resolved effective_date
+#      (omitted -> server date) and the key;
 #   8. commit once;
 #   9. if the insert hits uq_goal_transactions_user_id_client_request_id (a
 #      concurrent same-key request for ANOTHER goal, not serialized by this
 #      goal's lock, inserted first), roll back, reload the winner and
-#      resolve it like step 2.
-# Without a key, steps 2, 4 and 9 do not apply: every request creates a new
+#      resolve it like step 1.
+# Without a key, steps 1, 4 and 9 do not apply: every request creates a new
 # transaction (legacy clients; the key stays NULL - none is synthesized).
 # The Goal row itself is never written here (VF-016G); the row lock still
 # serializes this write against concurrent writes, archive and delete on
@@ -404,7 +408,8 @@ def _resolve_existing_transaction(
 # - GoalTransactionCreateResult - created=True for a new transaction,
 #   created=False for an idempotent replay.
 # Raises:
-# - GoalTransactionEffectiveDateInFutureError: effective_date > today.
+# - GoalTransactionEffectiveDateInFutureError: effective_date > today on a
+#   new request (a bound key resolves as replay or conflict instead).
 # - GoalTransactionIdempotencyConflictError: the key was used for a
 #   different payload.
 # - GoalNotFoundError: when goal does not exist or does not belong to the user.
@@ -419,10 +424,6 @@ def create_or_replay_goal_transaction(
 ) -> GoalTransactionCreateResult:
     today = as_of if as_of is not None else date.today()
     requested_date = transaction_data.effective_date
-
-    if requested_date is not None and requested_date > today:
-        raise GoalTransactionEffectiveDateInFutureError()
-
     client_request_id = transaction_data.client_request_id
 
     if client_request_id is not None:
@@ -442,6 +443,9 @@ def create_or_replay_goal_transaction(
         # invert that order and could deadlock with a migration that locks
         # both tables.
         db_session.rollback()
+
+    if requested_date is not None and requested_date > today:
+        raise GoalTransactionEffectiveDateInFutureError()
 
     goal_model = goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
