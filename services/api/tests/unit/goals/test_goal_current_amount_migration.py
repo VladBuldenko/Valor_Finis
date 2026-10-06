@@ -124,6 +124,8 @@ def test_reconstruction_sql_matches_ledger_balance_for_opening_balance_only(
             type="opening_balance",
             amount=Decimal("200.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
 
         reconstructed = db_session.execute(
@@ -163,6 +165,8 @@ def test_reconstruction_sql_matches_ledger_balance_for_contribution_and_withdraw
             type="contribution",
             amount=Decimal("100.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
         goal_transaction_repository.create_transaction(
             db_session=db_session,
@@ -171,6 +175,8 @@ def test_reconstruction_sql_matches_ledger_balance_for_contribution_and_withdraw
             type="withdrawal",
             amount=Decimal("30.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
 
         reconstructed = db_session.execute(
@@ -209,6 +215,8 @@ def test_reconstruction_sql_matches_ledger_balance_for_overfunded_goal(
             type="contribution",
             amount=Decimal("150.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
 
         reconstructed = db_session.execute(

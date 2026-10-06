@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import * as Crypto from "expo-crypto";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   useMutation,
@@ -24,6 +25,13 @@ import {
   validateGoalDecimalAmount,
 } from "./goal-amount-validation";
 import { getGoalErrorMessage } from "./goal-error-message";
+import {
+  canonicalizeGoalAmount,
+  getGoalTransactionDisplayDate,
+  resolveGoalTransactionAttempt,
+  toGoalTransactionCreateInput,
+  type GoalTransactionAttempt,
+} from "./goal-transaction-attempts";
 import { validateGoalTransactionForm } from "./goal-transaction-validation";
 import {
   createGoalTransaction,
@@ -61,6 +69,28 @@ const SUBMITTABLE_TRANSACTION_TYPES: ("contribution" | "withdrawal")[] = [
   "contribution",
   "withdrawal",
 ];
+
+// An archived goal accepts withdrawals but no new contributions (VF-020A
+// P10, enforced by the backend with 409) -- so only withdrawal is offered
+// for it. Active and completed goals offer both. The backend stays the
+// authority; this only avoids offering an action that would be rejected.
+function getSubmittableTransactionTypes(
+  status: GoalStatus,
+): ("contribution" | "withdrawal")[] {
+  return status === "archived" ? ["withdrawal"] : SUBMITTABLE_TRANSACTION_TYPES;
+}
+
+// Returns the type the form will actually submit: the user's selection when
+// it is still offered for the goal's status, else the first offered type
+// (e.g. a goal archived while "Contribution" was selected).
+function resolveSelectedTransactionType(
+  status: GoalStatus,
+  selectedType: "contribution" | "withdrawal",
+): "contribution" | "withdrawal" {
+  const availableTypes = getSubmittableTransactionTypes(status);
+
+  return availableTypes.includes(selectedType) ? selectedType : availableTypes[0];
+}
 
 // Formats a transaction's amount for display with a +/- presentation
 // prefix (opening_balance/contribution add to the balance, withdrawal
@@ -111,11 +141,22 @@ export function GoalDetailScreen() {
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
 
+  // Create idempotency attempts of this form instance (see
+  // resolveGoalTransactionAttempt): kept across failed submissions so a
+  // retry of the same payload reuses its client_request_id, cleared after
+  // a success, and discarded when the screen closes. A ref, not state --
+  // it never affects rendering and is only read in event handlers.
+  const createAttemptsRef = useRef<GoalTransactionAttempt[]>([]);
+
   const createTransactionMutation = useMutation({
     mutationFn: (payload: GoalTransactionCreateInput) =>
       createGoalTransaction(id, payload),
 
+    // 201 (new) and 200 (exact replay of an earlier, possibly lost,
+    // attempt) are the same success: the body is the one stored
+    // transaction either way, and the refetch below shows it exactly once.
     onSuccess: async () => {
+      createAttemptsRef.current = [];
       setAmount("");
       setDescription("");
 
@@ -140,7 +181,10 @@ export function GoalDetailScreen() {
     // `variables` is the exact payload passed to .mutate() for this
     // specific failed call, read here instead of the outer transactionType
     // state so the alert title always matches the request that actually
-    // failed, even if the user has since toggled the control.
+    // failed, even if the user has since toggled the control. The attempts
+    // are deliberately kept: the request may have been committed even
+    // though it failed here, so resubmitting the unchanged form must reuse
+    // the same key.
     onError: (mutationError, variables) => {
       const title =
         variables.type === "withdrawal"
@@ -157,7 +201,7 @@ export function GoalDetailScreen() {
   function handleSubmitTransaction() {
     // Guards against duplicate submissions from a double tap while the
     // request is already in flight.
-    if (createTransactionMutation.isPending) {
+    if (createTransactionMutation.isPending || !goal) {
       return;
     }
 
@@ -173,11 +217,19 @@ export function GoalDetailScreen() {
 
     const trimmedDescription = description.trim();
 
-    createTransactionMutation.mutate({
-      type: transactionType,
-      amount: normalizeGoalDecimalAmount(amount),
-      ...(trimmedDescription ? { description: trimmedDescription } : {}),
-    });
+    const { attempt, attempts } = resolveGoalTransactionAttempt(
+      createAttemptsRef.current,
+      {
+        goalId: goal.id,
+        type: resolveSelectedTransactionType(goal.status, transactionType),
+        amount: canonicalizeGoalAmount(normalizeGoalDecimalAmount(amount)),
+        description: trimmedDescription ? trimmedDescription : null,
+      },
+      () => Crypto.randomUUID(),
+    );
+
+    createAttemptsRef.current = attempts;
+    createTransactionMutation.mutate(toGoalTransactionCreateInput(attempt));
   }
 
   if (isAuthLoading || isGoalLoading) {
@@ -217,6 +269,11 @@ export function GoalDetailScreen() {
     : null;
   const canSubmitTransaction =
     Boolean(amount) && !amountValidationError && !createTransactionMutation.isPending;
+  const availableTransactionTypes = getSubmittableTransactionTypes(goal.status);
+  const selectedTransactionType = resolveSelectedTransactionType(
+    goal.status,
+    transactionType,
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -246,30 +303,44 @@ export function GoalDetailScreen() {
               : "No target date"}
           </Text>
 
-          <Text style={styles.sectionTitle}>Add funds</Text>
+          {goal.status === "archived" ? (
+            <>
+              <Text style={styles.sectionTitle}>Withdraw funds</Text>
 
-          <View style={styles.typeToggleRow}>
-            {SUBMITTABLE_TRANSACTION_TYPES.map((option) => (
-              <Pressable
-                key={option}
-                style={[
-                  styles.typeToggleButton,
-                  transactionType === option && styles.typeToggleButtonSelected,
-                ]}
-                onPress={() => setTransactionType(option)}
-              >
-                <Text
-                  style={[
-                    styles.typeToggleButtonText,
-                    transactionType === option &&
-                      styles.typeToggleButtonTextSelected,
-                  ]}
-                >
-                  {TRANSACTION_TYPE_LABELS[option]}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+              <Text style={styles.secondaryText}>
+                Archived goals cannot receive contributions. Withdrawals are
+                still available.
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.sectionTitle}>Add funds</Text>
+
+              <View style={styles.typeToggleRow}>
+                {availableTransactionTypes.map((option) => (
+                  <Pressable
+                    key={option}
+                    style={[
+                      styles.typeToggleButton,
+                      selectedTransactionType === option &&
+                        styles.typeToggleButtonSelected,
+                    ]}
+                    onPress={() => setTransactionType(option)}
+                  >
+                    <Text
+                      style={[
+                        styles.typeToggleButtonText,
+                        selectedTransactionType === option &&
+                          styles.typeToggleButtonTextSelected,
+                      ]}
+                    >
+                      {TRANSACTION_TYPE_LABELS[option]}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
 
           <View style={styles.formGroup}>
             <Text style={styles.label}>Amount *</Text>
@@ -303,7 +374,7 @@ export function GoalDetailScreen() {
               <ActivityIndicator />
             ) : (
               <Text style={styles.buttonText}>
-                {transactionType === "withdrawal"
+                {selectedTransactionType === "withdrawal"
                   ? "Withdraw"
                   : "Add contribution"}
               </Text>
@@ -341,7 +412,7 @@ export function GoalDetailScreen() {
                   ) : null}
 
                   <Text style={styles.historyDate}>
-                    {transaction.created_at}
+                    {getGoalTransactionDisplayDate(transaction)}
                   </Text>
                 </View>
               ))}

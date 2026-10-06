@@ -1,5 +1,6 @@
 import importlib.util
 import re
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -206,8 +207,10 @@ def test_expand_adds_constraints_and_keeps_simple_goal_fk(clean_database: None) 
 # Tests that the migration's currency backfill copies each goal's currency
 # onto its transactions, leaves effective_date and client_request_id NULL,
 # and changes nothing when run again (VF-020B2).
-# It also shows the expand/contract window: transactions created by the
-# current application code get NULL in all three columns until backfilled.
+# Rows written before VF-020B3 (simulated with direct SQL inserts that
+# leave the three columns NULL) are the ones the backfill fills; a row the
+# application writes since VF-020B3 already carries its goal's currency and
+# effective_date and is left untouched.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -218,6 +221,7 @@ def test_backfill_copies_goal_currency_and_leaves_other_columns_null(
     migration = _load_expand_migration()
     session = SessionLocal()
     user_id = uuid4()
+    application_day = date(2026, 10, 5)
 
     try:
         eur_goal = goal_repository.create_goal(
@@ -230,32 +234,35 @@ def test_backfill_copies_goal_currency_and_leaves_other_columns_null(
             goal_data=GoalCreate(name="Laptop", target_amount=Decimal("900"), currency="USD"),
             user_id=user_id,
         )
-        eur_transaction = goal_service.create_goal_transaction(
-            db_session=session,
-            goal_id=eur_goal.id,
-            transaction_data=GoalTransactionCreate(type="contribution", amount=Decimal("50")),
-            user_id=user_id,
-        )
-        usd_transaction = goal_service.create_goal_transaction(
-            db_session=session,
-            goal_id=usd_goal.id,
-            transaction_data=GoalTransactionCreate(type="contribution", amount=Decimal("70")),
-            user_id=user_id,
-        )
+        eur_legacy_id = _insert_goal_transaction(session, eur_goal.id, user_id)
+        usd_legacy_id = _insert_goal_transaction(session, usd_goal.id, user_id)
         opening_balance_id = _insert_goal_transaction(
             session, usd_goal.id, user_id, type="opening_balance",
         )
         session.commit()
+        application_transaction = goal_service.create_goal_transaction(
+            db_session=session,
+            goal_id=eur_goal.id,
+            transaction_data=GoalTransactionCreate(type="contribution", amount=Decimal("70")),
+            user_id=user_id,
+            as_of=application_day,
+        )
 
-        assert _expand_columns(session, eur_transaction.id) == (None, None, None)
-        assert _expand_columns(session, usd_transaction.id) == (None, None, None)
+        assert _expand_columns(session, eur_legacy_id) == (None, None, None)
+        assert _expand_columns(session, usd_legacy_id) == (None, None, None)
+        assert _expand_columns(session, application_transaction.id) == (
+            "EUR", application_day, None,
+        )
 
         session.execute(text(migration.BACKFILL_GOAL_TRANSACTION_CURRENCY_SQL))
         session.commit()
 
-        assert _expand_columns(session, eur_transaction.id) == ("EUR", None, None)
-        assert _expand_columns(session, usd_transaction.id) == ("USD", None, None)
+        assert _expand_columns(session, eur_legacy_id) == ("EUR", None, None)
+        assert _expand_columns(session, usd_legacy_id) == ("USD", None, None)
         assert _expand_columns(session, opening_balance_id) == ("USD", None, None)
+        assert _expand_columns(session, application_transaction.id) == (
+            "EUR", application_day, None,
+        )
 
         rerun = session.execute(text(migration.BACKFILL_GOAL_TRANSACTION_CURRENCY_SQL))
         session.commit()
@@ -406,10 +413,11 @@ def test_client_request_id_is_unique_per_user(clean_database: None) -> None:
         session.close()
 
 
-# Tests that the current application code keeps working on the expanded
-# schema (VF-020B2 compatibility invariant): goal create, update and list,
-# contributions, withdrawals, transaction history and goal analytics, with
-# every new transaction leaving the three expand columns NULL.
+# Tests that the application goal flows work on the expanded schema: goal
+# create, update and list, contributions, withdrawals, transaction history
+# and goal analytics (VF-020B2 compatibility invariant). Since VF-020B3
+# every new transaction records its goal's currency and the server date,
+# and has no idempotency key when the request sends none.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
@@ -417,6 +425,7 @@ def test_client_request_id_is_unique_per_user(clean_database: None) -> None:
 def test_application_goal_flows_work_on_expanded_schema(clean_database: None) -> None:
     session = SessionLocal()
     user_id = uuid4()
+    application_day = date(2026, 10, 5)
 
     try:
         goal = goal_service.create_goal(
@@ -435,12 +444,14 @@ def test_application_goal_flows_work_on_expanded_schema(clean_database: None) ->
             goal_id=goal.id,
             transaction_data=GoalTransactionCreate(type="contribution", amount=Decimal("300")),
             user_id=user_id,
+            as_of=application_day,
         )
         withdrawal = goal_service.create_goal_transaction(
             db_session=session,
             goal_id=goal.id,
             transaction_data=GoalTransactionCreate(type="withdrawal", amount=Decimal("100")),
             user_id=user_id,
+            as_of=application_day,
         )
 
         goals = goal_service.get_goals(db_session=session, user_id=user_id)
@@ -453,7 +464,7 @@ def test_application_goal_flows_work_on_expanded_schema(clean_database: None) ->
         assert [(g.id, g.current_amount) for g in goals] == [(goal.id, Decimal("200.00"))]
         assert {t.id for t in history} == {withdrawal.id, contribution.id}
         assert [(p.goal_id, p.current_amount) for p in progress] == [(goal.id, Decimal("200.00"))]
-        assert _expand_columns(session, contribution.id) == (None, None, None)
-        assert _expand_columns(session, withdrawal.id) == (None, None, None)
+        assert _expand_columns(session, contribution.id) == ("EUR", application_day, None)
+        assert _expand_columns(session, withdrawal.id) == ("EUR", application_day, None)
     finally:
         session.close()

@@ -353,6 +353,8 @@ def test_create_goal_transaction_includes_existing_opening_balance(
             type="opening_balance",
             amount=Decimal("200.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
 
         goal_service.create_goal_transaction(
@@ -395,6 +397,8 @@ def test_get_goal_transactions_includes_opening_balance(
             type="opening_balance",
             amount=Decimal("200.00"),
             description=None,
+            currency=goal.currency,
+            effective_date=None,
         )
         goal_service.create_goal_transaction(
             db_session=db_session,

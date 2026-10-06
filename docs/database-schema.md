@@ -1058,8 +1058,11 @@ VARCHAR(3)
 yes
 
 Added in VF-020B2. Existing rows were backfilled from the owning goal's
-currency. Not yet mapped or written by the application (see the
-VF-020B2 expand note below); becomes NOT NULL in VF-020B4.
+currency. Since VF-020B3 every new row gets the owning goal's currency
+(copied by the service from the locked goal row, never sent by the
+client). Still nullable: rows written between the VF-020B2 migration and
+the VF-020B3 deployment may be NULL; VF-020B4 fills them and makes the
+column NOT NULL.
 
 effective_date
 
@@ -1067,9 +1070,12 @@ DATE
 
 yes
 
-Added in VF-020B2. NULL for every existing row: it was deliberately not
-derived from created_at, which is a recording time, not a proven
-business date. Not yet mapped or written by the application.
+Added in VF-020B2. NULL for every row recorded before VF-020B3: it was
+deliberately not derived from created_at, which is a recording time, not
+a proven business date. Since VF-020B3 every new row gets one - the
+request's effective_date (today or earlier, server date) or the server
+date when omitted. No CHECK constraint: the future-date rule depends on
+the server date and is enforced by the service.
 
 client_request_id
 
@@ -1077,9 +1083,10 @@ UUID
 
 yes
 
-Added in VF-020B2 as the foundation for idempotent goal transaction
-creation. NULL for every existing row. Not yet mapped or written by the
-application.
+Added in VF-020B2; used since VF-020B3 as the create idempotency key
+sent by the client. NULL for every row created without a key (all earlier
+history, and requests from clients that send none - the key stays
+optional during the rollout).
 
 Constraints
 
@@ -1108,19 +1115,22 @@ created_at = the Goal's own created_at) when this table was introduced.
 Goals with current_amount == 0 received no row - no money is manufactured.
 See alembic/versions/e90a257f987b_add_goal_transactions_and_backfill.py.
 
-VF-020B2 expand note (temporary state): migration 1e921a4a4412 is the
+VF-020B2 expand / VF-020B3 runtime note: migration 1e921a4a4412 is the
 backward-compatible expand step of the VF-020B rollout. It added the three
 nullable columns above, backfilled currency for existing rows, and added
 the goals CHECKs, uq_goals_id_user_id, the composite ownership FK and the
-client_request_id uniqueness. Until VF-020B3, the application does not map
-the three new columns: SQLAlchemy neither selects nor writes them, so the
-same code also runs against a database where 1e921a4a4412 has not been
-applied yet. During that window, goal transactions created by the
-application get NULL in currency, effective_date and client_request_id.
-VF-020B3 maps the columns and always writes currency; VF-020B4 fills any
-remaining currency NULLs from the owning goal and then makes currency
-NOT NULL. Downgrading 1e921a4a4412 drops the three columns and their
-values.
+client_request_id uniqueness. Between that migration and VF-020B3 the
+application did not map the three columns, so goal transactions created
+in that window have NULL in all three. VF-020B3 (no schema change) maps
+the columns and uq_goal_transactions_user_id_client_request_id in the
+ORM model - the temporary ORM/database divergence is resolved - and
+always writes currency and effective_date, plus client_request_id when the
+request sends one. The schema is unchanged: currency stays nullable until
+VF-020B4, which fills any remaining currency NULLs from the owning goal,
+makes currency NOT NULL and adds the (goal_id, user_id, currency) foreign
+key. Downgrading 1e921a4a4412 drops the three columns and their values,
+which after VF-020B3 includes recorded effective dates and idempotency
+keys.
 
 7. Accounts
 

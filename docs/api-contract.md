@@ -755,7 +755,8 @@ Goal's current ledger balance - an actual currency change is rejected with
 409 Conflict ("Goal currency cannot be changed after transaction history
 exists."). Resending the Goal's current currency (normalized, any casing)
 is not an actual change and is always allowed, even with history. This
-exists because GoalTransaction rows do not store their own currency:
+exists because every GoalTransaction amount is expressed in its Goal's
+currency (since VF-020B3 each new row also stores a copy of it):
 changing Goal.currency after history exists would reinterpret every
 historical ledger amount in a different currency, which is invalid. All
 other fields - name, target_amount, target_date, status - remain freely
@@ -814,7 +815,8 @@ Request:
 {
   "type": "contribution",
   "amount": "100.00",
-  "description": "Payday transfer"
+  "description": "Payday transfer",
+  "client_request_id": "5f0c6a8e-3d2b-4c1a-9e7f-2b8d4a6c1e90"
 }
 
 Fields:
@@ -843,6 +845,29 @@ description
 no
 
 optional, max 255 characters
+
+effective_date
+
+no
+
+business date of the transaction, a calendar date "YYYY-MM-DD"
+(VF-020B3). Omitted or null means the server date. Today and past dates
+are accepted; on a new request a future date is rejected with 422 ("Goal
+transaction effective date cannot be in the future.") - a replay of an
+already used client_request_id is resolved by the Idempotency rules below
+instead. Datetime strings, timestamps and other formats are rejected with
+422, so no timezone can change the recorded day.
+
+client_request_id
+
+no
+
+UUID create idempotency key (VF-020B3), see Idempotency below. Optional
+during the rollout so older clients keep working; the mobile app always
+sends one.
+
+currency is not a request field: the transaction's currency is always
+copied from the Goal and a client-sent currency is rejected (422).
 
 Business rules:
 
@@ -873,7 +898,59 @@ Transactions are append-only: there is no PATCH or DELETE for an existing
 transaction. A correction is represented later by a new, opposite
 transaction (a compensating entry), never by editing history.
 
-Response: 201 with the created transaction (see Goal Transaction Response
+Every new transaction stores currency = the Goal's currency (read from the
+locked Goal row) and an effective_date (the request value, or the server
+date when omitted). Rows written before VF-020B3 keep NULL in these
+columns; they are never backfilled from created_at.
+
+Idempotency (VF-020B3): client_request_id is unique per user across all of
+the user's Goals (the database constraint
+uq_goal_transactions_user_id_client_request_id).
+
+- First request with a key: 201, exactly one transaction is created and
+  stores the key.
+- Exact replay (same key, same payload): 200 with the originally stored
+  transaction; nothing new is written.
+- Same key, different payload: 409 Conflict ("client_request_id has
+  already been used for a different goal transaction."); nothing is
+  written and the original is not revealed or changed.
+- Payload comparison: goal_id (from the path), type, amount as a decimal
+  value ("10" equals "10.00"), and description exactly as stored (it is
+  never normalized, so null and "" differ). effective_date is compared
+  only when the replay request states one: an omitted (or null)
+  effective_date is ignored, so a retry after midnight still replays the
+  original transaction with its original date instead of conflicting with
+  a recomputed "today".
+- A key is resolved before the Goal's current state is checked: an exact
+  replay returns 200 even if the Goal has since been archived or its
+  balance can no longer cover the original withdrawal. A new key follows
+  the normal rules (archived contribution 409, insufficient balance 409).
+- The lookup is always scoped to the authenticated user: another user's
+  keys are never visible and never match. When the request has no key, or
+  the user has not used the key yet, the normal Goal rules apply - a
+  missing Goal or another user's Goal is 404. When the user's own key is
+  already bound to one of the user's transactions, the request is
+  resolved against that transaction before any Goal lookup: a different
+  goal_id (including a missing or another user's Goal id) or any other
+  payload difference is a 409 conflict. That 409 depends only on the
+  user's own stored transaction and reveals nothing about the target
+  Goal.
+- Concurrent requests with the same key create exactly one transaction:
+  the others resolve as replay (200) or conflict (409) - through the
+  Goal row lock and, for different Goals, through the unique constraint
+  (the losing insert is rolled back and resolved against the winner) -
+  never as a raw database error or 500.
+- A bound key is resolved first: a replay stating a different
+  effective_date is a 409 even when that date is in the future. The
+  future-date check (422) applies only to new requests (no key, or a key
+  not used yet) and runs before the Goal lookup, so for them it takes
+  precedence over 404 and the archived/balance 409s.
+
+Without client_request_id every request creates a new transaction (201)
+and the stored key is NULL; no key is generated by the server.
+
+Response: 201 with the created transaction, or 200 with the original
+transaction for an idempotent replay (see Goal Transaction Response
 below).
 
 List Goal Transactions
@@ -920,6 +997,21 @@ created_at
 
 for opening_balance entries created by migration backfill, this is the
 original Goal's created_at, not the migration's run time
+
+currency
+
+the Goal's currency, stored with the row since VF-020B3; null only for
+history recorded before VF-020B3 (the Goal's currency still applies)
+
+effective_date
+
+business date "YYYY-MM-DD" (VF-020B3); null only for history recorded
+before VF-020B3 - clients display created_at for it
+
+client_request_id
+
+the create request's idempotency key, or null when none was sent (and for
+all earlier history)
 
 9. Receipts
 
