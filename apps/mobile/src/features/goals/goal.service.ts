@@ -78,7 +78,10 @@ export async function getGoalTransactions(
  * authenticated user. The backend is the sole authority on insufficient-
  * funds validation (a withdrawal larger than the current ledger balance
  * fails with 409) -- this never pre-validates the amount against the
- * goal's balance client-side.
+ * goal's balance client-side. With a client_request_id (always sent by
+ * this app, see goal-transaction-attempts.ts) the backend answers 201 for
+ * a new transaction and 200 with the original transaction for an exact
+ * replay; apiRequest resolves both the same way.
  */
 export async function createGoalTransaction(
   goalId: string,

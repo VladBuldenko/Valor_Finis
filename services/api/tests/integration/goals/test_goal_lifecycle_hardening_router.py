@@ -2,6 +2,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_transaction_repository
@@ -11,6 +12,9 @@ from tests.helpers import auth_headers, create_goal, create_goal_transaction
 def _seed_opening_balance(goal_id: str, user_id: str, amount: str = "300.00") -> None:
     db_session = SessionLocal()
     try:
+        goal_currency = db_session.execute(
+            text("SELECT currency FROM goals WHERE id = :id"), {"id": goal_id},
+        ).scalar_one()
         goal_transaction_repository.create_transaction(
             db_session=db_session,
             goal_id=goal_id,
@@ -18,6 +22,8 @@ def _seed_opening_balance(goal_id: str, user_id: str, amount: str = "300.00") ->
             type="opening_balance",
             amount=Decimal(amount),
             description=None,
+            currency=goal_currency,
+            effective_date=None,
         )
     finally:
         db_session.close()

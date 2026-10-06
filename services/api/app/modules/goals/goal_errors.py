@@ -55,7 +55,8 @@ class GoalCurrencyImmutableError(Exception):
         Represents an invalid Goal currency change in the goals module.
 
     Why:
-        GoalTransaction rows do not store their own currency. Changing a
+        Every GoalTransaction amount is expressed in its Goal's currency
+        (since VF-020B3 each new row also stores a copy of it). Changing a
         Goal's currency after history exists would silently reinterpret
         every historical ledger amount in a different currency, which is
         invalid. A PATCH that resends the same normalized currency is not
@@ -78,6 +79,63 @@ class GoalDeletionNotAllowedError(Exception):
         brought the balance back to 0) must not be hard-deleted, since that
         would silently destroy real financial history. The user can archive
         the goal instead via PATCH status="archived".
+    """
+
+    pass
+
+
+class GoalTransactionIdempotencyConflictError(Exception):
+    """
+    Raised when a create request reuses a client_request_id that already
+    identifies a goal transaction created from a different payload.
+
+    What:
+        Represents a create-idempotency conflict in the goals module
+        (VF-020B3).
+
+    Why:
+        The same key with the same original payload is an idempotent
+        replay (200); the same key with any different payload is ambiguous
+        and must never silently create or return a different transaction.
+        The existing transaction is not revealed.
+    """
+
+    pass
+
+
+class GoalTransactionClientRequestIdTakenError(Exception):
+    """
+    Raised by the repository when inserting a goal transaction violates
+    uq_goal_transactions_user_id_client_request_id.
+
+    What:
+        Internal signal from the goal transaction repository to the
+        service (VF-020B3); never mapped to an HTTP response.
+
+    Why:
+        A concurrent request with the same (user_id, client_request_id)
+        committed first - possibly for another goal, so the goal row lock
+        did not serialize the two. The service rolls back, reloads the
+        winning row and resolves the request as a replay or a conflict, so
+        a raw IntegrityError never reaches the client.
+    """
+
+    pass
+
+
+class GoalTransactionEffectiveDateInFutureError(Exception):
+    """
+    Raised when a goal transaction names an effective_date after the
+    server date.
+
+    What:
+        Represents an invalid business date in the goals module
+        (VF-020B3, VF-020A P13).
+
+    Why:
+        effective_date records when the money actually moved, so it can be
+        today or any past date but never a future one. It is checked before
+        the goal is looked up, so it takes precedence over 404/409.
     """
 
     pass

@@ -3226,6 +3226,8 @@ def test_get_goal_progress_does_not_n_plus_1_query_ledger_balances(
                 type="contribution",
                 amount=Decimal(f"{10 + index}.00"),
                 description=None,
+                currency=goal.currency,
+                effective_date=None,
             )
 
         query_count = 0

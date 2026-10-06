@@ -70,13 +70,20 @@ export type GoalTransactionType =
 
 // Mirrors backend GoalTransactionResponse. amount is always positive; the
 // transaction's `type` carries direction (VF-016B/C), never the amount's
-// sign. There is no currency field here by design -- a GoalTransaction
-// does not store its own currency, it always represents an amount in its
-// parent Goal's currency (see Goal.currency above), which is why the
-// backend now keeps Goal.currency immutable once any GoalTransaction
-// exists (VF-016E). Money fields stay JSON strings, matching Goal --
-// never parse them for display or arithmetic, only render the exact
-// string the backend returns.
+// sign. A GoalTransaction always represents an amount in its parent Goal's
+// currency (see Goal.currency above), which is why the backend keeps
+// Goal.currency immutable once any GoalTransaction exists (VF-016E). Money
+// fields stay JSON strings, matching Goal -- never parse them for display
+// or arithmetic, only render the exact string the backend returns.
+//
+// VF-020B3 runtime fields, all nullable for history recorded before them:
+// - currency: copy of the Goal's currency stored with the row (null only
+//   for older history -- the Goal's currency still applies).
+// - effective_date: business date "YYYY-MM-DD" (null only for older
+//   history; display falls back to created_at -- see
+//   getGoalTransactionDisplayDate). A date-only string: never parse it
+//   into a Date.
+// - client_request_id: idempotency key the create request carried, if any.
 export type GoalTransaction = {
   id: string;
   goal_id: string;
@@ -85,6 +92,9 @@ export type GoalTransaction = {
   amount: string;
   description: string | null;
   created_at: string;
+  currency: string | null;
+  effective_date: string | null;
+  client_request_id: string | null;
 };
 
 // Mirrors backend GoalTransactionCreate. Only contribution and withdrawal
@@ -93,8 +103,17 @@ export type GoalTransaction = {
 // system/migration-only and the backend rejects it from this endpoint
 // (422). user_id/goal_id are intentionally omitted -- user_id comes from
 // authentication and goal_id comes from the request path, not the body.
+// currency is intentionally absent: the backend always copies it from the
+// Goal and rejects a client-sent one.
+// client_request_id (VF-020B3) is the create idempotency key: optional in
+// the backend contract for older clients, but this app always sends one
+// (see goal-transaction-attempts.ts). effective_date is optional too and
+// this app never sends it -- the server assigns today's date, which keeps a
+// retry after midnight an exact replay.
 export type GoalTransactionCreateInput = {
   type: "contribution" | "withdrawal";
   amount: string;
   description?: string;
+  client_request_id?: string;
+  effective_date?: string;
 };

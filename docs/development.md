@@ -375,6 +375,10 @@ PostgreSQL
 
 Client types mirror the API contract: the mobile client keeps strict TypeScript types aligned with the backend response schemas, and all business data goes through the FastAPI client.
 
+The mobile app has no test framework dependency. Pure helper modules can have focused tests written as plain JavaScript for Node's built-in test runner, which imports the TypeScript helper through Node's type stripping (Node >= 22.18), for example (from apps/mobile):
+
+node --test src/features/goals/goal-transaction-attempts.test.mjs
+
 ✅ Definition of Done
 
 A feature is complete when:

@@ -2,6 +2,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_service, goal_transaction_repository
@@ -23,6 +24,9 @@ def _create_goal(db_session, user_id, currency="EUR", target_amount=Decimal("200
 
 
 def _add_transaction(db_session, goal_id, user_id, type, amount) -> None:
+    goal_currency = db_session.execute(
+        text("SELECT currency FROM goals WHERE id = :id"), {"id": str(goal_id)},
+    ).scalar_one()
     goal_transaction_repository.create_transaction(
         db_session=db_session,
         goal_id=goal_id,
@@ -30,6 +34,8 @@ def _add_transaction(db_session, goal_id, user_id, type, amount) -> None:
         type=type,
         amount=amount,
         description=None,
+        currency=goal_currency,
+        effective_date=None,
     )
 
 

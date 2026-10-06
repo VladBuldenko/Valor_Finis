@@ -45,6 +45,8 @@ from app.modules.goals.goal_errors import (
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
     GoalNotFoundError,
+    GoalTransactionEffectiveDateInFutureError,
+    GoalTransactionIdempotencyConflictError,
 )
 from app.modules.income.income_errors import (
     IncomeAccountCurrencyMismatchError,
@@ -195,6 +197,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalDeletionNotAllowedError: (
         status.HTTP_409_CONFLICT,
         "Goal with transaction history cannot be deleted. Archive it instead.",
+    ),
+    GoalTransactionIdempotencyConflictError: (
+        status.HTTP_409_CONFLICT,
+        "client_request_id has already been used for a different goal transaction.",
+    ),
+    GoalTransactionEffectiveDateInFutureError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Goal transaction effective date cannot be in the future.",
     ),
     IncomeNotFoundError: (
         status.HTTP_404_NOT_FOUND,

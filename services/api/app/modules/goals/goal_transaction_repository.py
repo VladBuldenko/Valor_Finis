@@ -1,11 +1,20 @@
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import case, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.goals.goal_errors import GoalTransactionClientRequestIdTakenError
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
+
+# The create-idempotency unique constraint (VF-020B2, used since VF-020B3).
+# Only a violation of exactly this constraint is translated into
+# GoalTransactionClientRequestIdTakenError; every other IntegrityError
+# propagates unchanged.
+CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT = "uq_goal_transactions_user_id_client_request_id"
 
 
 # Calculates a goal's ledger balance from its transaction history.
@@ -48,10 +57,19 @@ def calculate_ledger_balance(
 # Creates and saves a new append-only goal transaction record.
 # This function exists to isolate PostgreSQL write operations for the
 # ledger from business logic and HTTP handling. It never commits by
-# default so the caller (goal_service.create_goal_transaction) can keep
-# this insert inside the same service-controlled database transaction as
-# the owned Goal row lock it acquired first (SELECT ... FOR UPDATE) -
-# the lock must stay held until the insert itself commits.
+# default so the caller (goal_service) can keep this insert inside the
+# same service-controlled database transaction as the owned Goal row lock
+# it acquired first (SELECT ... FOR UPDATE) - the lock must stay held until
+# the insert itself commits. It persists exactly the values it is given:
+# the caller decides currency (always the owning goal's) and effective_date.
+# A duplicate (user_id, client_request_id) fails the flush on
+# uq_goal_transactions_user_id_client_request_id; that one constraint is
+# re-raised as GoalTransactionClientRequestIdTakenError (identified by
+# PostgreSQL constraint metadata, never by message text - the same pattern
+# account_transfer_repository uses) so the service can resolve the race as
+# a replay or a conflict. Every other IntegrityError propagates unchanged.
+# The session is left in its failed state: rolling back belongs to the
+# caller, which owns the transaction.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal this transaction belongs to.
@@ -59,11 +77,19 @@ def calculate_ledger_balance(
 # - type: one of "opening_balance", "contribution", "withdrawal".
 # - amount: always positive; direction is carried by type.
 # - description: optional free-text note.
+# - currency: the owning goal's currency.
+# - effective_date: business date of the transaction (None only for
+#   rows that represent history without a known date).
+# - client_request_id: optional client-generated idempotency key.
 # - commit: whether the repository should commit the transaction
 #   immediately. Pass False when composing this write with other changes
 #   the caller will commit together.
 # Returns:
 # - GoalTransactionModel instance saved/flushed in the current transaction.
+# Raises:
+# - GoalTransactionClientRequestIdTakenError: the user already has a goal
+#   transaction with this client_request_id (original IntegrityError
+#   chained).
 def create_transaction(
     db_session: Session,
     goal_id: UUID,
@@ -71,6 +97,9 @@ def create_transaction(
     type: str,
     amount: Decimal,
     description: Optional[str],
+    currency: str,
+    effective_date: Optional[date],
+    client_request_id: Optional[UUID] = None,
     commit: bool = True,
 ) -> GoalTransactionModel:
     transaction_model = GoalTransactionModel(
@@ -79,17 +108,62 @@ def create_transaction(
         type=type,
         amount=amount,
         description=description,
+        currency=currency,
+        effective_date=effective_date,
+        client_request_id=client_request_id,
     )
 
     db_session.add(transaction_model)
 
+    try:
+        db_session.flush()
+    except IntegrityError as error:
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT:
+            raise GoalTransactionClientRequestIdTakenError() from error
+
+        raise
+
     if commit:
         db_session.commit()
         db_session.refresh(transaction_model)
-    else:
-        db_session.flush()
 
     return transaction_model
+
+
+# Returns the user's goal transaction created with a given client request
+# id, if any.
+# This function exists as the single lookup the create-idempotency
+# algorithm uses (its fast lookup, its second lookup under the goal row
+# lock, and its unique-violation recovery). It never locks: an idempotent
+# replay must not take row locks. The key is unique per user across all of
+# the user's goals, so the lookup is scoped by user only - never by goal -
+# and can never return another user's transaction.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier.
+# - client_request_id: client-generated create idempotency key.
+# Returns:
+# - GoalTransactionModel if one exists for this user and key, None
+#   otherwise.
+def get_transaction_by_client_request_id(
+    db_session: Session,
+    user_id: UUID,
+    client_request_id: UUID,
+) -> Optional[GoalTransactionModel]:
+    return (
+        db_session.query(GoalTransactionModel)
+        .filter(
+            GoalTransactionModel.user_id == user_id,
+            GoalTransactionModel.client_request_id == client_request_id,
+        )
+        .first()
+    )
 
 
 # Returns a goal's full transaction history, newest first.

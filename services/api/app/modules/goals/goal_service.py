@@ -1,4 +1,7 @@
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -9,6 +12,9 @@ from app.modules.goals.goal_errors import (
     GoalCurrencyImmutableError,
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
+    GoalTransactionClientRequestIdTakenError,
+    GoalTransactionEffectiveDateInFutureError,
+    GoalTransactionIdempotencyConflictError,
 )
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_schemas import (
@@ -16,10 +22,36 @@ from app.modules.goals.goal_schemas import (
     GoalResponse,
     GoalUpdate,
 )
+from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from app.modules.goals.goal_transaction_schemas import (
     GoalTransactionCreate,
     GoalTransactionResponse,
 )
+
+
+@dataclass(frozen=True)
+class GoalTransactionCreateResult:
+    """
+    Outcome of create_or_replay_goal_transaction.
+
+    What:
+        The transaction's public representation plus whether this call
+        created it.
+
+    Why:
+        POST /api/v1/goals/{goal_id}/transactions has two successful
+        outcomes (VF-020B3) - 201 for a newly created transaction and 200
+        for an idempotent replay of an already-created one - and the router
+        needs to know which occurred without re-deriving it.
+
+    Fields:
+        transaction: the transaction's public representation.
+        created: True if this call created the transaction, False for a
+            replay.
+    """
+
+    transaction: GoalTransactionResponse
+    created: bool
 
 
 # Builds a GoalResponse from a Goal model and an already-computed
@@ -249,53 +281,189 @@ def delete_goal(
     )
 
 
+# Returns whether a stored goal transaction was created from exactly this
+# create request's payload.
+# This function exists as the single definition of "same payload" for goal
+# transaction create idempotency (VF-020B3):
+# - goal_id, type and description must be equal. description is compared
+#   as-is because the create path never normalizes it - it is stored
+#   exactly as sent - so None and "" are different payloads, the same rule
+#   AccountTransfer idempotency uses.
+# - amount is compared as Decimal, so "10" equals the stored "10.00".
+# - effective_date is compared only when this request states one. An
+#   omitted (or null) effective_date means "the server date at creation";
+#   recomputing today and comparing it would turn a retry after midnight
+#   into a false conflict, so it is ignored and the original date stands.
+# client_request_id and user_id already matched through the lookup that
+# found the transaction.
+# Parameters:
+# - transaction_model: the stored transaction found by (user_id,
+#   client_request_id).
+# - goal_id: goal identifier from the current request path.
+# - transaction_data: the validated create request.
+# Returns:
+# - True if every compared field matches.
+def _matches_original_transaction_request(
+    transaction_model: GoalTransactionModel,
+    goal_id: UUID,
+    transaction_data: GoalTransactionCreate,
+) -> bool:
+    if (
+        transaction_data.effective_date is not None
+        and transaction_model.effective_date != transaction_data.effective_date
+    ):
+        return False
+
+    return (
+        transaction_model.goal_id == goal_id
+        and transaction_model.type == transaction_data.type
+        and transaction_model.amount == transaction_data.amount
+        and transaction_model.description == transaction_data.description
+    )
+
+
+# Resolves a create request whose client_request_id already identifies a
+# stored goal transaction.
+# This function exists so every idempotency path (fast lookup, second
+# lookup under the goal lock, unique-violation recovery) resolves an
+# existing transaction identically. It never looks at the goal's current
+# state: once the transaction exists, an exact replay returns it even if
+# the goal was archived or its balance dropped since - a replay is not a
+# new contribution or withdrawal.
+# Parameters:
+# - transaction_model: the stored transaction found by (user_id,
+#   client_request_id).
+# - goal_id: goal identifier from the current request path.
+# - transaction_data: the validated create request.
+# Returns:
+# - GoalTransactionCreateResult with created=False.
+# Raises:
+# - GoalTransactionIdempotencyConflictError: the stored transaction came
+#   from a different payload.
+def _resolve_existing_transaction(
+    transaction_model: GoalTransactionModel,
+    goal_id: UUID,
+    transaction_data: GoalTransactionCreate,
+) -> GoalTransactionCreateResult:
+    if not _matches_original_transaction_request(transaction_model, goal_id, transaction_data):
+        raise GoalTransactionIdempotencyConflictError()
+
+    return GoalTransactionCreateResult(
+        transaction=GoalTransactionResponse.model_validate(transaction_model),
+        created=False,
+    )
+
+
 # Creates a contribution or withdrawal transaction for a goal owned by the
-# authenticated user.
+# authenticated user, idempotently when the request carries a
+# client_request_id.
 # This function exists as the single write path for balance-changing goal
-# transactions (VF-016C). The whole operation runs as one database
+# transactions (VF-016C). The whole write is one service-owned database
 # transaction:
-#   1. lock the owned Goal row (SELECT ... FOR UPDATE) so two concurrent
-#      writes never validate against the same stale balance;
-#   2. reject a contribution to an archived goal (VF-020A P10);
-#   3. calculate the current ledger balance from goal_transactions;
-#   4. for a withdrawal, reject if it would take the balance negative;
-#   5. insert the new append-only transaction;
-#   6. commit once.
-# The Goal row itself is never written here (VF-016G) - its balance is
-# never stored anywhere, only ever computed from goal_transactions, so it
-# cannot drift from the ledger. The row lock is still essential: it is
-# what serializes this write against a concurrent one on the same Goal
-# (see get_goal_by_id_for_update), independent of whether anything on the
-# Goal row itself changes.
+#   1. resolve effective_date (omitted -> server date) and reject a future
+#      date (422) before any lookup;
+#   2. with a key: fast lookup by (user_id, client_request_id), no row
+#      locks - an existing transaction is resolved as replay (200) or
+#      conflict (409) with NO goal lifecycle or balance validation
+#      (VF-020B3); when nothing is found, the lookup's transaction is ended
+#      so the goal is always locked before goal_transactions is touched;
+#   3. lock the owned Goal row (SELECT ... FOR UPDATE; missing or foreign
+#      goal -> 404) so two concurrent writes never validate against the
+#      same stale balance;
+#   4. with a key: second lookup under the goal lock - a same-key request
+#      for this goal may have committed while this one waited - resolved
+#      exactly like step 2;
+#   5. reject a contribution to an archived goal (VF-020A P10);
+#   6. calculate the current ledger balance; reject a withdrawal that would
+#      take it negative;
+#   7. insert the append-only transaction with currency copied from the
+#      locked goal (never from the client), the resolved effective_date and
+#      the key;
+#   8. commit once;
+#   9. if the insert hits uq_goal_transactions_user_id_client_request_id (a
+#      concurrent same-key request for ANOTHER goal, not serialized by this
+#      goal's lock, inserted first), roll back, reload the winner and
+#      resolve it like step 2.
+# Without a key, steps 2, 4 and 9 do not apply: every request creates a new
+# transaction (legacy clients; the key stays NULL - none is synthesized).
+# The Goal row itself is never written here (VF-016G); the row lock still
+# serializes this write against concurrent writes, archive and delete on
+# the same goal. Archived-goal rule (VF-020B1): an archived goal accepts
+# withdrawals but no new contributions; active and completed goals accept
+# both.
 #
-# Archived-goal rule (VF-020B1): an archived goal accepts withdrawals but
-# no contributions; active and completed goals accept both. The status is
-# read from the locked row, and archiving (update_goal) takes the same row
-# lock, so a contribution and a concurrent archive are serialized: either
-# the contribution commits first and the archive follows, or the archive
-# commits first and the contribution is rejected.
+# "today" is the server date, resolved once per call (the same notion
+# AccountTransfer uses); as_of exists so tests can pin it.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - goal_id: financial goal identifier.
 # - transaction_data: validated contribution/withdrawal request data.
 # - user_id: authenticated user identifier that owns the goal.
+# - as_of: optional reference "today"; defaults to date.today().
 # Returns:
-# - GoalTransactionResponse for the newly created transaction.
+# - GoalTransactionCreateResult - created=True for a new transaction,
+#   created=False for an idempotent replay.
 # Raises:
+# - GoalTransactionEffectiveDateInFutureError: effective_date > today.
+# - GoalTransactionIdempotencyConflictError: the key was used for a
+#   different payload.
 # - GoalNotFoundError: when goal does not exist or does not belong to the user.
-# - GoalArchivedError: when a contribution targets an archived goal.
-# - GoalInsufficientFundsError: when a withdrawal exceeds the current balance.
-def create_goal_transaction(
+# - GoalArchivedError: when a new contribution targets an archived goal.
+# - GoalInsufficientFundsError: when a new withdrawal exceeds the balance.
+def create_or_replay_goal_transaction(
     db_session: Session,
     goal_id: UUID,
     transaction_data: GoalTransactionCreate,
     user_id: UUID,
-) -> GoalTransactionResponse:
+    as_of: Optional[date] = None,
+) -> GoalTransactionCreateResult:
+    today = as_of if as_of is not None else date.today()
+    requested_date = transaction_data.effective_date
+
+    if requested_date is not None and requested_date > today:
+        raise GoalTransactionEffectiveDateInFutureError()
+
+    client_request_id = transaction_data.client_request_id
+
+    if client_request_id is not None:
+        existing_transaction = goal_transaction_repository.get_transaction_by_client_request_id(
+            db_session=db_session,
+            user_id=user_id,
+            client_request_id=client_request_id,
+        )
+
+        if existing_transaction is not None:
+            return _resolve_existing_transaction(existing_transaction, goal_id, transaction_data)
+
+        # End the read-only lookup transaction before locking the goal: the
+        # lookup holds a table lock on goal_transactions until the
+        # transaction ends, and every write path (and the VF-020B2 migration
+        # order) takes goals first, then goal_transactions. Keeping it would
+        # invert that order and could deadlock with a migration that locks
+        # both tables.
+        db_session.rollback()
+
     goal_model = goal_repository.get_goal_by_id_for_update(
         db_session=db_session,
         goal_id=goal_id,
         user_id=user_id,
     )
+
+    if client_request_id is not None:
+        existing_transaction = goal_transaction_repository.get_transaction_by_client_request_id(
+            db_session=db_session,
+            user_id=user_id,
+            client_request_id=client_request_id,
+        )
+
+        if existing_transaction is not None:
+            try:
+                return _resolve_existing_transaction(
+                    existing_transaction, goal_id, transaction_data,
+                )
+            finally:
+                # Nothing was written; release the goal lock taken above.
+                db_session.rollback()
 
     if goal_model.status == "archived" and transaction_data.type == "contribution":
         db_session.rollback()
@@ -314,20 +482,78 @@ def create_goal_transaction(
         db_session.rollback()
         raise GoalInsufficientFundsError()
 
-    transaction_model = goal_transaction_repository.create_transaction(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-        type=transaction_data.type,
-        amount=transaction_data.amount,
-        description=transaction_data.description,
-        commit=False,
-    )
+    try:
+        transaction_model = goal_transaction_repository.create_transaction(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+            type=transaction_data.type,
+            amount=transaction_data.amount,
+            description=transaction_data.description,
+            currency=goal_model.currency,
+            effective_date=requested_date if requested_date is not None else today,
+            client_request_id=client_request_id,
+            commit=False,
+        )
 
-    db_session.commit()
+        db_session.commit()
+    except GoalTransactionClientRequestIdTakenError:
+        db_session.rollback()
+
+        winning_transaction = goal_transaction_repository.get_transaction_by_client_request_id(
+            db_session=db_session,
+            user_id=user_id,
+            client_request_id=client_request_id,
+        )
+
+        if winning_transaction is None:
+            # The unique violation proves a same-key transaction committed,
+            # so failing to reload it is an unexpected state - never
+            # fabricate a result; surface the original error.
+            raise
+
+        return _resolve_existing_transaction(winning_transaction, goal_id, transaction_data)
+    except Exception:
+        db_session.rollback()
+        raise
+
     db_session.refresh(transaction_model)
 
-    return GoalTransactionResponse.model_validate(transaction_model)
+    return GoalTransactionCreateResult(
+        transaction=GoalTransactionResponse.model_validate(transaction_model),
+        created=True,
+    )
+
+
+# Creates a contribution or withdrawal transaction and returns only the
+# transaction.
+# This function exists for callers that do not need the 201/200 create
+# versus replay distinction; it delegates to
+# create_or_replay_goal_transaction, the single write path, unchanged.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: financial goal identifier.
+# - transaction_data: validated contribution/withdrawal request data.
+# - user_id: authenticated user identifier that owns the goal.
+# - as_of: optional reference "today"; defaults to date.today().
+# Returns:
+# - GoalTransactionResponse for the created (or replayed) transaction.
+# Raises:
+# - The same domain errors as create_or_replay_goal_transaction.
+def create_goal_transaction(
+    db_session: Session,
+    goal_id: UUID,
+    transaction_data: GoalTransactionCreate,
+    user_id: UUID,
+    as_of: Optional[date] = None,
+) -> GoalTransactionResponse:
+    return create_or_replay_goal_transaction(
+        db_session=db_session,
+        goal_id=goal_id,
+        transaction_data=transaction_data,
+        user_id=user_id,
+        as_of=as_of,
+    ).transaction
 
 
 # Returns the full transaction history for a goal owned by the

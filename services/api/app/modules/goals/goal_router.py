@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -133,14 +133,21 @@ def delete_goal(
     )
 
 
-# Creates a contribution or withdrawal transaction for a goal through the API.
-# This function exists to receive validated HTTP input and delegate the
-# atomic ledger write to the service layer. opening_balance is unreachable
-# here - GoalTransactionCreate's type Literal only allows contribution and
-# withdrawal.
+# Creates a contribution or withdrawal transaction for a goal through the
+# API, idempotently when client_request_id is sent.
+# This function exists to receive validated HTTP input, delegate the
+# atomic ledger write to the service layer, and translate the service's
+# create-or-replay outcome into the HTTP status (VF-020B3): 201 when this
+# request created the transaction, 200 when client_request_id identifies a
+# transaction already created from the same payload (it is returned
+# unchanged). The same key with a different payload (409) and a future
+# effective_date (422) are raised by the service and mapped centrally.
+# opening_balance is unreachable here - GoalTransactionCreate's type
+# Literal only allows contribution and withdrawal.
 # Parameters:
 # - goal_id: financial goal identifier from the URL path.
 # - transaction_data: validated request body containing transaction data.
+# - response: FastAPI response, used only to downgrade 201 to 200 on replay.
 # - current_user: authenticated user resolved from request authentication data.
 # - db_session: active SQLAlchemy session injected by FastAPI.
 # Returns:
@@ -151,19 +158,38 @@ def delete_goal(
     "/{goal_id}/transactions",
     response_model=GoalTransactionResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_201_CREATED: {
+            "description": "A new goal transaction was created.",
+        },
+        status.HTTP_200_OK: {
+            "model": GoalTransactionResponse,
+            "description": (
+                "Idempotent replay: client_request_id already identifies a "
+                "goal transaction created from the same payload; it is "
+                "returned and nothing new is created."
+            ),
+        },
+    },
 )
 def create_goal_transaction(
     goal_id: UUID,
     transaction_data: GoalTransactionCreate,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> GoalTransactionResponse:
-    return goal_service.create_goal_transaction(
+    result = goal_service.create_or_replay_goal_transaction(
         db_session=db_session,
         goal_id=goal_id,
         transaction_data=transaction_data,
         user_id=current_user.id,
     )
+
+    if not result.created:
+        response.status_code = status.HTTP_200_OK
+
+    return result.transaction
 
 
 # Returns a goal's full transaction history through the API.

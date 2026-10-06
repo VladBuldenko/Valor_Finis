@@ -1,16 +1,18 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Numeric,
     String,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -61,16 +63,26 @@ class GoalTransactionModel(Base):
             opening_balance rows this is set to the source Goal's own
             created_at (not migration execution time), since the opening
             balance represents pre-existing state, not a new event.
+        currency: Currency of the amount - always the owning Goal's
+            currency, copied by the service from the locked Goal row and
+            never accepted from the client (VF-020B3). Nullable in the
+            database until VF-020B4: rows written before VF-020B3 by code
+            that did not map this column may still be NULL.
+        effective_date: Business date of the transaction (VF-020A P13).
+            Every row created since VF-020B3 has one (request value, or the
+            server date when omitted). NULL only for history created before
+            VF-020B3 - it is never derived from created_at.
+        client_request_id: Optional client-generated idempotency key for
+            the create request (VF-020B3). Unique per user through
+            uq_goal_transactions_user_id_client_request_id; NULL for rows
+            created without a key (older clients, history). PostgreSQL
+            treats NULLs as distinct, so any number of key-less rows is
+            allowed.
 
-    Note (VF-020B2): the goal_transactions table also has three nullable
-    columns that are deliberately NOT mapped here yet - currency (backfilled
-    from the owning goal for existing rows), effective_date and
-    client_request_id (NULL for existing rows), plus the unique constraint
-    uq_goal_transactions_user_id_client_request_id on (user_id,
-    client_request_id). They are mapped in VF-020B3. Until then the ORM
-    neither selects nor writes them, so this code also runs against a
-    database where the VF-020B2 migration has not been applied yet; rows
-    created meanwhile get NULL in all three columns.
+    Note: the three columns above were added by the VF-020B2 expand
+    migration (1e921a4a4412) and are mapped since VF-020B3. currency becomes
+    NOT NULL, with a (goal_id, user_id, currency) foreign key, only in the
+    VF-020B4 contract step.
     """
 
     __tablename__ = "goal_transactions"
@@ -94,6 +106,14 @@ class GoalTransactionModel(Base):
             ["goals.id", "goals.user_id"],
             name="fk_goal_transactions_goal_id_user_id",
             ondelete="RESTRICT",
+        ),
+        # Create idempotency key (VF-020B2 constraint, used since VF-020B3):
+        # a key identifies at most one transaction per user, across all of
+        # the user's goals.
+        UniqueConstraint(
+            "user_id",
+            "client_request_id",
+            name="uq_goal_transactions_user_id_client_request_id",
         ),
     )
 
@@ -134,4 +154,19 @@ class GoalTransactionModel(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    currency: Mapped[Optional[str]] = mapped_column(
+        String(3),
+        nullable=True,
+    )
+
+    effective_date: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    client_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
     )
