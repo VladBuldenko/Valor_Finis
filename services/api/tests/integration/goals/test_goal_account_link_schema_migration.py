@@ -3,6 +3,7 @@ import inspect
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Generator, Optional
 from uuid import UUID, uuid4
@@ -13,6 +14,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import IntegrityError
 
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from app.db.database_base import Base
+from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from tests.database_safety import validate_test_database_url
@@ -353,9 +358,11 @@ def test_c1_schema_is_exactly_as_agreed_and_b4_contract_is_untouched(
         "FOREIGN KEY (goal_id, user_id, currency) REFERENCES goals(id, user_id, currency)"
     )
 
-    index = _index_definitions(b4_database)[LINKED_INDEX]
-    assert "(account_id)" in index and "WHERE (account_id IS NOT NULL)" in index
-    assert "UNIQUE" not in index
+    assert _index_definitions(b4_database)[LINKED_INDEX] == (
+        "CREATE INDEX ix_goal_transactions_linked_account_id "
+        "ON public.goal_transactions USING btree (account_id) "
+        "WHERE (account_id IS NOT NULL)"
+    )
 
     accounts = _definitions(b4_database, "accounts")
     assert accounts == b4_account_constraints
@@ -602,24 +609,164 @@ def _load_migration():
     return module
 
 
-# Tests the migration's TABLE-lock order and placement: accounts
-# (SHARE ROW EXCLUSIVE) first, goal_transactions (ACCESS EXCLUSIVE) second,
-# taken before any other statement in upgrade and downgrade, with no
-# hard-coded lock_timeout. (This is not the C2 runtime row-lock order.)
+# Tests the migration's TABLE-lock statements and placement, per direction
+# (they differ on purpose): UPGRADE takes accounts in SHARE ROW EXCLUSIVE
+# (enough for ADD FOREIGN KEY) then goal_transactions in ACCESS EXCLUSIVE;
+# DOWNGRADE takes accounts in ACCESS EXCLUSIVE (DROP of that foreign key needs
+# it, so it is taken up front instead of being promoted later) then
+# goal_transactions in ACCESS EXCLUSIVE. accounts always comes first, the locks
+# precede every other statement, and no lock_timeout is hard-coded. (This is
+# not the C2 runtime row-lock order.)
 # Parameters:
 # - None.
 # Returns:
-# - None. The test passes if order and placement are as reviewed.
-def test_migration_locks_accounts_then_goal_transactions_first() -> None:
+# - None. The test passes if both directions are as reviewed.
+def test_migration_lock_statements_and_order_per_direction() -> None:
     module = _load_migration()
     source = MIGRATION_PATH.read_text()
 
-    assert module.LOCK_TABLES_SQL == (
+    assert module.UPGRADE_LOCKS_SQL == (
         "LOCK TABLE accounts IN SHARE ROW EXCLUSIVE MODE",
+        "LOCK TABLE goal_transactions IN ACCESS EXCLUSIVE MODE",
+    )
+    assert module.DOWNGRADE_LOCKS_SQL == (
+        "LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE",
         "LOCK TABLE goal_transactions IN ACCESS EXCLUSIVE MODE",
     )
     assert "SET lock_timeout" not in source and "SET LOCAL lock_timeout" not in source
     assert "lock_timeout =" not in source
-    for function in (module.upgrade, module.downgrade):
+    for function, constant in ((module.upgrade, "UPGRADE_LOCKS_SQL"), (module.downgrade, "DOWNGRADE_LOCKS_SQL")):
         body = inspect.getsource(function).split('"""')[-1]
-        assert body.strip().splitlines()[0] == "for lock_statement in LOCK_TABLES_SQL:"
+        assert body.strip().splitlines()[0] == f"for lock_statement in {constant}:"
+
+
+# Tests, with real PostgreSQL locks, that the DOWNGRADE waits on its FIRST
+# table instead of locking goal_transactions and then promoting its accounts
+# lock (the reviewed deadlock). A reader holds ACCESS SHARE on accounts; the
+# real downgrade is started in another process; pg_locks proves it is queued
+# for ACCESS EXCLUSIVE on accounts while holding NOTHING on goal_transactions;
+# the reader can still read goal_transactions (no deadlock); after the reader
+# commits the downgrade completes and no C1 schema remains. The scenario is
+# driven by pg_locks, not by sleeps.
+# Parameters:
+# - c1_database: throwaway database at the C1 revision.
+# Returns:
+# - None. The test passes if every step holds.
+def test_downgrade_waits_on_accounts_first_and_never_deadlocks(c1_database: Engine) -> None:
+    url = _url_of(c1_database)
+    environment = dict(os.environ)
+    environment["DATABASE_URL"] = url.render_as_string(hide_password=False)
+    probe = create_engine(url)
+    reader = c1_database.connect()
+    process = None
+
+    try:
+        reader.execute(text("SET lock_timeout = '10s'"))
+        reader.execute(text("SELECT count(*) FROM accounts"))  # ACCESS SHARE on accounts, transaction stays open
+
+        process = subprocess.Popen(
+            [sys.executable, "-m", "alembic", "downgrade", B4_REVISION],
+            cwd=str(API_DIR), env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+        waiting_on_accounts = False
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not waiting_on_accounts:
+            with probe.connect() as connection:
+                waiting_on_accounts = connection.execute(
+                    text(
+                        "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
+                        "WHERE c.relname = 'accounts' AND l.mode = 'AccessExclusiveLock' AND NOT l.granted"
+                    )
+                ).scalar_one() > 0
+            if not waiting_on_accounts:
+                assert process.poll() is None, process.communicate()
+                time.sleep(0.1)
+        assert waiting_on_accounts, "the downgrade never queued for ACCESS EXCLUSIVE on accounts"
+
+        with probe.connect() as connection:
+            held_on_goal_transactions = connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
+                    "WHERE c.relname = 'goal_transactions' AND l.mode = 'AccessExclusiveLock' AND l.granted"
+                )
+            ).scalar_one()
+        assert held_on_goal_transactions == 0
+
+        # The reader proceeds to goal_transactions without blocking or deadlocking.
+        assert reader.execute(text("SELECT count(*) FROM goal_transactions")).scalar_one() == 0
+        reader.commit()
+
+        stdout, stderr = process.communicate(timeout=120)
+        assert process.returncode == 0, stderr
+    finally:
+        reader.close()
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate()
+        probe.dispose()
+
+    assert _revision(c1_database) == B4_REVISION
+    assert "account_id" not in _columns(c1_database)
+    assert not (C1_CONSTRAINTS & set(_definitions(c1_database, "goal_transactions")))
+    assert LINKED_INDEX not in _index_definitions(c1_database)
+
+
+# Tests, with real writes, that Goal currency = Account currency for a linked
+# row because BOTH composite foreign keys hold: a row that matches the Goal's
+# currency but not the Account's is rejected by the new Account key, and a row
+# that matches the Account's currency but not the Goal's is rejected by the
+# B4 Goal key. Only a row equal to both is stored.
+# Parameters:
+# - c1_database: throwaway database at the C1 revision.
+# Returns:
+# - None. The test passes if the right key rejects each mismatch.
+def test_goal_and_account_currency_must_both_match_the_row(c1_database: Engine) -> None:
+    user_id = uuid4()
+    eur_goal = _seed_goal(c1_database, user_id, "EUR")
+    usd_account = _seed_account(c1_database, user_id, "USD")
+    eur_account = _seed_account(c1_database, user_id, "EUR")
+
+    _expect_rejection(c1_database, "ForeignKeyViolation", ACCOUNT_FK,
+                      goal_id=eur_goal, user_id=user_id, currency="EUR",
+                      client_request_id=uuid4(), account_id=usd_account)
+    _expect_rejection(c1_database, "ForeignKeyViolation", "fk_goal_transactions_goal_id_user_id_currency",
+                      goal_id=eur_goal, user_id=user_id, currency="USD",
+                      client_request_id=uuid4(), account_id=usd_account)
+    _insert_transaction(c1_database, eur_goal, user_id, currency="EUR",
+                        client_request_id=uuid4(), account_id=eur_account)
+    assert _row_count(c1_database) == 1
+
+
+# Tests the intentional C1 divergence between ORM metadata and the database:
+# Alembic's own comparison against a C1 database reports ONLY the C1 objects
+# as present in the database but unknown to the ORM (the account_id column,
+# its partial index and the Account foreign key). Nothing else differs, and
+# the divergence is kept (account_id is not mapped until C2).
+# Parameters:
+# - c1_database: throwaway database at the C1 revision.
+# Returns:
+# - None. The test passes if the difference set is exactly the C1 objects.
+def test_orm_metadata_differs_from_c1_database_only_by_the_c1_objects(c1_database: Engine) -> None:
+    import_database_models()
+
+    with c1_database.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        differences = compare_metadata(context, Base.metadata)
+
+    flat = []
+    for difference in differences:
+        flat.extend(difference if isinstance(difference, list) else [difference])
+    summary = set()
+    for difference in flat:
+        kind = difference[0]
+        # remove_column is ("remove_column", schema, table, Column); the
+        # index/foreign-key entries carry the object at position 1.
+        target = difference[3] if kind == "remove_column" else difference[1]
+        summary.add((kind, target.name))
+
+    assert summary == {
+        ("remove_column", "account_id"),
+        ("remove_index", LINKED_INDEX),
+        ("remove_fk", ACCOUNT_FK),
+    }

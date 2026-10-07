@@ -1180,10 +1180,13 @@ applied to production by a separately authorized migration): revision
 98acdc7016d2 adds the nullable column goal_transactions.account_id
 (UUID, no default, no backfill - every existing row stays NULL, i.e. tracked;
 no historical Account ownership is inferred), the foreign key, the three
-CHECK constraints and the partial index listed above. It takes table locks on
-accounts (SHARE ROW EXCLUSIVE) and then goal_transactions (ACCESS EXCLUSIVE)
-before any DDL - a migration table-lock order, which is not the future C2
-runtime row-lock order (Goal → Account → goal_transactions interaction). The
+CHECK constraints and the partial index listed above. Migration table-lock
+order (taken before any DDL; accounts always first, which is not the future C2
+runtime row-lock order Goal → Account → goal_transactions interaction):
+upgrade = accounts SHARE ROW EXCLUSIVE → goal_transactions ACCESS EXCLUSIVE;
+downgrade = accounts ACCESS EXCLUSIVE → goal_transactions ACCESS EXCLUSIVE
+(dropping the foreign key needs ACCESS EXCLUSIVE on accounts, so it is taken up
+front instead of being promoted while goal_transactions is already locked). The
 application does NOT map or use account_id yet: the ORM model, the API and
 mobile are unchanged, so the code runs identically before and after the
 migration and Account-linked Goal behavior is NOT available until VF-020C2.

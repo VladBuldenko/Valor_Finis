@@ -19,19 +19,33 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# MIGRATION table-lock order: accounts FIRST (SHARE ROW EXCLUSIVE - the level
-# a foreign key needs on its referenced table, so plain reads of accounts
-# continue), goal_transactions SECOND (ACCESS EXCLUSIVE - it receives a new
-# column, constraints and an index). This is deliberately NOT the future C2
-# runtime row-lock order (Goal -> Account -> GoalTransaction interaction);
-# the two are different resources and are not claimed to be the same. It
-# does not conflict with the runtime, because this migration is applied to
-# production BEFORE any code that reads or writes goal_transactions.account_id
-# is deployed. No lock_timeout is set here on purpose: how long the migration
+# MIGRATION table-lock order, in BOTH directions: accounts FIRST, then
+# goal_transactions. This is deliberately NOT the future C2 runtime row-lock
+# order (Goal -> Account -> GoalTransaction interaction); the two are
+# different resources and are not claimed to be the same. It does not
+# conflict with the runtime, because this migration is applied to production
+# BEFORE any code that reads or writes goal_transactions.account_id is
+# deployed. No lock_timeout is set here on purpose: how long the migration
 # may wait is an execution-time decision (the operator sets lock_timeout for
-# the migration transaction before running the upgrade).
-LOCK_TABLES_SQL = (
+# the migration transaction before running it).
+#
+# The two directions need DIFFERENT strengths on accounts, so they are
+# separate constants:
+# - upgrade: ADD FOREIGN KEY needs only SHARE ROW EXCLUSIVE on the referenced
+#   table, so plain reads of accounts continue while the migration runs;
+# - downgrade: DROP CONSTRAINT of that foreign key needs ACCESS EXCLUSIVE on
+#   accounts. Taking it up front avoids promoting a weaker accounts lock to
+#   ACCESS EXCLUSIVE later, while ACCESS EXCLUSIVE on goal_transactions is
+#   already held (a lock promotion that deadlocks with a transaction that
+#   reads accounts and then goal_transactions).
+# goal_transactions is ACCESS EXCLUSIVE in both directions (it gains or loses
+# a column, constraints and an index).
+UPGRADE_LOCKS_SQL = (
     "LOCK TABLE accounts IN SHARE ROW EXCLUSIVE MODE",
+    "LOCK TABLE goal_transactions IN ACCESS EXCLUSIVE MODE",
+)
+DOWNGRADE_LOCKS_SQL = (
+    "LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE",
     "LOCK TABLE goal_transactions IN ACCESS EXCLUSIVE MODE",
 )
 
@@ -52,7 +66,8 @@ def upgrade() -> None:
     (VF-020C1, schema expand step).
 
     What:
-        0. Locks accounts, then goal_transactions (LOCK_TABLES_SQL).
+        0. Locks accounts (SHARE ROW EXCLUSIVE), then goal_transactions
+           (ACCESS EXCLUSIVE) (UPGRADE_LOCKS_SQL).
         1. Adds goal_transactions.account_id UUID NULL - no default, no
            backfill: every existing row stays NULL (tracked / unlinked).
         2. Adds three CHECK constraints that only constrain rows with an
@@ -87,7 +102,7 @@ def upgrade() -> None:
         lock; every existing row has account_id NULL, so it passes.
     """
 
-    for lock_statement in LOCK_TABLES_SQL:
+    for lock_statement in UPGRADE_LOCKS_SQL:
         op.execute(lock_statement)
 
     op.add_column(
@@ -130,9 +145,11 @@ def downgrade() -> None:
     Reverts VF-020C1 to the VF-020B4 schema.
 
     What:
-        Locks accounts, then goal_transactions (same order and reason as in
-        upgrade), then drops the Account foreign key, the partial index, the
-        three CHECK constraints and finally the account_id column.
+        Locks accounts and then goal_transactions, both ACCESS EXCLUSIVE
+        (DOWNGRADE_LOCKS_SQL; the same table order as upgrade, a stronger
+        lock on accounts, taken first so it is never promoted later), then
+        drops the Account foreign key, the partial index, the three CHECK
+        constraints and finally the account_id column.
 
     Why:
         This is a SCHEMA reversal only. Dropping the column permanently
@@ -144,7 +161,7 @@ def downgrade() -> None:
         downgrade after linked data exists without a separate decision.
     """
 
-    for lock_statement in LOCK_TABLES_SQL:
+    for lock_statement in DOWNGRADE_LOCKS_SQL:
         op.execute(lock_statement)
 
     op.drop_constraint(
