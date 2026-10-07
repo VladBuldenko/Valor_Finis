@@ -21,7 +21,7 @@ from tests.database_safety import validate_test_database_url
 # run the REAL Alembic CLI (subprocess) against throwaway databases. A
 # template database is migrated once to the B3 state (1e921a4a4412); each
 # test clones it, seeds rows the way the B2/B3 application could have left
-# them, runs `alembic upgrade head` / `downgrade -1`, and inspects the real
+# them, runs `alembic upgrade <B4 revision>` / `downgrade <B3 revision>`, and inspects the real
 # database state afterwards. Every throwaway database name ends in "_test",
 # is validated by the project's database safety guard before use, and is
 # dropped afterwards. The shared valor_test database is never migrated here.
@@ -72,7 +72,7 @@ def _drop_database(name: str) -> None:
 # Runs the real Alembic CLI against one database.
 # Parameters:
 # - url: database to migrate (already validated as a *_test database).
-# - args: Alembic arguments, e.g. ("upgrade", "head").
+# - args: Alembic arguments, e.g. ("upgrade", B4_REVISION).
 # Returns:
 # - The finished process (return code, stdout, stderr).
 def _alembic(url: URL, *args: str) -> subprocess.CompletedProcess:
@@ -211,7 +211,7 @@ def _currencies(database_engine: Engine) -> dict:
 # ------------------------------------------------------------------
 
 
-# Tests the real `alembic upgrade head` with seeded B2/B3-era data: rows with
+# Tests the real `alembic upgrade 8799b7fd923d` with seeded B2/B3-era data: rows with
 # a NULL currency are filled from their own goal's currency (EUR and USD,
 # two users), rows that already have the right currency and every
 # effective_date/client_request_id stay exactly as they were, currency
@@ -236,7 +236,7 @@ def test_upgrade_backfills_null_currency_from_each_goal(b3_database: Engine) -> 
     )
     assert _currency_is_nullable(b3_database) is True
 
-    result = _alembic(_url_of(b3_database), "upgrade", "head")
+    result = _alembic(_url_of(b3_database), "upgrade", B4_REVISION)
 
     assert result.returncode == 0, result.stderr
     assert _revision(b3_database) == B4_REVISION
@@ -269,7 +269,7 @@ def test_upgrade_backfills_null_currency_from_each_goal(b3_database: Engine) -> 
 # Returns:
 # - None. The test passes if the upgrade succeeds.
 def test_upgrade_on_empty_ledger_succeeds(b3_database: Engine) -> None:
-    result = _alembic(_url_of(b3_database), "upgrade", "head")
+    result = _alembic(_url_of(b3_database), "upgrade", B4_REVISION)
 
     assert result.returncode == 0, result.stderr
     assert _revision(b3_database) == B4_REVISION
@@ -296,7 +296,7 @@ def test_currency_mismatch_aborts_upgrade_atomically(b3_database: Engine) -> Non
     null_row = _seed_transaction(b3_database, goal, user_id, None)
     before = _constraint_definitions(b3_database)
 
-    result = _alembic(_url_of(b3_database), "upgrade", "head")
+    result = _alembic(_url_of(b3_database), "upgrade", B4_REVISION)
 
     assert result.returncode != 0
     assert "differs from their goal's currency" in result.stderr
@@ -314,7 +314,7 @@ def test_currency_mismatch_aborts_upgrade_atomically(b3_database: Engine) -> Non
 
 @pytest.fixture
 def b4_database(b3_database: Engine) -> Engine:
-    result = _alembic(_url_of(b3_database), "upgrade", "head")
+    result = _alembic(_url_of(b3_database), "upgrade", B4_REVISION)
     assert result.returncode == 0, result.stderr
     return b3_database
 
@@ -428,7 +428,7 @@ def test_goal_with_history_cannot_change_currency_or_be_deleted(b4_database: Eng
 # ------------------------------------------------------------------
 
 
-# Tests the real `alembic downgrade -1`: the schema returns to the B3 shape
+# Tests the real `alembic downgrade 1e921a4a4412`: the schema returns to the B3 shape
 # (currency nullable, the new unique constraint and foreign key gone, every
 # earlier constraint kept) while stored currency values are kept, and a NULL
 # currency can be written again. The constraint set equals that of a
@@ -447,7 +447,7 @@ def test_downgrade_restores_the_b3_schema_and_keeps_values(
     goal = _seed_goal(b4_database, owner, "EUR")
     stored = _seed_transaction(b4_database, goal, owner, "EUR")
 
-    result = _alembic(_url_of(b4_database), "downgrade", "-1")
+    result = _alembic(_url_of(b4_database), "downgrade", B3_REVISION)
 
     assert result.returncode == 0, result.stderr
     assert _revision(b4_database) == B3_REVISION
@@ -464,7 +464,7 @@ def test_downgrade_restores_the_b3_schema_and_keeps_values(
 
     legacy = _seed_transaction(b4_database, goal, owner, None)
 
-    again = _alembic(_url_of(b4_database), "upgrade", "head")
+    again = _alembic(_url_of(b4_database), "upgrade", B4_REVISION)
     assert again.returncode == 0, again.stderr
     assert _revision(b4_database) == B4_REVISION
     assert _currencies(b4_database) == {stored: "EUR", legacy: "EUR"}

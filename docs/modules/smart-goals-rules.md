@@ -18,7 +18,7 @@ explicit authorization.
 | Baseline | `main` @ `635ea7506f50f4df669c569a7407fd356ef0b790` (after VF-019D, PR #69) |
 | History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) → v0.4 VF-020C finalization after discovery against `main` @ `ad42baf` (2026-10-07) |
 | Scope | VF-020 Smart Goals & Rules. VF-021 Financial Connections & Import is a separate milestone (§22) |
-| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). **Nothing else in this document is implemented**: VF-020C…F are not started and Goals are still not connected to Accounts |
+| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). The VF-020C1 schema-expand migration (`98acdc7016d2`, nullable `goal_transactions.account_id`) exists in the repository but is **not applied to production** and is unused by the application. **Nothing else in this document is implemented**: VF-020C2/C3 and VF-020D…F are not started and Goals are still not connected to Accounts |
 
 Status tags used throughout:
 
@@ -1516,6 +1516,20 @@ migration. The order is therefore fixed:
 | **C1 production** | read-only production preflight → backup → execution-time lock policy → explicit migration authorization → read-only post-verification | each step separately authorized |
 | **C2** backend runtime | only after C1 is applied to production: ORM mapping, linked contribution/withdrawal, capacity and partition checks, `account_id` in the idempotency comparison, Account and Goal read models, Account lifecycle pre-checks (P65) | strict review → push → PR → CI → user merge |
 | **C3** mobile | Account selector, partition selector, tracked/linked display, overcommitted warning | typecheck, lint, helper tests, **physical-device acceptance** |
+
+C1 production preflight requirements (read-only, aggregates and catalog
+metadata only, no row-level data): production revision = `8799b7fd923d`;
+`goal_transactions.account_id` absent; the four C1 constraint names and the
+C1 index name absent; `uq_accounts_id_user_id_currency` present with exact
+definition `UNIQUE (id, user_id, currency)`; row counts of `accounts`, `goals`
+and `goal_transactions`; invalid Account/Goal currency or status counts;
+GoalTransaction ownership and currency integrity (no mismatch, no orphan);
+sessions and transactions (active, idle in transaction, long-running);
+locks and lock waiters on `accounts` and `goal_transactions`; prepared
+transactions; table and index sizes; Data API privileges of `anon`,
+`authenticated`, `service_role` unchanged; the role's `lock_timeout` and
+`statement_timeout`. Execution uses the separately authorized in-transaction
+`SET LOCAL lock_timeout`.
 
 No contract migration follows C3: `account_id` intentionally stays nullable
 (NULL = tracked). Each step needs its own authorization; C2 may not start

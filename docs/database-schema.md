@@ -1109,12 +1109,32 @@ the transaction's goal, owner and currency must all match the goal row.
 The goal_id foreign key and the B2 ownership foreign key above are kept as
 layered defenses. A goal's currency cannot change once it has history
 (VF-016E), so the equality cannot be invalidated later.
+fk_goal_transactions_account_id_user_id_currency (VF-020C1): (account_id,
+user_id, currency) → accounts(id, user_id, currency), ON DELETE RESTRICT,
+using accounts' existing uq_accounts_id_user_id_currency. With the default
+MATCH SIMPLE behavior a row whose account_id is NULL is not constrained. For
+a linked row the database guarantees that the Account exists, belongs to the
+row's user and has the row's currency; together with the Goal currency
+foreign key above this means Goal currency = Account currency. A referenced
+Account can neither be deleted nor change currency (the controlled API 409 is
+VF-020C2).
+ck_goal_transactions_opening_balance_unlinked (VF-020C1): type <>
+'opening_balance' OR account_id IS NULL
+ck_goal_transactions_linked_requires_client_request_id (VF-020C1):
+account_id IS NULL OR client_request_id IS NOT NULL
+ck_goal_transactions_linked_requires_effective_date (VF-020C1): account_id IS
+NULL OR effective_date IS NOT NULL (the rule that a linked row's date is
+server today is a service rule of VF-020C2, not a database constraint)
 
 Indexes
 
 user_id
 (goal_id, created_at) - per-goal transaction history, ordered access, and
 future balance aggregation
+ix_goal_transactions_linked_account_id (VF-020C1): (account_id) WHERE
+account_id IS NOT NULL - partial; serves per-Account reservation
+aggregation, the historical-reference checks and the RESTRICT foreign-key
+check
 
 Immutability: rows are append-only. No UPDATE/DELETE path exists or is
 planned; corrections are made with compensating entries, never edits.
@@ -1154,6 +1174,26 @@ foreign key, makes currency nullable again and drops
 uq_goals_id_user_id_currency, but keeps every stored currency value (the
 rows that were NULL before the upgrade cannot be identified, so none is set
 back to NULL).
+
+VF-020C1 expand note (account_id; implemented in the repository, to be
+applied to production by a separately authorized migration): revision
+98acdc7016d2 adds the nullable column goal_transactions.account_id
+(UUID, no default, no backfill - every existing row stays NULL, i.e. tracked;
+no historical Account ownership is inferred), the foreign key, the three
+CHECK constraints and the partial index listed above. Migration table-lock
+order (taken before any DDL; accounts always first, which is not the future C2
+runtime row-lock order Goal → Account → goal_transactions interaction):
+upgrade = accounts SHARE ROW EXCLUSIVE → goal_transactions ACCESS EXCLUSIVE;
+downgrade = accounts ACCESS EXCLUSIVE → goal_transactions ACCESS EXCLUSIVE
+(dropping the foreign key needs ACCESS EXCLUSIVE on accounts, so it is taken up
+front instead of being promoted while goal_transactions is already locked). The
+application does NOT map or use account_id yet: the ORM model, the API and
+mobile are unchanged, so the code runs identically before and after the
+migration and Account-linked Goal behavior is NOT available until VF-020C2.
+The migration must be applied in production before the C2 code is merged and
+deployed. Downgrading 98acdc7016d2 is a schema reversal only: it drops the
+column and with it every stored account_id value (rows survive but lose their
+Account association).
 
 7. Accounts
 
