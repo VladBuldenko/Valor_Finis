@@ -171,7 +171,7 @@ The contract is approved for documentation and implementation planning only. Eac
 
 2. VF-020B — Goals hardening (implemented; production at revision 8799b7fd923d)
 
-3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4); it is not implemented. Fixed order: C1 schema expand only (nullable goal_transactions.account_id, not ORM-mapped) → production migration → C2 backend runtime → C3 mobile with physical-device acceptance. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
+3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4); it is not implemented. C1 (schema expand: the migration exists in the repository, applied to production only after separate authorization) adds database structure only and the application does not use it yet. Fixed order: C1 schema expand only (nullable goal_transactions.account_id, not ORM-mapped) → production migration → C2 backend runtime → C3 mobile with physical-device acceptance. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
 
 4. VF-020D — Goal priorities
 
