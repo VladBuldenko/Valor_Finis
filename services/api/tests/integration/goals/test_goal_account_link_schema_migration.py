@@ -242,6 +242,22 @@ def _index_definitions(database_engine: Engine) -> dict:
     return {name: definition for name, definition in rows}
 
 
+# SQLSTATEs under which PostgreSQL reports a referential-integrity rejection:
+# 23503 foreign_key_violation and 23001 restrict_violation. Which one a
+# DELETE/UPDATE blocked by an ON DELETE RESTRICT / NO ACTION key produces
+# depends on the PostgreSQL version (observed: 18 -> 23001, 16 -> 23503), so
+# both are accepted - but only for the expected constraint.
+REFERENTIAL_SQLSTATES = ("23503", "23001")
+
+
+# Asserts a rejected statement was refused by the Account foreign key: an
+# integrity error, naming fk_goal_transactions_account_id_user_id_currency,
+# with a referential-integrity SQLSTATE (not merely "any IntegrityError").
+def _assert_account_fk_rejection(error: IntegrityError) -> None:
+    assert error.orig.pgcode in REFERENTIAL_SQLSTATES, error.orig.pgcode
+    assert error.orig.diag.constraint_name == ACCOUNT_FK
+
+
 def _expect_rejection(database_engine: Engine, expected_error: str, constraint: str, **arguments) -> None:
     before = _row_count(database_engine)
     with pytest.raises(IntegrityError) as error:
@@ -469,15 +485,12 @@ def test_referenced_account_cannot_be_deleted_or_change_currency(c1_database: En
     with pytest.raises(IntegrityError) as delete_error:
         with c1_database.begin() as connection:
             connection.execute(text("DELETE FROM accounts WHERE id = :id"), {"id": str(account_id)})
-    # ON DELETE RESTRICT is reported by PostgreSQL as a restrict violation
-    # (SQLSTATE 23001), a sibling of the foreign-key violation (23503).
-    assert type(delete_error.value.orig).__name__ == "RestrictViolation"
-    assert delete_error.value.orig.diag.constraint_name == ACCOUNT_FK
+    _assert_account_fk_rejection(delete_error.value)
 
     with pytest.raises(IntegrityError) as update_error:
         with c1_database.begin() as connection:
             connection.execute(text("UPDATE accounts SET currency = 'USD' WHERE id = :id"), {"id": str(account_id)})
-    assert type(update_error.value.orig).__name__ in ("ForeignKeyViolation", "RestrictViolation")
+    _assert_account_fk_rejection(update_error.value)
 
     with c1_database.connect() as connection:
         remaining = connection.execute(
