@@ -1,9 +1,6 @@
-import importlib.util
 import re
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
-from types import ModuleType
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -20,27 +17,10 @@ from app.modules.goals.goal_transaction_schemas import GoalTransactionCreate
 
 # These tests run against the migrated test schema (the suite always runs
 # after `alembic upgrade head`) and verify the VF-020B2 expand revision at
-# the database level. The migration's upgrade/downgrade round trip itself is
-# verified with the Alembic CLI against the test database, not from inside
-# pytest.
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "alembic"
-    / "versions"
-    / "1e921a4a4412_expand_goal_ledger_integrity.py"
-)
-
-
-# Loads the VF-020B2 migration module so the backfill test runs exactly the
-# migration's own SQL instead of a copy of it.
-# Returns:
-# - The imported migration module.
-def _load_expand_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("expand_goal_ledger_integrity", MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# the database level (VF-020B4 later made currency NOT NULL and added the
+# final foreign key; see test_goal_currency_contract_migration.py). The real
+# Alembic upgrade/downgrade path is exercised by that file against a
+# throwaway database.
 
 
 # Inserts a goal row directly with SQL, bypassing API validation, so the
@@ -81,6 +61,8 @@ def _insert_goal(
 # - user_id: row owner (may deliberately differ from the goal's owner).
 # - client_request_id: optional idempotency key.
 # - type: transaction type.
+# - currency: transaction currency (NOT NULL since VF-020B4; must equal the
+#   goal's currency to satisfy the final foreign key).
 # Returns:
 # - The new transaction id.
 def _insert_goal_transaction(
@@ -89,19 +71,21 @@ def _insert_goal_transaction(
     user_id: UUID,
     client_request_id: Optional[UUID] = None,
     type: str = "contribution",
+    currency: str = "EUR",
 ) -> UUID:
     transaction_id = uuid4()
     session.execute(
         text(
             "INSERT INTO goal_transactions "
-            "(id, goal_id, user_id, type, amount, client_request_id) "
-            "VALUES (:id, :goal_id, :user_id, :type, 10, :client_request_id)"
+            "(id, goal_id, user_id, type, amount, currency, client_request_id) "
+            "VALUES (:id, :goal_id, :user_id, :type, 10, :currency, :client_request_id)"
         ),
         {
             "id": str(transaction_id),
             "goal_id": str(goal_id),
             "user_id": str(user_id),
             "type": type,
+            "currency": currency,
             "client_request_id": None if client_request_id is None else str(client_request_id),
         },
     )
@@ -133,13 +117,15 @@ def _violated_constraint(error: IntegrityError) -> str:
     return error.orig.diag.constraint_name
 
 
-# Tests that the expand revision adds the three goal_transactions columns
-# as nullable, default-free columns of the agreed types (VF-020B2).
+# Tests that the expand revision's three goal_transactions columns keep the
+# agreed types and have no defaults (VF-020B2). currency was nullable when
+# added and became NOT NULL in VF-020B4; effective_date and client_request_id
+# stay nullable.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
 # - None. The test passes if every column has the expected shape.
-def test_expand_adds_nullable_goal_transaction_columns(clean_database: None) -> None:
+def test_expand_columns_keep_agreed_shape(clean_database: None) -> None:
     session = SessionLocal()
     try:
         rows = session.execute(
@@ -156,7 +142,7 @@ def test_expand_adds_nullable_goal_transaction_columns(clean_database: None) -> 
 
     columns = {row[0]: tuple(row[1:]) for row in rows}
     assert columns == {
-        "currency": ("character varying", 3, "YES", None),
+        "currency": ("character varying", 3, "NO", None),
         "effective_date": ("date", None, "YES", None),
         "client_request_id": ("uuid", None, "YES", None),
     }
@@ -202,73 +188,6 @@ def test_expand_adds_constraints_and_keeps_simple_goal_fk(clean_database: None) 
         if definition == "FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE RESTRICT"
     ]
     assert len(single_column_goal_fks) == 1
-
-
-# Tests that the migration's currency backfill copies each goal's currency
-# onto its transactions, leaves effective_date and client_request_id NULL,
-# and changes nothing when run again (VF-020B2).
-# Rows written before VF-020B3 (simulated with direct SQL inserts that
-# leave the three columns NULL) are the ones the backfill fills; a row the
-# application writes since VF-020B3 already carries its goal's currency and
-# effective_date and is left untouched.
-# Parameters:
-# - clean_database: Fixture that cleans database tables before and after the test.
-# Returns:
-# - None. The test passes if every row ends with its goal's currency.
-def test_backfill_copies_goal_currency_and_leaves_other_columns_null(
-    clean_database: None,
-) -> None:
-    migration = _load_expand_migration()
-    session = SessionLocal()
-    user_id = uuid4()
-    application_day = date(2026, 10, 5)
-
-    try:
-        eur_goal = goal_repository.create_goal(
-            db_session=session,
-            goal_data=GoalCreate(name="Trip", target_amount=Decimal("500"), currency="EUR"),
-            user_id=user_id,
-        )
-        usd_goal = goal_repository.create_goal(
-            db_session=session,
-            goal_data=GoalCreate(name="Laptop", target_amount=Decimal("900"), currency="USD"),
-            user_id=user_id,
-        )
-        eur_legacy_id = _insert_goal_transaction(session, eur_goal.id, user_id)
-        usd_legacy_id = _insert_goal_transaction(session, usd_goal.id, user_id)
-        opening_balance_id = _insert_goal_transaction(
-            session, usd_goal.id, user_id, type="opening_balance",
-        )
-        session.commit()
-        application_transaction = goal_service.create_goal_transaction(
-            db_session=session,
-            goal_id=eur_goal.id,
-            transaction_data=GoalTransactionCreate(type="contribution", amount=Decimal("70")),
-            user_id=user_id,
-            as_of=application_day,
-        )
-
-        assert _expand_columns(session, eur_legacy_id) == (None, None, None)
-        assert _expand_columns(session, usd_legacy_id) == (None, None, None)
-        assert _expand_columns(session, application_transaction.id) == (
-            "EUR", application_day, None,
-        )
-
-        session.execute(text(migration.BACKFILL_GOAL_TRANSACTION_CURRENCY_SQL))
-        session.commit()
-
-        assert _expand_columns(session, eur_legacy_id) == ("EUR", None, None)
-        assert _expand_columns(session, usd_legacy_id) == ("USD", None, None)
-        assert _expand_columns(session, opening_balance_id) == ("USD", None, None)
-        assert _expand_columns(session, application_transaction.id) == (
-            "EUR", application_day, None,
-        )
-
-        rerun = session.execute(text(migration.BACKFILL_GOAL_TRANSACTION_CURRENCY_SQL))
-        session.commit()
-        assert rerun.rowcount == 0
-    finally:
-        session.close()
 
 
 # Tests that ck_goals_currency_format accepts exactly three ASCII uppercase

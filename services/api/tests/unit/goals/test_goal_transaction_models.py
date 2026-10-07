@@ -42,6 +42,8 @@ def test_goal_transaction_with_positive_amount_and_valid_type_persists(
         goal = _create_goal(db_session, user_id)
 
         transaction = GoalTransactionModel(
+
+            currency="EUR",
             goal_id=goal.id,
             user_id=user_id,
             type="contribution",
@@ -79,6 +81,7 @@ def test_goal_transaction_zero_amount_rejected(clean_database: None) -> None:
 
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=goal.id,
                 user_id=user_id,
                 type="contribution",
@@ -110,6 +113,7 @@ def test_goal_transaction_negative_amount_rejected(clean_database: None) -> None
 
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=goal.id,
                 user_id=user_id,
                 type="withdrawal",
@@ -143,6 +147,7 @@ def test_goal_transaction_all_allowed_types_accepted(clean_database: None) -> No
         for allowed_type in ("opening_balance", "contribution", "withdrawal"):
             db_session.add(
                 GoalTransactionModel(
+                    currency="EUR",
                     goal_id=goal.id,
                     user_id=user_id,
                     type=allowed_type,
@@ -182,6 +187,7 @@ def test_goal_transaction_invalid_type_rejected(clean_database: None) -> None:
 
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=goal.id,
                 user_id=user_id,
                 type="refund",
@@ -213,6 +219,7 @@ def test_goal_transaction_foreign_key_to_goal_enforced(clean_database: None) -> 
     try:
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=uuid4(),
                 user_id=user_id,
                 type="contribution",
@@ -243,6 +250,7 @@ def test_goal_transaction_user_id_required(clean_database: None) -> None:
 
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=goal.id,
                 user_id=None,
                 type="contribution",
@@ -271,6 +279,7 @@ def test_goal_transaction_goal_id_required(clean_database: None) -> None:
     try:
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=None,
                 user_id=user_id,
                 type="contribution",
@@ -305,6 +314,8 @@ def test_goal_with_transaction_history_cannot_be_deleted(clean_database: None) -
         goal = _create_goal(db_session, user_id)
 
         transaction = GoalTransactionModel(
+
+            currency="EUR",
             goal_id=goal.id,
             user_id=user_id,
             type="opening_balance",
@@ -353,6 +364,7 @@ def test_goal_transactions_retain_correct_user_id_per_owner(
 
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=goal.id,
                 user_id=user_id,
                 type="contribution",
@@ -361,6 +373,7 @@ def test_goal_transactions_retain_correct_user_id_per_owner(
         )
         db_session.add(
             GoalTransactionModel(
+                currency="EUR",
                 goal_id=other_goal.id,
                 user_id=other_user_id,
                 type="contribution",

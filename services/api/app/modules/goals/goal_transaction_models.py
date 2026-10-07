@@ -65,9 +65,10 @@ class GoalTransactionModel(Base):
             balance represents pre-existing state, not a new event.
         currency: Currency of the amount - always the owning Goal's
             currency, copied by the service from the locked Goal row and
-            never accepted from the client (VF-020B3). Nullable in the
-            database until VF-020B4: rows written before VF-020B3 by code
-            that did not map this column may still be NULL.
+            never accepted from the client (VF-020B3). NOT NULL since
+            VF-020B4, which first filled the remaining NULLs of older
+            history from the owning goal; the (goal_id, user_id, currency)
+            foreign key keeps it equal to the goal's currency.
         effective_date: Business date of the transaction (VF-020A P13).
             Every row created since VF-020B3 has one (request value, or the
             server date when omitted). NULL only for history created before
@@ -80,9 +81,10 @@ class GoalTransactionModel(Base):
             allowed.
 
     Note: the three columns above were added by the VF-020B2 expand
-    migration (1e921a4a4412) and are mapped since VF-020B3. currency becomes
-    NOT NULL, with a (goal_id, user_id, currency) foreign key, only in the
-    VF-020B4 contract step.
+    migration (1e921a4a4412) and are mapped since VF-020B3. The VF-020B4
+    contract migration made currency NOT NULL and added the
+    (goal_id, user_id, currency) foreign key. effective_date (NULL for
+    older history) and client_request_id (optional key) stay nullable.
     """
 
     __tablename__ = "goal_transactions"
@@ -105,6 +107,15 @@ class GoalTransactionModel(Base):
             ["goal_id", "user_id"],
             ["goals.id", "goals.user_id"],
             name="fk_goal_transactions_goal_id_user_id",
+            ondelete="RESTRICT",
+        ),
+        # Final integrity foreign key (VF-020B4): the transaction's goal,
+        # owner and currency must all match the goal row. The two foreign
+        # keys above stay as layered defenses.
+        ForeignKeyConstraint(
+            ["goal_id", "user_id", "currency"],
+            ["goals.id", "goals.user_id", "goals.currency"],
+            name="fk_goal_transactions_goal_id_user_id_currency",
             ondelete="RESTRICT",
         ),
         # Create idempotency key (VF-020B2 constraint, used since VF-020B3):
@@ -156,9 +167,9 @@ class GoalTransactionModel(Base):
         server_default=func.now(),
     )
 
-    currency: Mapped[Optional[str]] = mapped_column(
+    currency: Mapped[str] = mapped_column(
         String(3),
-        nullable=True,
+        nullable=False,
     )
 
     effective_date: Mapped[Optional[date]] = mapped_column(

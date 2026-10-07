@@ -117,10 +117,16 @@ class GoalTransactionResponse(BaseModel):
         create one through this API.
 
         currency, effective_date and client_request_id (VF-020B3) are
-        nullable because history written before VF-020B3 may lack them:
-        currency stays nullable until VF-020B4, effective_date is NULL for
-        older history (never derived from created_at), and client_request_id
-        is NULL for every row created without a key.
+        nullable in the response: effective_date is NULL for older history
+        (never derived from created_at), and client_request_id is NULL for
+        every row created without a key. Once the VF-020B4 migration is
+        applied, currency is never NULL in the database, but the response
+        field deliberately stays optional: this code must keep serializing
+        rows correctly while it runs against a database where that
+        migration has not been applied yet (the application is deployed
+        before the migration is applied to production). It can be
+        tightened to a required field in a later change, after the
+        migration is applied everywhere.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -151,7 +157,7 @@ class GoalTransactionResponse(BaseModel):
 
     currency: Optional[str] = Field(
         default=None,
-        description="Currency of the amount (the goal's currency); null only for older history.",
+        description="Currency of the amount (the goal's currency); never null once the VF-020B4 migration is applied.",
         examples=["EUR"],
     )
 

@@ -330,13 +330,14 @@ def test_other_users_replay_returns_404(client: TestClient, clean_database: None
 
 
 # Tests that GET history serializes a row written before VF-020B3 with
-# currency, effective_date and client_request_id all NULL.
+# effective_date and client_request_id NULL (its currency was filled by the
+# VF-020B4 backfill; the database no longer allows a NULL currency).
 # Parameters:
 # - client: FastAPI test client.
 # - clean_database: fixture that clears database tables before and after the test.
 # Returns:
 # - None. The test passes if the legacy row is returned with nulls.
-def test_history_serializes_legacy_null_runtime_fields(
+def test_history_serializes_legacy_row_without_effective_date_and_key(
     client: TestClient,
     clean_database: None,
 ) -> None:
@@ -346,8 +347,9 @@ def test_history_serializes_legacy_null_runtime_fields(
     try:
         db_session.execute(
             text(
-                "INSERT INTO goal_transactions (id, goal_id, user_id, type, amount) "
-                "VALUES (:id, :goal_id, :user_id, 'opening_balance', 200)"
+                "INSERT INTO goal_transactions "
+                "(id, goal_id, user_id, type, amount, currency) "
+                "VALUES (:id, :goal_id, :user_id, 'opening_balance', 200, 'EUR')"
             ),
             {"id": str(uuid4()), "goal_id": goal["id"], "user_id": user_id},
         )
@@ -360,5 +362,5 @@ def test_history_serializes_legacy_null_runtime_fields(
     assert len(history) == 1
     assert history[0]["type"] == "opening_balance"
     assert (history[0]["currency"], history[0]["effective_date"], history[0]["client_request_id"]) == (
-        None, None, None,
+        "EUR", None, None,
     )
