@@ -13,12 +13,12 @@ explicit authorization.
 
 | | |
 |---|---|
-| Contract version | v0.3 (final), approved for documentation / implementation planning |
-| Approval date | 2026-10-05 |
+| Contract version | v0.4 (VF-020C finalization), approved for documentation / implementation planning |
+| Approval date | 2026-10-05 (v0.3); 2026-10-07 (v0.4 VF-020C decisions P58, P60–P66) |
 | Baseline | `main` @ `635ea7506f50f4df669c569a7407fd356ef0b790` (after VF-019D, PR #69) |
-| History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) |
+| History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) → v0.4 VF-020C finalization after discovery against `main` @ `ad42baf` (2026-10-07) |
 | Scope | VF-020 Smart Goals & Rules. VF-021 Financial Connections & Import is a separate milestone (§22) |
-| Implementation state | Nothing in this document is implemented. Goals are currently not connected to Accounts |
+| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). **Nothing else in this document is implemented**: VF-020C…F are not started and Goals are still not connected to Accounts |
 
 Status tags used throughout:
 
@@ -51,7 +51,8 @@ Finis (manual Income, Expenses, Accounts, Transfers, Receipts). It defines:
   Percentage rules use `Income.amount` (APPROVED P44). Pending `CONFIRM`
   proposals hold capacity softly (APPROVED P55) and expire after 7 days
   (APPROVED P54). The Account safety floor is strict for rules and
-  warning-only for manual reservations (APPROVED P56).
+  warning-only for manual reservations (APPROVED P56); the floor itself, and
+  therefore its warning, arrives with VF-020E (APPROVED P60).
 - **Durable, database-backed event delivery:** a transactional outbox plus a
   dispatcher, idempotent executions, deterministic ordering under concurrency,
   and explicit provenance so that historical entries and imports never trigger
@@ -112,7 +113,15 @@ VF-021 items remain UDR/EXT.
 | P51 | v1 live window `N = 7` days. A manually created Income is classified `manual/live` only when its financial date (`received_at`) falls within the seven-day live-entry window; older manual entries are `manual/historical`: valid Income that participates in normal accounting and Financial Overview, but never triggers retrospective `AUTO` allocation. No user override in v1. Provenance remains the primary semantic guard; VF-021 imports are classified by their import provenance, not by timestamps alone. |
 | P54 | `CONFIRM` proposals expire after **7 days**. Expiry creates no reservation and no GoalTransaction; an expired proposal can never be confirmed; a repeated action returns the terminal state. Lazy expiry at read, confirmation and dispatch is acceptable. |
 | P55 | A valid pending `CONFIRM` proposal creates a **soft capacity hold** that reduces the capacity available to later rule evaluations and so preserves P48. The hold is not part of `reserved_amount`, is not a GoalTransaction, does not change any Account balance, and does not block a real Expense, an AccountTransfer or an explicit manual Goal reservation. Because a manual action may consume the underlying capacity, every confirmation fully revalidates; insufficient capacity rejects the confirmation and cancels the proposal as stale with no hidden partial write. The hold ends when the proposal is executed, rejected, expired, cancelled or superseded. A proposal never counts against its own confirmation. |
-| P56 | The Account safety floor is strict for rule-generated allocations and **warning-only** for an explicit manual Goal reservation. The floor warning never overrides P04 capacity, ownership, currency equality, partition non-negativity, Goal/Account lifecycle restrictions or any other hard invariant: a manual reservation can never reserve money that does not exist under the reservable-capacity model. |
+| P56 | The Account safety floor is strict for rule-generated allocations and **warning-only** for an explicit manual Goal reservation. The floor warning never overrides P04 capacity, ownership, currency equality, partition non-negativity, Goal/Account lifecycle restrictions or any other hard invariant: a manual reservation can never reserve money that does not exist under the reservable-capacity model. *The principle is unchanged; the floor itself is introduced in VF-020E (P60).* |
+| P58 | **`effective_date` rules differ for tracked and linked operations** (approved 2026-10-07; supersedes the earlier PROPOSED wording). *Tracked* (`account_id IS NULL`): exactly the established B3 semantics (P13) - omitted = server `date.today()`, today and any past date accepted, a future date → 422. *Linked* (`account_id IS NOT NULL`), for **both** a linked contribution and a linked withdrawal/release: `client_request_id` is mandatory (422 without it); `effective_date` omitted = server `date.today()`; an explicit `effective_date` must equal server today, otherwise **422** (past and future alike). Idempotency precedence is unchanged (P14, B3): an occupied `client_request_id` is resolved **before** any new-request date or lifecycle check, so an omitted-date retry on a later day replays the original linked transaction with its original `effective_date` (200). |
+| P60 | **Safety floor deferred to VF-020E.** VF-020C adds no `Account.floor` or equivalent, no floor field and no floor warning. Manual linked reservation capacity in VF-020C is based only on the base capacity formula (§8.1 `reservable`). P56 stays approved as a principle. |
+| P61 | **User-wide advisory lock L0 deferred to VF-020D/E.** VF-020C adds no advisory lock. Correctness uses deterministic row locking: Goal `FOR UPDATE` → Account `FOR UPDATE` → `goal_transactions` insert/read (§14.2). Adding L0 later is additive and must then cover every goal write, manual ones included. |
+| P62 | **Account read model (VF-020C):** `current_balance` is unchanged; the additive fields and their exact formulas are in §8.1 and §20.3 (`balance_as_of_today`, `scheduled_outflows`, `planned_transfer_outflows`, `reserved_amount`, `unallocated_amount`, `reservable_amount` (signed), `allocation_status` ∈ {`normal`, `overcommitted`}, `negative_balance`). No `proposal_holds_amount` and no floor fields before VF-020E. A new reservation requires `reservable_amount > 0` and `amount ≤ reservable_amount`; otherwise 409 with no partial write. |
+| P63 | **Goal read model (VF-020C):** `current_amount` stays the total Goal balance; additive `tracked_amount`, `linked_amount` and `allocations[]` (§7.2, §20.1). `allocations[]` is the **current non-zero partition summary**, not an audit history; no historical Account ownership is inferred. |
+| P64 | **Partition selection and idempotency (VF-020C):** a withdrawal/release always names its partition through `account_id` (omitted/null = tracked; `A` = the linked partition of Account A). No FIFO, no automatic Account selection, no cross-partition withdrawal. `amount` above the selected partition's balance → 409. The canonical idempotency payload gains `account_id`: same key + same payload including `account_id` → 200; same key with a different `account_id`, or a retry that omits `account_id` for a transaction that is linked → 409. Archived Account: no new linked contribution, linked withdrawal/release allowed. Archived Goal: no new contribution of any kind, tracked and linked withdrawals allowed. Completed Goal: unchanged (P11). |
+| P65 | **Account lifecycle protection (VF-020C):** deleting an Account, or changing its currency, returns a controlled **409** whenever **any** linked `goal_transactions` row references the Account - historical references count even when the linked net balance is zero. A raw foreign-key `IntegrityError` must never surface as a 500. |
+| P66 | **Schema and rollout (VF-020C):** one architecture - nullable `goal_transactions.account_id`, no separate allocations table, no provenance/source column; schema candidate in §19.2; rollout **C1 (schema expand only) → production migration → C2 (backend runtime) → C3 (mobile)** with no later contract migration, because `account_id` intentionally stays nullable (§28). |
 
 P34 (reversal after a trigger change) is **superseded by P47**.
 
@@ -133,8 +142,7 @@ P34 (reversal after a trigger change) is **superseded by P47**.
 | P41–P43 | User timezone (deferred); v1 triggers = Income events + outbox + drain; in-app channel | PROPOSED | VF-020E |
 | **P52** | Strict per-user FIFO with head-of-line blocking by unfinished events, including `failed_retryable` events waiting for backoff; events deferred by a future `not_before` do not block | **PROPOSED**, to be finalized during dispatcher implementation and review | VF-020E |
 | P53 | Retention of processed events as provenance | PROPOSED (VF-021 data: EXT) | VF-020E / VF-021 |
-| P57 | Goal deletion referenced by a rule → 409; rule deletion only without executions | PROPOSED | VF-020C/E |
-| P58 | `effective_date` of linked rows = today only | PROPOSED | VF-020B/C |
+| P57 | Goal deletion referenced by a rule → 409; rule deletion only without executions | PROPOSED | VF-020E (rules do not exist before it) |
 | P59 | Timing for making `client_request_id` mandatory for all clients | PROPOSED | after VF-020F |
 | P20, P21, P22, P27, P39 | Access model, provider/region, wallets, retention after disconnect, card FX | **EXT** | VF-021 |
 | P50 mechanism | Choice of the periodic dispatcher technology (the requirement itself is APPROVED) | technical verification | VF-020E |
@@ -231,25 +239,47 @@ After every write: `tracked(G) ≥ 0` and `linked(G, A) ≥ 0` for every Account
 No `AccountTransaction` is created for a reservation (FIN-004). No Goal
 allocation changes Financial Overview (FIN-012).
 
+**API representation (APPROVED P63).** `current_amount` = `total(G)` and keeps
+its meaning. Additive fields: `tracked_amount = tracked(G)`;
+`linked_amount = Σ_A linked(G, A)`; `current_amount = tracked_amount +
+linked_amount`; `allocations[] = [{ "account_id", "amount" }]` for every
+Account whose `linked(G, A) ≠ 0`. `allocations[]` is a **current non-zero
+partition summary, not an audit history**: it lists no past releases, no dates
+and no zero partitions, and it infers no historical Account ownership (legacy
+rows stay tracked, P12). The audit trail remains the GoalTransaction history,
+which gains `account_id` per row. `tracked_amount`, `linked_amount` and
+`allocations[]` are computed in one grouped query per request (no per-Goal
+queries).
+
+**Partition selection (APPROVED P64).** A withdrawal or release selects its
+partition **explicitly** through `account_id`: omitted/null = the tracked
+partition, `A` = the linked partition of Account A. There is no FIFO, no
+automatic Account selection and no cross-partition withdrawal. An amount above
+the selected partition's balance → 409 even when the Goal's total would cover
+it; the error identifies the partition.
+
 ### 7.3 GoalTransaction fields
 
 | Field | Status | Notes |
 |---|---|---|
 | `goal_id`, `user_id`, `type`, `amount`, `description`, `created_at` | EST | unchanged; `amount > 0`; `type` CHECK unchanged |
-| `account_id` (NULL = tracked) | APPROVED principle (P02/P03); schema PROPOSED | composite FK `(account_id, user_id, currency)` → `accounts(id, user_id, currency)`; that target unique constraint already exists |
-| `currency` | APPROVED principle (P19); schema PROPOSED | deterministic copy of `goals.currency`; Goal currency is already immutable once history exists, so the copy is stable |
-| `effective_date` | APPROVED (P13) | NULL for legacy rows; `≤ today` checked by the service; linked rows: today only (P58) |
-| `client_request_id` | APPROVED (P14) | partial `UNIQUE(user_id, client_request_id)` |
-| `rule_execution_id` | PROPOSED | composite FK `(rule_execution_id, user_id)` → `rule_executions(id, user_id)` |
-| `CHECK (type <> 'opening_balance' OR account_id IS NULL)` | PROPOSED | opening balances always stay tracked |
+| `account_id` (NULL = tracked) | **APPROVED** (P02/P03/P66) - column added by VF-020C1, mapped and used from VF-020C2 | `UUID NULL`, no default, no backfill; composite FK `(account_id, user_id, currency)` → `accounts(id, user_id, currency)` ON DELETE RESTRICT; the target unique constraint `uq_accounts_id_user_id_currency` already exists |
+| `currency` | **EST (VF-020B3/B4)** | `NOT NULL`; copy of `goals.currency`; FK `(goal_id, user_id, currency)` → `goals(id, user_id, currency)`; Goal currency is immutable once history exists |
+| `effective_date` | **EST (P13) + APPROVED (P58)** | NULL for legacy rows. Tracked: `≤ today` checked by the service. Linked (contribution and withdrawal/release): omitted = server today; explicit must equal server today (P58) |
+| `client_request_id` | **EST (P14)** | `UNIQUE(user_id, client_request_id)`; mandatory for linked rows (P58) |
+| `rule_execution_id` | PROPOSED (VF-020E) | composite FK `(rule_execution_id, user_id)` → `rule_executions(id, user_id)`; not part of VF-020C |
+| `CHECK (type <> 'opening_balance' OR account_id IS NULL)` | **APPROVED** (P66) | opening balances always stay tracked |
+| `CHECK (account_id IS NULL OR client_request_id IS NOT NULL)` | **APPROVED** (P66) | database-level form of the mandatory key for linked rows; legacy rows are unaffected |
+| `CHECK (account_id IS NULL OR effective_date IS NOT NULL)` | **APPROVED** (P66) | linked rows always carry a business date |
 
 ### 7.4 Compatibility
 
 | Consumer / case | Behavior |
 |---|---|
-| Existing `POST /api/v1/goals/{id}/transactions` without `account_id` | Tracked row, as today; `effective_date` = today; idempotency transition per §20.2. |
-| Withdrawal without `account_id` | Validated against `tracked(G)`; for legacy goals `tracked = total`, so nothing changes. |
-| Archived Goal | Contributions (tracked and linked) → 409 (P10). New behavior; no existing tests cover it, so new regression tests are required. |
+| Existing `POST /api/v1/goals/{id}/transactions` without `account_id` | Tracked row with the established B3 semantics: `effective_date` omitted = today, past/today accepted, future → 422; optional `client_request_id` (§20.2). |
+| Withdrawal without `account_id` | Validated against `tracked(G)` only (P64); for legacy goals `tracked = total`, so nothing changes. For a Goal that also has linked partitions it can no longer draw on them: 409 naming the partition. |
+| Linked operation (`account_id` set), contribution or withdrawal/release | `client_request_id` mandatory (422 otherwise); `effective_date` omitted or equal to today (422 otherwise) (P58). |
+| Archived Goal | Contributions (tracked and linked) → 409 (P10); implemented for tracked contributions in VF-020B1 with regression tests; VF-020C extends it to linked contributions. Withdrawals/releases stay allowed. |
 | Completed Goal | Unchanged (P11). |
 | Goal currency change | Unchanged rule (409 once history exists); the composite FK is the last line of defense. |
 | `GET /api/v1/analytics/goal-progress` | `current_amount` = total; meaning unchanged; only additive fields. |
@@ -303,6 +333,34 @@ confirm_capacity(A, X)     = reservable(A) − floor(A) − prior_holds(A, X)
 - All amounts are Decimal in the Account currency; a Transfer, a linked
   reservation and the Account always share one currency (INV-08, P06).
 
+**VF-020C scope of the formulas (APPROVED P60, P62).** VF-020C implements
+`current_balance`, `balance_as_of`, `scheduled_outflows`, `planned_transfer_out`,
+`reserved`, `unallocated` and `reservable`. `floor`, `active_holds`,
+`rule_capacity` and `confirm_capacity` belong to VF-020E and are not exposed or
+computed before it. Exact definitions as returned by `GET /api/v1/accounts`
+(D = server `date.today()`, resolved once per request; every amount is a
+Decimal string in the Account currency):
+
+| API field | Exact definition |
+|---|---|
+| `current_balance` | unchanged: signed sum of **all** ledger rows of the Account (no date filter) |
+| `balance_as_of_today` | signed sum (credit +, debit −) of the Account's `AccountTransaction` rows with `transaction_date ≤ D` |
+| `scheduled_outflows` | sum of the Account's **debit** `AccountTransaction` amounts with `transaction_date > D` (a positive number) |
+| `planned_transfer_outflows` | sum of `amount` of `AccountTransfer` rows with `status = 'planned'` and `source_account_id` = this Account, regardless of `planned_date`; planned incoming Transfers are ignored; posted Transfers are already in the ledger and never counted here |
+| `reserved_amount` | Σ linked contributions − Σ linked withdrawals (`goal_transactions` with `account_id` = this Account) across **all** of the user's Goals, archived and completed included |
+| `unallocated_amount` | `balance_as_of_today − reserved_amount` |
+| `reservable_amount` | `unallocated_amount − scheduled_outflows − planned_transfer_outflows`; **signed, may be negative** |
+| `allocation_status` | `"overcommitted"` when `reserved_amount > 0` **and** `unallocated_amount < 0`, otherwise `"normal"` |
+| `negative_balance` | `balance_as_of_today < 0` |
+
+**New reservation rule (P04, P62):** a new linked contribution of `amount`
+requires `reservable_amount > 0` **and** `amount ≤ reservable_amount`; otherwise
+409 and nothing is written. Releases and withdrawals do not check capacity.
+Reservations never block an Expense, a Transfer or an adjustment (P05): after
+such an operation `reserved_amount` is unchanged and the Account may become
+`overcommitted`; the Goal history is never rewritten. There is no
+`proposal_holds_amount` and no floor field in VF-020C.
+
 ### 8.2 Clarifications
 
 | # | Topic | Contract |
@@ -316,9 +374,9 @@ confirm_capacity(A, X)     = reservable(A) − floor(A) − prior_holds(A, X)
 | 7 | Planned Transfers | No ledger rows exist and none are invented. Planned outgoing Transfers are subtracted through `planned_transfer_out` regardless of `planned_date` (a past `planned_date` can still be unposted because posting is manual); planned incoming Transfers are ignored (P49). |
 | 8 | Negative balance | Allowed (INV-04). `reservable ≤ 0` → new reservations get 409; releases are always allowed. |
 | 9 | Archived Account | All figures are computed and shown; new linked contributions → 409 (P09); rules are `blocked`. |
-| 10 | Overcommitted | `allocation_status = overcommitted` ⇔ `reserved > 0 ∧ unallocated < 0`. Warning `scheduled_shortfall` (PROPOSED term) ⇔ `reserved > 0 ∧ unallocated ≥ 0 ∧ reservable < 0`. `negative_balance` is a separate flag. |
-| 11 | Manual vs rule allocations | Manual reservations are limited by `reservable` (P04); the floor only warns (P56) and holds do not apply (P55). AUTO executions and the creation of new CONFIRM proposals are limited by `rule_capacity`. Confirming an existing proposal X is limited by `confirm_capacity(A, X)`, which excludes X's own hold (§11.3). The floor is strict in both rule cases. |
-| 12 | Safety floor | `MINIMUM_UNALLOCATED_FLOOR` per Account (§10.6). |
+| 10 | Overcommitted | `allocation_status = overcommitted` ⇔ `reserved > 0 ∧ unallocated < 0` (VF-020C: values `normal` / `overcommitted` only). `negative_balance` is a separate flag. The `scheduled_shortfall` warning (`reserved > 0 ∧ unallocated ≥ 0 ∧ reservable < 0`, PROPOSED term) is **not** part of VF-020C; `reservable_amount` is returned signed, which already shows it. |
+| 11 | Manual vs rule allocations | Manual reservations are limited by `reservable` (P04); in VF-020C there is no floor and no warning (P60), and holds do not exist yet. From VF-020E: the floor only warns for manual reservations (P56) and holds do not apply (P55); AUTO executions and the creation of new CONFIRM proposals are limited by `rule_capacity`; confirming an existing proposal X is limited by `confirm_capacity(A, X)`, which excludes X's own hold (§11.3); the floor is strict in both rule cases. |
+| 12 | Safety floor | `MINIMUM_UNALLOCATED_FLOOR` per Account (§10.6) - **deferred to VF-020E (P60)**; VF-020C stores no floor. |
 | 13 | Date rollover | Figures change without writes; deferred events become due (§12); overcommitment may appear or disappear; history is never rewritten; Financial Overview rollover is unaffected. |
 | 14 | Timezone | Server date; device and server may disagree near midnight (D13); a user timezone is deferred (P41). |
 
@@ -327,13 +385,22 @@ Bank-reported balances (VF-021) are a separate observation and never enter these
 ### 8.3 Account lifecycle with reservations
 
 - **Archive:** allowed (P09).
-- **Delete:** pre-checks return 409 `AccountReferencedByGoalAllocation` /
-  `AccountReferencedByRule`; FK RESTRICT is the last line of defense. This is
-  mandatory: deleting the only linked Income can leave an Account with no ledger
-  rows but live reservations, where today's history check would pass and the FK
-  would surface as a 500.
-- **Currency change:** pre-check returns 409 when referenced by goal rows or
-  rules; the composite FK is the last line of defense (VF-018C pattern).
+- **Delete (APPROVED P65):** the pre-check returns a controlled 409
+  `AccountReferencedByGoalAllocation` when **any** linked `goal_transactions`
+  row references the Account - the **historical** reference is enough, even
+  when the linked net balance is now zero (append-only history is never removed,
+  and the foreign key is RESTRICT). `AccountReferencedByRule` is added by
+  VF-020E. FK RESTRICT is the last line of defense and must never become a 500.
+  The pre-check is mandatory: deleting the only linked Income can leave an
+  Account with no ledger rows but live reservations, where today's history check
+  would pass and the FK would surface as a 500.
+- **Currency change (APPROVED P65):** the pre-check returns 409 whenever linked
+  Goal history references the Account (rules are added by VF-020E); the
+  composite FK is the last line of defense (VF-018C pattern). Because the Goal
+  currency is itself immutable once history exists, a linked row can never be
+  rewritten to another currency.
+- Both pre-checks run under the Account row lock and only **read**
+  `goal_transactions` (§14.2).
 
 ---
 
@@ -425,6 +492,12 @@ re-execution of historical Income.
 allocation on A (AUTO executions and CONFIRM confirmations). An explicit manual
 reservation below the floor is allowed with a warning, but only within
 `reservable` and all other hard invariants.
+
+**Deferred (APPROVED P60):** the floor value needs a storage location that the
+rules engine defines, so VF-020C introduces **no** `Account.floor` (or any
+equivalent), no floor field and no floor warning. Manual reservations in
+VF-020C are limited by `reservable` alone. The floor, its strict rule
+enforcement and the manual warning arrive together in VF-020E.
 
 ### 10.7 Examples (each names its policy)
 
@@ -753,6 +826,41 @@ Cycle analysis:
 Deadlock freedom is a **design claim** that must be confirmed by CT-01…CT-12
 (§25); any `deadlock_detected` is handled as a retryable failure.
 
+**VF-020C lock order (APPROVED P61).** L0 is **not** introduced in VF-020C
+(deferred to VF-020D/E). The manual paths use row locks only, in this order,
+which is a subset of the global order above:
+
+1. fast lookup by `(user_id, client_request_id)` without row locks; when the key
+   is unused, end that read transaction (B3: no `goal_transactions` lock may be
+   held while waiting for `goals`);
+2. Goal `FOR UPDATE` (L2);
+3. Account `FOR UPDATE` (L3) - linked contribution only; a linked
+   withdrawal/release takes no explicit Account lock (the insert's foreign-key
+   check takes `KEY SHARE` on the Account row after the Goal lock);
+4. second key lookup, lifecycle checks, partition or capacity check, insert.
+
+The Account lock serializes concurrent reservations on one Account across
+different Goals, so the capacity check cannot be defeated by a race. Expense,
+Transfer and adjustment paths (canonical row → Accounts) never lock Goals, so
+reservations do not block them beyond a short Account-lock wait (P05). The
+Account delete and currency-change pre-checks (P65) hold the Account lock and
+only read `goal_transactions`.
+
+Two different orders must not be confused. The **C1 migration's table-lock
+order** is `accounts` → `goal_transactions` (table locks taken before any DDL).
+The **C2 runtime row-lock order** is Goal → Account → `goal_transactions`
+interaction (above). They are not the same order and this contract does not
+claim they are. They do not conflict, because C1 is applied to production
+**before** any C2 runtime code is deployed (§28): while the migration runs, no
+code that reads or writes `goal_transactions.account_id` exists yet. A linked
+contribution locks Goal then Account; a linked withdrawal/release may take no
+explicit Account lock, which does not change the approved ordering rule for
+every path that locks both entities (Goal first, then Account). No new product
+decision is implied.
+
+When L0 is added later it must wrap every goal write, manual ones
+included.
+
 ### 14.3 Timeline: higher-priority rule wins (S31)
 
 Setup: CHK `rule_capacity` = 600. R1 (order 1) FIXED G1 500, AUTO. R2 (order 2)
@@ -909,14 +1017,14 @@ change.
 
 | Object | Action | Contract |
 |---|---|---|
-| Goal | create / edit | under L0; currency validation hardened (G1) |
-| Goal | archive | allowed; `priority_rank = NULL`; new contributions → 409 (P10); withdrawals and releases allowed; rules targeting it → `blocked` |
+| Goal | create / edit | currency validation hardened (G1); under L0 from VF-020D/E (P61) |
+| Goal | archive | allowed; `priority_rank = NULL` (VF-020D); new contributions (tracked and linked) → 409 (P10); tracked and linked withdrawals and releases allowed; rules targeting it → `blocked` (VF-020E) |
 | Goal | complete | manual status; no restrictions (P11) |
 | Goal | delete | only without history (EST); also 409 if referenced by a rule target (P57) |
 | Goal | currency | immutable once history exists (EST); composite FK as last line of defense |
-| Account | archive | allowed; reservations kept; new linked contributions → 409; releases allowed; rules → `blocked` |
-| Account | delete | pre-checks: ledger history (EST), planned Transfers (EST), goal references, rule references → 409 |
-| Account | currency | pre-checks: history, planned Transfers, goal and rule references → 409 |
+| Account | archive | allowed; reservations kept; new linked contributions → 409; linked withdrawals/releases allowed; the reserve is never moved to another Account; rules → `blocked` (VF-020E) |
+| Account | delete | pre-checks: ledger history (EST), planned Transfers (EST), **any historical linked GoalTransaction** (P65, even at zero net), rule references (VF-020E) → 409 |
+| Account | currency | pre-checks: history, planned Transfers, **any historical linked GoalTransaction** (P65), rule references (VF-020E) → 409 |
 | Rule | create / edit | under L0; validation; an edit increments `version` and cancels open proposals |
 | Rule | enable | `active_since = now()`; preview required for `AUTO` |
 | Rule | pause / disable | events processed without it; proposals → `cancelled (rule_inactive)` |
@@ -937,11 +1045,26 @@ change.
 
 ### 19.2 `goal_transactions` (VF-020B/C)
 
-Columns per §7.3. FKs: `(goal_id, user_id, currency)` → `goals` RESTRICT
-(closes G3); `(account_id, user_id, currency)` → `accounts` RESTRICT;
-`(rule_execution_id, user_id)` → `rule_executions` RESTRICT. The
-`opening_balance` CHECK; partial `UNIQUE(user_id, client_request_id)`; partial
-index `(account_id) WHERE account_id IS NOT NULL`.
+Columns per §7.3. Implemented by VF-020B: `currency NOT NULL`,
+`effective_date`, `client_request_id`; FKs `(goal_id, user_id, currency)` →
+`goals`, `(goal_id, user_id)` → `goals` and `goal_id` → `goals` (all RESTRICT);
+`UNIQUE(user_id, client_request_id)`.
+
+**VF-020C1 schema candidate (APPROVED P66) - the only schema change of VF-020C:**
+
+| Item | Definition |
+|---|---|
+| Column | `account_id UUID NULL`; no default; **no backfill** (legacy rows stay NULL); not ORM-mapped until VF-020C2 |
+| FK | `fk_goal_transactions_account_id_user_id_currency`: `(account_id, user_id, currency)` → `accounts(id, user_id, currency)` ON DELETE RESTRICT; reuses the existing `uq_accounts_id_user_id_currency`; with `account_id IS NULL` the (MATCH SIMPLE) key is not enforced, so tracked rows are unaffected. Goal/Account currency equality follows by transitivity through the existing Goal FK |
+| CHECK | `type <> 'opening_balance' OR account_id IS NULL` |
+| CHECK | `account_id IS NULL OR client_request_id IS NOT NULL` |
+| CHECK | `account_id IS NULL OR effective_date IS NOT NULL` |
+| Index | partial `(account_id) WHERE account_id IS NOT NULL` (aggregation of `reserved(A)` and the RESTRICT foreign-key check) |
+| Migration locks | `accounts`, then `goal_transactions`, before any DDL; no hard-coded `lock_timeout` (execution-time decision) |
+| Not in VF-020C | `rule_execution_id` (VF-020E), any provenance/source column, a separate allocations table, `Account.floor` (P60) |
+
+`(rule_execution_id, user_id)` → `rule_executions` RESTRICT remains a VF-020E
+candidate.
 
 ### 19.3 New tables (each with the Supabase Data API REVOKE)
 
@@ -969,32 +1092,64 @@ backup, migration plan and approval (G3). The only data operation is the
 
 ### 20.1 Goals
 
-- `POST /api/v1/goals/{id}/transactions`: `type`, `amount`, `description?`,
-  `account_id?`, `effective_date?`, `client_request_id?`. Responses: 201
-  created; 200 replay; 404 not owned or missing; 409 partition, capacity,
-  archived Goal/Account, idempotency conflict; 422 currency, future
-  `effective_date`, `effective_date ≠ today` for a linked row (P58), missing key
-  where required. A manual reservation that leaves `reservable` below the floor
-  succeeds with a warning field (P56).
-- `GET /api/v1/goals`, `PATCH /api/v1/goals/{id}`: + `priority_rank`,
-  `tracked_amount`, `linked_amount`, `allocations[]`,
+- `POST /api/v1/goals/{id}/transactions` (VF-020C2): `type`, `amount`,
+  `description?`, `account_id?`, `effective_date?`, `client_request_id?`.
+  `account_id` omitted/null = tracked partition; `account_id = A` = linked
+  partition of Account A, for a contribution **and** for a withdrawal/release
+  (P64). Evaluation order: validation → **occupied key resolved first (200
+  replay / 409 conflict, with no date or lifecycle check)** → new-request checks.
+  New-request rules: tracked - B3 semantics (past/today ok, future 422); linked -
+  `client_request_id` mandatory and `effective_date` omitted or equal to server
+  today (P58).
+  - **201** created; **200** replay (the original transaction, original
+    `effective_date`).
+  - **404** Goal missing or not owned; Account missing or not owned (linked).
+  - **409** idempotency conflict (different payload, a different `account_id`,
+    or a linked original retried without `account_id`); archived Goal
+    (contribution); archived Account (linked contribution); amount above the
+    selected partition's balance; amount above `reservable_amount` or
+    `reservable_amount ≤ 0` (linked contribution).
+  - **422** currency mismatch between Goal and Account; future `effective_date`
+    (tracked); `effective_date ≠ today` (linked); missing
+    `client_request_id` (linked); malformed fields.
+  - Request example (linked reservation): `{"type":"contribution",
+    "amount":"250.00","account_id":"<account uuid>","client_request_id":"<uuid>"}`.
+  - Response gains `account_id` (nullable) beside `currency`, `effective_date`
+    and `client_request_id`.
+  - No floor warning field in VF-020C (P60).
+- `GET /api/v1/goals`, `PATCH /api/v1/goals/{id}` (VF-020C2): `current_amount`
+  unchanged (total) + `tracked_amount`, `linked_amount`, `allocations[]` (P63).
+  `allocations[]` is the current non-zero partition summary, not an audit
+  history (§7.2). Further additions: `priority_rank` (VF-020D) and
   `monthly_contribution_estimate` (backend-computed, ROUND_UP 0.01, PROPOSED).
-- `PUT /api/v1/goals/priorities`.
+- `PUT /api/v1/goals/priorities` (VF-020D).
 
 ### 20.2 Idempotency transition (P14 APPROVED; cutover timing P59 PROPOSED)
 
-1. VF-020B: `client_request_id` optional for tracked operations (requests
-   without a key behave as today, **without** an exactly-once guarantee),
-   required for linked operations; the updated mobile client always sends it.
+1. VF-020B (implemented): `client_request_id` optional for tracked operations
+   (requests without a key behave as today, **without** an exactly-once
+   guarantee); the updated mobile client always sends it. VF-020C2: **required
+   for every linked operation**, contribution and withdrawal/release alike
+   (422 without it; also enforced by a database CHECK, §19.2). The canonical
+   payload compared on replay is `goal_id`, `type`, `amount` (Decimal),
+   `description`, `account_id` and, only when the replay states one,
+   `effective_date`; an omitted `account_id` on a retry of a linked transaction
+   is a conflict, not "ignore" (P64).
 2. After all supported clients send it: required for every operation (422
    without it), timing per P59.
 
 ### 20.3 Accounts
 
-`GET /api/v1/accounts` adds `balance_as_of_today`, `scheduled_outflows`,
+`GET /api/v1/accounts` (VF-020C2) adds exactly these fields, with the formulas
+of §8.1: `balance_as_of_today`, `scheduled_outflows`,
 `planned_transfer_outflows`, `reserved_amount`, `unallocated_amount`,
-`reservable_amount`, `allocation_status`, `negative_balance`, and
-`proposal_holds_amount` (informational). `current_balance` is unchanged.
+`reservable_amount` (signed), `allocation_status` ∈ {`normal`, `overcommitted`}
+and `negative_balance`. `current_balance` is unchanged and keeps its meaning.
+`proposal_holds_amount` and any floor field are **not** part of VF-020C; they
+arrive with VF-020E (P60, P62). The figures are computed with a bounded number
+of grouped queries for all of the user's Accounts (no per-Account queries).
+Deleting an Account or changing its currency returns the controlled 409 of
+§8.3 (P65).
 
 ### 20.4 Rules
 
@@ -1027,8 +1182,10 @@ Expo SDK 57; everything works in **Expo Go**; no new native dependencies.
 
 - **Goals:** rank, progress, tracked/linked amounts, deadline, monthly estimate, rule badges.
 - **Goal detail:** history by partition; contribute and release with partition
-  selection (existing `account-picker.tsx`); reorder; floor warning on manual
-  reservations.
+  selection (existing `account-picker.tsx`); reorder (VF-020D). The floor
+  warning on manual reservations arrives with the floor in VF-020E (P60). For a
+  linked operation the app always sends `client_request_id`, never sends
+  `effective_date`, and reuses its stable-attempt key on retry (VF-020C3).
 - **Accounts:** recorded balance, balance as of today, reserved, unallocated,
   reservable, overcommitted / scheduled-shortfall badges.
 - **Rules:** create, preview, AUTO/CONFIRM, enable/pause, history, failures.
@@ -1177,7 +1334,7 @@ R = reserved, U = unallocated, RS = reservable.
 | S15 | Legacy: opening 1,000 + contribution 200 | tracked 1,200; withdrawal 150 without account → 1,050 | P12 |
 | S16 | Rule example A (§10.7), AUTO | G1 300 / G2 200 / G3 100; R 1,100; U 3,900 | P44, P48 |
 | S17 | Rule example A, CONFIRM | proposal 300/200/100 with a hold of 600; nothing written until confirmed | P01, P55 |
-| S18 | Rule example B (floor 4,200) | `skipped`; with `allow_partial`: G1 300 | P29, P56 |
+| S18 | (VF-020E; needs the floor, P60) Rule example B (floor 4,200) | `skipped`; with `allow_partial`: G1 300 | P29, P56 |
 | S19 | Rule example C (7 % of 3,333.33) | 233.33; remainder unallocated | P44, P45 |
 | S20 | After S16: salary 3,000 → 2,000 | reservations unchanged; B 4,000; U 2,900; `source_changed`; alert | P47 |
 | S21 | After S16: salary deleted | B 2,000; R 1,100; U 900 < floor 1,000 → floor alert (not overcommitted); `source_deleted` | P47 |
@@ -1186,7 +1343,7 @@ R = reserved, U = unallocated, RS = reservable.
 | S24 | Same Income event processed twice | one execution; replay | §13 |
 | S25 | RS 600; R1 500 (order 1), R2 400 (order 2), FIXED | R1 500; R2 `skipped`; with partial on R2: 100 | P29, P48 |
 | S26 | CONFIRM proposal 600 → Expense 4,000 → confirm | B 1,000; R 500; U 500; `confirm_capacity` = 500 − 1,000 (floor) − 0 = −500 → 409; `cancelled (stale)`; no writes | §11 |
-| S27 | Contribution to an archived Goal | 409 (P10; currently allowed → regression test) | P10 |
+| S27 | Contribution to an archived Goal | 409 for tracked (implemented in VF-020B1) and, from VF-020C2, for linked contributions | P10 |
 | S28 | Income commits; the API crashes before dispatch | event stays `pending`; processed at the next drain or by the periodic dispatcher; one execution; no invented money | F1 |
 | S29 | Crash in AUTO after staging writes for three targets | rollback: no goal rows, no execution row; lease expires → retry → exactly one set of rows; nothing partial presented as success | F1, F2 |
 | S30 | The same event delivered three times | one financial effect; one execution id; replays visible in the outcome | F2 |
@@ -1199,11 +1356,17 @@ R = reserved, U = unallocated, RS = reservable.
 | S37 | AUTO active since 10-01; on 10-10 a salary dated 09-20 is entered | manual/historical (09-20 < 10-03) and E5 ✗ → no execution; Income recorded normally and counted in Overview | P46, P51 |
 | S38 | RS 600, floor 0; one event: R1 (order 1, CONFIRM) FIXED G1 500, R2 (order 2, AUTO) FIXED G3 400 | proposal X with hold 500; R2 sees `rule_capacity` 100 → `skipped`. Confirm X: `confirm_capacity` = 600 − 0 − 0 (own hold excluded; no prior holds) = 600 ≥ 500 → executed; R 500; hold ended | P55, P48 |
 | S39 | As S38 before confirmation; the user manually reserves 300 for G2 | allowed (holds do not block manual): RS 300. Confirm X: `confirm_capacity` = 300 − 0 − 0 = 300 < 500 → 409, `cancelled (stale)`; nothing written | P55 |
-| S40 | RS 1,500, floor 1,000; manual reservations | 800 → allowed with a floor warning (RS 700 < floor); 1,600 → 409 (exceeds reservable; the floor override never creates money) | P56, P04 |
+| S40 | (VF-020E; needs the floor, P60. In VF-020C only the 409 half applies: 800 → allowed without any warning, 1,600 → 409) RS 1,500, floor 1,000; manual reservations | 800 → allowed with a floor warning (RS 700 < floor); 1,600 → 409 (exceeds reservable; the floor override never creates money) | P56, P04 |
 | S41 | Proposal created 10-10, expires 10-17; confirm on 10-18 | `expired` returned; no GoalTransaction; the hold stopped counting at 10-17 | P54 |
 | S42 | Manual Income created 10-10 | `received_at` 10-03 → manual/live (inclusive boundary); 10-02 → manual/historical | P51 |
 | S43 | Income committed; after-response task lost; user inactive for 3 days | without the periodic dispatcher: AUTO runs at the next drain, against capacity at that time; with it: within the configured cadence (target ≈ 10 min) | P50 |
 | S44 | RS 600, floor 0; one event: R1 (order 1, CONFIRM) FIXED G1 500 → X; R2 (order 2, CONFIRM) FIXED G3 100 → Y (`rule_capacity` 600 − 500 = 100); then an Expense 80 today → RS 520 | Confirm X: `confirm_capacity` = 520 − 0 − 0 (Y is ordered after X and does not count) = 520 ≥ 500 → executed. Confirm Y: RS 20 (X now reserved), prior holds 0 → 20 < 100 → `cancelled (stale)`. Counting Y's later hold against X would have given 420 < 500 and wrongly defeated the higher-priority X | P55, P48 |
+| S45 | Linked contribution, `effective_date` omitted, on day D; retry with the same key and payload on D+1 | 200; original transaction with `effective_date = D`; no second row | P58, P14 |
+| S46 | Linked contribution or withdrawal with `effective_date` = yesterday, or tomorrow, and a new key | 422 for both; nothing written. A tracked contribution dated yesterday → 201; tomorrow → 422 | P58 |
+| S47 | Linked contribution key K on CHK; retry K on SAV, and retry K without `account_id` | 409 for both; one row | P64, P14 |
+| S48 | Goal with 300 tracked + 500 linked(CHK); withdrawal 400 without `account_id` | 409 naming the partition (total 800 would cover it); withdrawal 400 with `account_id = CHK` → linked 100 | P64 |
+| S49 | Goal history linked to CHK, all released (linked net 0); delete CHK, or change its currency | 409 for both: the historical reference counts | P65 |
+| S50 | `allocations[]` of the Goal in S48 after the 400 release from CHK | one entry (CHK, 100.00); a fully released partition is not listed; the list is not a history | P63 |
 
 ---
 
@@ -1229,8 +1392,12 @@ are independent literals, never copies of production formulas.
 | Provenance | S23, S32, S33, S37, S42; reclassification; Income without a creation event |
 | Proposals | expiry (S41), stale (S26/S35/S39), superseded, source_changed; holds: `rule_capacity` for AUTO and new proposals, `confirm_capacity` excluding the own hold (S38), later holds never defeating an earlier proposal (S44); hold order deterministic for the chosen mechanism |
 | Dispatcher FIFO (P52, if selected) | an older `failed_retryable` event waiting for backoff blocks newer events of the same user; an event deferred by a future `not_before` does not; after `dead`, newer events proceed |
-| Capacity | future credits/debits (S7/S8); planned Transfers (S36) incl. no double subtraction after posting; date rollover; floor strict for rules, warning for manual (S18/S40) |
-| Lifecycle | archived Goal (P10 regression), archived Account, delete or currency change with references (S13) |
+| Capacity | future credits/debits (S7/S8); planned Transfers (S36) incl. no double subtraction after posting; date rollover; exact boundary `amount = reservable_amount` OK, `reservable_amount ≤ 0` → 409; negative `reservable_amount` returned signed; `allocation_status` / `negative_balance` (S9/S10); floor strict for rules, warning for manual (S18/S40: VF-020E, P60) |
+| Linked dates and keys (P58) | linked contribution and withdrawal: key mandatory (422, plus the database CHECK); omitted date = today; explicit past/future → 422; tracked semantics unchanged; occupied-key replay on a later day → 200 (S45/S46) |
+| Partitions (P63/P64) | withdrawal without `account_id` against tracked only (S48); linked withdrawal from the named partition; multiple Accounts; `allocations[]` shows only non-zero current partitions (S50); `current_amount = tracked_amount + linked_amount`; legacy Goals unchanged |
+| Idempotency with `account_id` | same key + different or omitted `account_id` → 409; replay after archiving the Goal or the Account → 200 (S47) |
+| Lifecycle | archived Goal (P10, tracked and linked), archived Account (S12), completed Goal unchanged, delete or currency change with historical linked references including net-zero history (S13, S49) |
+| Database (C1) | FK rejects wrong currency, wrong user and unknown Account; the three CHECKs; `ON DELETE RESTRICT`; legacy rows NULL; real Alembic upgrade/downgrade on throwaway `*_test` databases (B4 pattern); B4 application code against the C1 schema |
 | Budgets | transitions, deduplication, no duplicated limits |
 | No double counting / Overview | Overview unchanged by reservations and holds; Goal totals not counted as assets |
 | API compatibility | existing goal tests; additive fields |
@@ -1258,7 +1425,7 @@ matching the implemented state, the user performs the merge.
 | P10 | Archived Goal rules | **APPROVED** |
 | P11 | Completed Goal rules | **APPROVED** |
 | P12 | Legacy history unchanged | **APPROVED** (also EST) |
-| P13 | `effective_date` | **APPROVED** (refinement P58 PROPOSED) |
+| P13 | `effective_date` | **APPROVED** (refinement P58 APPROVED 2026-10-07: tracked vs linked rules) |
 | P14 | Idempotency + transition | **APPROVED** (cutover timing P59 PROPOSED) |
 | P15 | Terminology | **APPROVED** (`scheduled_shortfall` PROPOSED) |
 | P16 | No external money movement | **APPROVED** |
@@ -1308,10 +1475,17 @@ matching the implemented state, the user performs the merge.
 | P53 | Event retention | keep processed events as provenance until the user's data is deleted; VF-021 per legal review | PROPOSED / EXT |
 | P54 | Proposal expiry | 7 days; lazy expiry | **APPROVED** |
 | P55 | Soft capacity hold | holds reduce later rule capacity only; not reserved; never block real operations or manual reservations; full revalidation at confirmation | **APPROVED** |
-| P56 | Floor for manual reservations | warning-only for manual, strict for rules; never overrides P04 or hard invariants | **APPROVED** |
+| P56 | Floor for manual reservations | warning-only for manual, strict for rules; never overrides P04 or hard invariants (the floor itself: VF-020E, P60) | **APPROVED** |
 | P57 | Lifecycle references | Goal deletion referenced by a rule → 409; rule deletion only without executions | PROPOSED |
-| P58 | `effective_date` of linked rows | today only; tracked rows may be backdated | PROPOSED |
+| P58 | `effective_date` of linked rows | tracked: B3 semantics (past/today ok, future 422); linked contribution **and** withdrawal/release: key mandatory, omitted = today, explicit must equal today else 422; occupied key resolved first | **APPROVED** (2026-10-07) |
 | P59 | Mandatory `client_request_id` for all clients | after all supported clients send it | PROPOSED |
+| P60 | Safety floor timing | deferred to VF-020E; no floor storage, field or warning in VF-020C | **APPROVED** (2026-10-07) |
+| P61 | User advisory lock L0 | deferred to VF-020D/E; VF-020C uses Goal → Account row locks | **APPROVED** (2026-10-07) |
+| P62 | Account read model | eight additive fields and exact formulas (§8.1, §20.3); `reservable_amount` signed; no holds/floor fields | **APPROVED** (2026-10-07) |
+| P63 | Goal read model | `tracked_amount`, `linked_amount`, `allocations[]` = current non-zero partition summary, not an audit history | **APPROVED** (2026-10-07) |
+| P64 | Partition selection and idempotency with `account_id` | explicit partition; no FIFO or auto-selection; archived Account/Goal rules; `account_id` in the canonical payload | **APPROVED** (2026-10-07) |
+| P65 | Account lifecycle protection | delete / currency change → controlled 409 on any historical linked reference | **APPROVED** (2026-10-07) |
+| P66 | Schema and rollout | nullable `account_id`, no allocations table, no provenance column; C1 → production migration → C2 → C3; no contract migration | **APPROVED** (2026-10-07) |
 
 ---
 
@@ -1322,13 +1496,30 @@ matching the implemented state, the user performs the merge.
 | Stage | Scope | Depends on |
 |---|---|---|
 | VF-020A Contract | this document; product-requirements and roadmap updates | — (complete when merged) |
-| VF-020B Goals Hardening | G1–G6; P10; P13 column; P14 keys; composite owner FK; `currency` copy | VF-020A; G3 (authorized read-only production check, migration approval) |
-| VF-020C Goal Account Allocations | partitions; as-of model incl. P49; capacity; floor warning (P56); Account lifecycle pre-checks; API and minimal mobile surface | VF-020B; G3, G4 |
-| VF-020D Goal Priorities | rank, reorder, L0 | VF-020C |
-| VF-020E Rules Engine / Outbox / AUTO / CONFIRM | outbox; dispatcher drains (a)+(b); periodic dispatcher (c) with verified mechanism (P50); executions; holds (P55); expiry (P54); eligibility and provenance (P51); alerts; Inbox | VF-020D; G4, G5; P52 finalized |
+| VF-020B Goals Hardening | G1–G6; P10; P13 column; P14 keys; composite owner FK; `currency` copy. **Implemented**: B1 app hardening, B2 expand, B3 runtime, B4 contract; production at `8799b7fd923d` | VF-020A; G3 (authorized read-only production check, migration approval) |
+| VF-020C Goal Account Allocations | three sub-stages, strictly in this order (below): **C1** schema expand, **C2** backend runtime, **C3** mobile. Partitions; as-of model incl. P49; capacity; Account lifecycle pre-checks; API and minimal mobile surface. **No floor warning (P60), no L0 (P61)** | VF-020B; G3, G4 |
+| VF-020D Goal Priorities | rank, reorder, L0 (introduced here or in VF-020E, P61) | VF-020C |
+| VF-020E Rules Engine / Outbox / AUTO / CONFIRM | Account safety floor (P56, P60); outbox; dispatcher drains (a)+(b); periodic dispatcher (c) with verified mechanism (P50); executions; holds (P55); expiry (P54); eligibility and provenance (P51); alerts; Inbox | VF-020D; G4, G5; P52 finalized |
 | VF-020F Mobile & Acceptance | complete mobile UX, device acceptance, documentation, independent review | VF-020E; G6, G7 |
 
 Each stage requires its own implementation authorization.
+
+#### VF-020C sub-stages and rollout order (APPROVED P66)
+
+Production migrations are applied manually while the backend auto-deploys on
+merge, so any code that reads a new column must not be deployed before the
+migration. The order is therefore fixed:
+
+| Step | Content | Gate |
+|---|---|---|
+| **C1** schema expand only | one Alembic revision after `8799b7fd923d` (§19.2): nullable `goal_transactions.account_id`, composite FK, three CHECKs, partial index; tests (real Alembic cycle, direct constraint behavior) and documentation. **`account_id` is not mapped in the ORM**, so the merged code runs unchanged against the B4 schema | strict review → push → PR → CI → user merge |
+| **C1 production** | read-only production preflight → backup → execution-time lock policy → explicit migration authorization → read-only post-verification | each step separately authorized |
+| **C2** backend runtime | only after C1 is applied to production: ORM mapping, linked contribution/withdrawal, capacity and partition checks, `account_id` in the idempotency comparison, Account and Goal read models, Account lifecycle pre-checks (P65) | strict review → push → PR → CI → user merge |
+| **C3** mobile | Account selector, partition selector, tracked/linked display, overcommitted warning | typecheck, lint, helper tests, **physical-device acceptance** |
+
+No contract migration follows C3: `account_id` intentionally stays nullable
+(NULL = tracked). Each step needs its own authorization; C2 may not start
+before C1 is verified in production, and C3 may not start before C2 is merged.
 
 ### VF-021 Financial Connections & Import (separate strategic stream)
 
@@ -1349,7 +1540,7 @@ No integration code before G2 and G5.
   `README.md` and the module list in `CLAUDE.md` change with each implemented
   stage, not with this contract.
 - `docs/roadmap.md` keeps "Goals are currently not connected to Accounts" until
-  VF-020C ships.
+  VF-020C2 ships (the C1 schema alone does not connect them).
 - `docs/modules/account-transfers.md` ("Transfers must not interact with
   Goals") stays valid: VF-020 involves no Transfer ↔ Goal movement; P49 only
   reads planned Transfers. Any future money-movement model requires a dated
@@ -1365,7 +1556,7 @@ No integration code before G2 and G5.
 |---|---|---|
 | VF-020A | complete with this document | review of the documentation diff |
 | VF-020B | yes; needs an authorized read-only production check | G3, G4, G5, G7 |
-| VF-020C | yes, after VF-020B | G3, G4, G5, G6, G7 |
+| VF-020C | yes - contract finalized (v0.4); VF-020B is complete. C1 → production migration → C2 → C3 | G3, G4, G5, G6, G7 |
 | VF-020D | yes, after VF-020C | G4, G7 |
 | VF-020E | yes, after VF-020D; P52 finalized and P50 mechanism verified during the stage | G4, G5, G6, G7; **GA of unattended AUTO only with the periodic dispatcher in place** |
 | VF-020F | after VF-020E | G6, G7 |
@@ -1396,7 +1587,11 @@ No integration code before G2 and G5.
 | No invented Income status; Budgets not duplicated | PASS |
 | No contradiction with AccountTransfer semantics (planned = no ledger rows) | PASS (§8, INV-08) |
 | No contradiction with Financial Overview semantics | PASS (FIN-012) |
-| No unapproved decision labeled APPROVED (P52, P53, P57–P59 PROPOSED; VF-021 UDR/EXT) | PASS |
+| No unapproved decision labeled APPROVED (P52, P53, P57, P59 PROPOSED; VF-021 UDR/EXT) | PASS |
+| VF-020C decisions P58, P60–P66 approved 2026-10-07 and consistently stated in §3, §7, §8, §10.6, §14.2, §18, §19.2, §20, §21, §24, §25, §27, §28; no floor, no `proposal_holds_amount`, no L0, no allocations table or provenance column in VF-020C | PASS |
+| Tracked vs linked `effective_date` semantics stated consistently (P58 is the normative text; §7.3, §7.4, §20.1, §25, S45/S46 repeat it without deviation) | PASS |
+| `allocations[]` described as a current non-zero summary, never an audit history (§7.2, §20.1, S50) | PASS |
+| VF-020C not presented as implemented | PASS |
 | No migration, production access or implementation authorized | PASS |
 | Requirements traceable to tests | PASS (§24 ↔ §25) |
 | Implementation sequence valid | PASS |
@@ -1408,9 +1603,9 @@ No integration code before G2 and G5.
 1. **Contract status:** APPROVED FOR DOCUMENTATION / IMPLEMENTATION PLANNING. No
    user decision blocks the VF-020 product semantics.
 2. **Approved decisions:** P01–P07, P09–P16, P18, P19, P29, P35, P36, P44–P51,
-   P54, P55, P56 (P34 superseded by P47).
+   P54, P55, P56, P58, P60–P66 (P34 superseded by P47).
 3. **Remaining non-approved items:** PROPOSED technical refinements (P08, P17,
-   P24–P26, P28, P30–P33, P37, P41–P43, P52, P53, P57–P59) finalized within
+   P24–P26, P28, P30–P33, P37, P41–P43, P52, P53, P57, P59) finalized within
    their stages; P23 UDR for VF-021.
 4. **External / legal gates:** P20, P21, P22, P27, P38 research, P39; G2 and G5
    for VF-021; finishing the secret rotation before storing banking tokens;
