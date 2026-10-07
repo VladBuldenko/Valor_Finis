@@ -636,13 +636,15 @@ def test_withdrawal_replay_after_balance_drop_returns_original(clean_database: N
 # ------------------------------------------------------------------
 
 
-# Tests that history written before VF-020B3 - currency, effective_date and
-# client_request_id all NULL - is still returned by the history read.
+# Tests that history written before VF-020B3 - effective_date and
+# client_request_id NULL (currency was filled by the VF-020B4 backfill and
+# can no longer be NULL) - is still returned by the history read.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if the legacy row is returned with None fields.
-def test_history_returns_legacy_row_with_null_runtime_fields(clean_database: None) -> None:
+# - None. The test passes if the legacy row is returned with its currency
+#   and None for effective_date and client_request_id.
+def test_history_returns_legacy_row_without_effective_date_and_key(clean_database: None) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
@@ -651,8 +653,9 @@ def test_history_returns_legacy_row_with_null_runtime_fields(clean_database: Non
         legacy_id = uuid4()
         db_session.execute(
             text(
-                "INSERT INTO goal_transactions (id, goal_id, user_id, type, amount) "
-                "VALUES (:id, :goal_id, :user_id, 'opening_balance', 200)"
+                "INSERT INTO goal_transactions "
+                "(id, goal_id, user_id, type, amount, currency) "
+                "VALUES (:id, :goal_id, :user_id, 'opening_balance', 200, 'EUR')"
             ),
             {"id": str(legacy_id), "goal_id": str(goal.id), "user_id": str(user_id)},
         )
@@ -664,7 +667,7 @@ def test_history_returns_legacy_row_with_null_runtime_fields(clean_database: Non
 
         assert [t.id for t in history] == [legacy_id]
         assert (history[0].currency, history[0].effective_date, history[0].client_request_id) == (
-            None, None, None,
+            "EUR", None, None,
         )
     finally:
         db_session.close()

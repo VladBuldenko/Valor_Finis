@@ -897,6 +897,11 @@ uq_goals_id_user_id (VF-020B2)
 UNIQUE (id, user_id) - target of the goal_transactions composite
 ownership foreign key (see 6.1)
 
+uq_goals_id_user_id_currency (VF-020B4)
+
+UNIQUE (id, user_id, currency) - target of the final goal_transactions
+foreign key (see 6.1). uq_goals_id_user_id stays.
+
 Indexes
 
 user_id
@@ -1055,14 +1060,13 @@ currency
 
 VARCHAR(3)
 
-yes
+no
 
-Added in VF-020B2. Existing rows were backfilled from the owning goal's
-currency. Since VF-020B3 every new row gets the owning goal's currency
-(copied by the service from the locked goal row, never sent by the
-client). Still nullable: rows written between the VF-020B2 migration and
-the VF-020B3 deployment may be NULL; VF-020B4 fills them and makes the
-column NOT NULL.
+Added nullable in VF-020B2 and NOT NULL since VF-020B4 (no default). Every
+row has the owning goal's currency: B2 backfilled existing rows, since
+VF-020B3 the service copies it from the locked goal row (never sent by
+the client), and the VF-020B4 migration filled the rows still NULL from
+the B2 -> B3 deployment window with their goal's currency.
 
 effective_date
 
@@ -1099,6 +1103,12 @@ above is kept as additional defense.
 uq_goal_transactions_user_id_client_request_id (VF-020B2): UNIQUE
 (user_id, client_request_id) - a non-null key is unique per user; NULLs
 are distinct, so any number of rows may have no key
+fk_goal_transactions_goal_id_user_id_currency (VF-020B4): (goal_id,
+user_id, currency) → goals(id, user_id, currency), ON DELETE RESTRICT -
+the transaction's goal, owner and currency must all match the goal row.
+The goal_id foreign key and the B2 ownership foreign key above are kept as
+layered defenses. A goal's currency cannot change once it has history
+(VF-016E), so the equality cannot be invalidated later.
 
 Indexes
 
@@ -1125,12 +1135,25 @@ in that window have NULL in all three. VF-020B3 (no schema change) maps
 the columns and uq_goal_transactions_user_id_client_request_id in the
 ORM model - the temporary ORM/database divergence is resolved - and
 always writes currency and effective_date, plus client_request_id when the
-request sends one. The schema is unchanged: currency stays nullable until
-VF-020B4, which fills any remaining currency NULLs from the owning goal,
-makes currency NOT NULL and adds the (goal_id, user_id, currency) foreign
-key. Downgrading 1e921a4a4412 drops the three columns and their values,
-which after VF-020B3 includes recorded effective dates and idempotency
-keys.
+request sends one. The schema was unchanged by VF-020B3.
+Downgrading 1e921a4a4412 drops the three columns and their values, which
+after VF-020B3 includes recorded effective dates and idempotency keys.
+
+VF-020B4 contract note: migration 8799b7fd923d closes the currency
+transition. Under explicit ACCESS EXCLUSIVE locks (goals first, then
+goal_transactions - the application's lock order) it fills only the rows
+whose currency is NULL from the owning goal, then fails the whole migration
+(nothing is committed) if any NULL currency remains or any stored currency
+differs from its goal's - such rows are never rewritten. It then adds
+uq_goals_id_user_id_currency, makes currency NOT NULL (no default) and adds
+fk_goal_transactions_goal_id_user_id_currency. effective_date stays
+nullable (older history has no business date; it is never derived) and
+client_request_id stays nullable (the key is optional for older clients).
+Downgrading 8799b7fd923d is a schema reversal only: it drops the final
+foreign key, makes currency nullable again and drops
+uq_goals_id_user_id_currency, but keeps every stored currency value (the
+rows that were NULL before the upgrade cannot be identified, so none is set
+back to NULL).
 
 7. Accounts
 
@@ -2439,7 +2462,8 @@ budgets
 goals
    │
    └──< goal_transactions.goal_id
-        (also (goal_id, user_id) → goals(id, user_id), VF-020B2)
+        (also (goal_id, user_id) → goals(id, user_id), VF-020B2;
+         and (goal_id, user_id, currency) → goals(id, user_id, currency), VF-020B4)
 
 accounts
    │
@@ -2546,6 +2570,7 @@ BudgetVersion.change_reason is valid
 GoalTransaction.amount > 0
 GoalTransaction.type is valid
 GoalTransaction.user_id equals its goal's user_id (composite FK, VF-020B2)
+GoalTransaction.currency is NOT NULL and equals its goal's currency (composite FK, VF-020B4)
 At most one GoalTransaction per (user_id, client_request_id) when the key
 is not NULL (VF-020B2)
 
@@ -2863,12 +2888,14 @@ PostgreSQL
 │
 ├── goals
 │   ├── PK id
-│   └── UNIQUE id + user_id (VF-020B2, composite FK target)
+│   ├── UNIQUE id + user_id (VF-020B2, composite FK target)
+│   └── UNIQUE id + user_id + currency (VF-020B4, composite FK target)
 │
 ├── goal_transactions
 │   ├── PK id
 │   ├── FK goal_id → goals (ON DELETE RESTRICT)
 │   ├── FK (goal_id, user_id) → goals (id, user_id) (ON DELETE RESTRICT, VF-020B2)
+│   ├── FK (goal_id, user_id, currency) → goals (id, user_id, currency) (ON DELETE RESTRICT, VF-020B4)
 │   └── UNIQUE user_id + client_request_id (VF-020B2)
 │
 ├── accounts

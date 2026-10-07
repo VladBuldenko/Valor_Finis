@@ -1000,8 +1000,10 @@ original Goal's created_at, not the migration's run time
 
 currency
 
-the Goal's currency, stored with the row since VF-020B3; null only for
-history recorded before VF-020B3 (the Goal's currency still applies)
+the Goal's currency, stored with every transaction (NOT NULL in the
+database since VF-020B4). The response field is still declared optional so
+a server running this code keeps serializing rows correctly before that
+migration is applied to its database; once applied it is never null.
 
 effective_date
 

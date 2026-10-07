@@ -67,6 +67,12 @@ class GoalModel(Base):
         # carry a (goal_id, user_id) -> goals(id, user_id) foreign key, so a
         # goal transaction can never belong to another user than its goal.
         UniqueConstraint("id", "user_id", name="uq_goals_id_user_id"),
+        # Composite-unique FK target (VF-020B4): lets goal_transactions bind
+        # (goal_id, user_id, currency) to the goal's own identity, owner and
+        # currency at the database level.
+        UniqueConstraint(
+            "id", "user_id", "currency", name="uq_goals_id_user_id_currency",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
