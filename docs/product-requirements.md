@@ -71,6 +71,15 @@ milestones change the original "Out of Scope" items. Neither is implemented yet.
 - Goals will be able to reserve (earmark) money that stays in an Account,
   alongside the existing tracked-only Goal progress. A reservation never moves
   money.
+- Goals hardening (VF-020B) is implemented. The VF-020C contract (account-linked
+  reservations) is finalized but not implemented: a reservation is a Goal
+  transaction linked to one Account, limited by that Account's reservable
+  capacity (balance as of today minus existing reservations, scheduled
+  outflows and planned outgoing Transfers); it never blocks real expenses or
+  transfers, and an Account can then show as overcommitted. A withdrawal always
+  names the partition (tracked, or one Account) it reduces. Rollout order:
+  schema (C1) → production migration → backend (C2) → mobile (C3). The Account
+  safety floor arrives later with the rules engine.
 - "Automation" is now in planned scope only as internal allocation rules: each
   rule runs in `AUTO` or `CONFIRM` mode, and both modes create or propose
   internal Goal reservations only.

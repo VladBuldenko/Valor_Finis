@@ -161,7 +161,7 @@ Financial Overview (VF-019): discovery (VF-019A), backend (VF-019B, PR #67), mob
 
 6. Next — VF-020 Smart Goals & Rules
 
-Goals are not connected to Accounts today. Goal funding from Accounts is not implemented and must not be assumed until VF-020C ships.
+Goals are not connected to Accounts today. Goal funding from Accounts is not implemented and must not be assumed until VF-020C2 (the backend runtime) ships.
 
 Product discovery asked whether funding a Goal means (1) moving actual money out of an Account into a real destination, or (2) earmarking money that remains physically in the Account. The approved VF-020A contract (docs/modules/smart-goals-rules.md) answers it for VF-020: earmarking (an Account-linked reservation that moves no money) alongside the existing tracked-only Goal progress. Moving money is not part of VF-020, and internal rules never initiate payments or transfers.
 
@@ -169,9 +169,9 @@ The contract is approved for documentation and implementation planning only. Eac
 
 1. VF-020A — Smart Goals & Rules contract (approved)
 
-2. VF-020B — Goals hardening
+2. VF-020B — Goals hardening (implemented; production at revision 8799b7fd923d)
 
-3. VF-020C — Goal Account allocations (reservations, as-of capacity)
+3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4); it is not implemented. Fixed order: C1 schema expand only (nullable goal_transactions.account_id, not ORM-mapped) → production migration → C2 backend runtime → C3 mobile with physical-device acceptance. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
 
 4. VF-020D — Goal priorities
 
@@ -205,7 +205,7 @@ Current implemented finance foundation (including Account Transfers and the Fina
         ↓
 VF-020A Smart Goals & Rules contract (approved)
         ↓
-VF-020B Goals hardening → VF-020C Goal Account allocations → VF-020D Goal priorities → VF-020E Rules engine → VF-020F Mobile & acceptance
+VF-020B Goals hardening (done) → VF-020C Goal Account allocations (C1 → production migration → C2 → C3) → VF-020D Goal priorities → VF-020E Rules engine → VF-020F Mobile & acceptance
         ↓
 later product capabilities
 
