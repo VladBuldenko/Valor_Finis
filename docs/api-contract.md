@@ -796,8 +796,8 @@ non-zero Account partitions, ordered by account_id. It is a summary, not an
 audit history: released (zero) partitions are not listed. The Goal's
 transaction history is the audit trail; each transaction exposes a nullable
 account_id. These fields appear on every Goal response (list, create,
-PATCH). GET /api/v1/goals/{id}/progress and analytics goal progress are
-unchanged and keep using current_amount.
+PATCH). GET /api/v1/analytics/goal-progress is unchanged and keeps using
+current_amount.
 
 Delete Goal
 

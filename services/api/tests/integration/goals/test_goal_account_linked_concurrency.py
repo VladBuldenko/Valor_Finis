@@ -11,13 +11,15 @@ from sqlalchemy.orm import Session
 from app.db.database_session import SessionLocal
 from app.modules.accounts import account_service
 from app.modules.accounts.account_errors import (
+    AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
     AccountNotFoundError,
     AccountReferencedByGoalAllocationError,
 )
-from app.modules.accounts.account_schemas import AccountCreate
-from app.modules.goals import goal_repository, goal_service
+from app.modules.accounts.account_schemas import AccountCreate, AccountUpdate
+from app.modules.goals import goal_repository, goal_service, goal_transaction_repository
 from app.modules.goals.goal_errors import (
+    GoalAccountCurrencyMismatchError,
     GoalPartitionInsufficientFundsError,
     GoalReservationCapacityError,
 )
@@ -78,6 +80,10 @@ def _linked(goal_id: UUID, user_id: UUID, request: GoalTransactionCreate) -> Cal
             return "capacity"
         except GoalPartitionInsufficientFundsError:
             return "partition"
+        except AccountNotFoundError:
+            return "account_missing"
+        except GoalAccountCurrencyMismatchError:
+            return "currency_mismatch"
     return run
 
 
@@ -331,3 +337,280 @@ def test_repository_translates_account_link_foreign_key_violation(clean_database
         db_session.close()
 
     assert raised is True
+
+
+# ------------------------------------------------------------------
+# Deterministic Account-lock races (review fixes)
+# ------------------------------------------------------------------
+
+
+# Polls pg_stat_activity until a backend is blocked on a lock while running
+# a statement that reads accounts - i.e. it is queued on an Account ROW lock
+# (SELECT ... FROM accounts ... FOR UPDATE), not on anything else.
+# Returns:
+# - True if such a waiter was observed within the timeout.
+def _wait_for_account_row_waiter(timeout_seconds: float = 10.0) -> bool:
+    session = SessionLocal()
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            waiting = session.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                    "AND pid <> pg_backend_pid() AND query ILIKE '%FROM accounts%'"
+                )
+            ).scalar_one()
+            session.rollback()
+            if waiting > 0:
+                return True
+            time.sleep(0.02)
+        return False
+    finally:
+        session.close()
+
+
+def _start(name: str, task: Callable[[Session], str], results: dict) -> threading.Thread:
+    thread = threading.Thread(target=_run_task, args=(name, task, results, None), name=name)
+    thread.start()
+    return thread
+
+
+# Gates ONE named thread right after it inserts its linked GoalTransaction
+# (row flushed, Goal and Account locks still held, nothing committed).
+def _gate_after_insert(monkeypatch, thread_name: str):
+    original = goal_transaction_repository.create_transaction
+    inserted, release = threading.Event(), threading.Event()
+
+    def gated(**kwargs):
+        model = original(**kwargs)
+        if threading.current_thread().name == thread_name:
+            inserted.set()
+            assert release.wait(timeout=15)
+        return model
+
+    monkeypatch.setattr(goal_transaction_repository, "create_transaction", gated)
+    return inserted, release
+
+
+# Gates ONE named thread inside Account update/delete right after it holds
+# the Account row lock and has run the linked-history predicate (the lock
+# stays held until the thread's transaction ends).
+def _gate_in_account_mutation(monkeypatch, thread_name: str):
+    original = goal_transaction_repository.has_linked_transactions_for_account
+    reached, release = threading.Event(), threading.Event()
+
+    def gated(**kwargs):
+        result = original(**kwargs)
+        if threading.current_thread().name == thread_name:
+            reached.set()
+            assert release.wait(timeout=15)
+        return result
+
+    monkeypatch.setattr(goal_transaction_repository, "has_linked_transactions_for_account", gated)
+    return reached, release
+
+
+def _account_state(account_id: UUID):
+    db_session = SessionLocal()
+    try:
+        currency = db_session.execute(
+            text("SELECT currency FROM accounts WHERE id = :a"), {"a": account_id},
+        ).scalar_one_or_none()
+        linked_rows = db_session.execute(
+            text("SELECT count(*) FROM goal_transactions WHERE account_id = :a"), {"a": account_id},
+        ).scalar_one()
+        return currency, linked_rows
+    finally:
+        db_session.close()
+
+
+def _update_currency(account_id: UUID, user_id: UUID, currency: str) -> Callable[[Session], str]:
+    def run(db_session: Session) -> str:
+        try:
+            account_service.update_account(db_session, account_id, AccountUpdate(currency=currency), user_id)
+            return "changed"
+        except AccountCurrencyImmutableError:
+            return "immutable"
+        except AccountReferencedByGoalAllocationError:
+            return "referenced"
+    return run
+
+
+# Scenario A - the contribution wins. A funded Account has capacity. The
+# contribution inserts its linked row and is held (it owns the Goal and
+# Account locks). The currency update starts in another session and is
+# proven to be queued on the Account row. Once the contribution commits, the
+# update is rejected with the controlled 409 (the Account already has ledger
+# history, which takes precedence over the linked-history check), the
+# Account keeps its currency and exactly one linked row exists. The thread
+# sessions stay usable afterwards.
+def test_currency_update_waits_for_linked_contribution_then_is_rejected(
+    clean_database: None, monkeypatch,
+) -> None:
+    user_id = uuid4()
+    goal_id = _create_goal(user_id)
+    account_id = _create_account(user_id, "100.00")
+    inserted, release = _gate_after_insert(monkeypatch, "contribute")
+    results: dict = {}
+
+    contribute = _start("contribute", _linked(goal_id, user_id, _request(account_id, "10.00")), results)
+    assert inserted.wait(timeout=10), "the contribution never reached its insert"
+    update = _start("currency", _update_currency(account_id, user_id, "USD"), results)
+    waiter_seen = _wait_for_account_row_waiter()
+    assert "currency" not in results, "the update must not finish while the Account row is locked"
+    release.set()
+    contribute.join(timeout=15)
+    update.join(timeout=15)
+
+    assert waiter_seen, "the currency update was never observed waiting on the Account row"
+    assert results == {"contribute": "created", "currency": "immutable"}
+    assert _account_state(account_id) == ("EUR", 1)
+
+    follow_up = SessionLocal()
+    try:
+        assert follow_up.execute(text("SELECT 1")).scalar_one() == 1
+    finally:
+        follow_up.close()
+
+
+# Scenario A2 - the linked-history check is the deciding rule. An Account
+# without ledger history gets a linked row through a direct fixture insert
+# (a legacy-shaped state the service itself cannot create); the currency
+# update must then be rejected by the linked-history rule, not by ledger
+# history.
+def test_currency_update_rejected_by_linked_history_alone(clean_database: None) -> None:
+    user_id = uuid4()
+    goal_id = _create_goal(user_id)
+    account_id = _create_account(user_id, None)
+    db_session = SessionLocal()
+    try:
+        db_session.execute(
+            text(
+                "INSERT INTO goal_transactions (id, goal_id, user_id, type, amount, currency, effective_date, "
+                "client_request_id, account_id, created_at) VALUES (gen_random_uuid(), :g, :u, 'contribution', 5, "
+                "'EUR', current_date, gen_random_uuid(), :a, now())"
+            ),
+            {"g": goal_id, "u": user_id, "a": account_id},
+        )
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    results: dict = {}
+    _start("currency", _update_currency(account_id, user_id, "USD"), results).join(timeout=15)
+
+    assert results == {"currency": "referenced"}
+    assert _account_state(account_id) == ("EUR", 1)
+
+
+# Scenario B - the currency change wins. An Account with no ledger history
+# is being changed to USD; its transaction holds the Account row lock. A
+# linked contribution (capacity is made irrelevant by the currency rule
+# coming first) starts, passes the Goal lock and is proven to be queued on
+# the Account row. When the change commits, the contribution re-reads the
+# USD Account and fails with the controlled currency mismatch (422); no
+# linked row is committed.
+def test_linked_contribution_after_currency_change_is_controlled_mismatch(
+    clean_database: None, monkeypatch,
+) -> None:
+    user_id = uuid4()
+    goal_id = _create_goal(user_id)
+    account_id = _create_account(user_id, None)
+    reached, release = _gate_in_account_mutation(monkeypatch, "currency")
+    results: dict = {}
+
+    update = _start("currency", _update_currency(account_id, user_id, "USD"), results)
+    assert reached.wait(timeout=10), "the currency update never took the Account lock"
+    contribute = _start("contribute", _linked(goal_id, user_id, _request(account_id, "10.00")), results)
+    waiter_seen = _wait_for_account_row_waiter()
+    assert "contribute" not in results
+    release.set()
+    update.join(timeout=15)
+    contribute.join(timeout=15)
+
+    assert waiter_seen, "the contribution was never observed waiting on the Account row"
+    assert results == {"currency": "changed", "contribute": "currency_mismatch"}
+    assert _account_state(account_id) == ("USD", 0)
+
+
+# Account delete vs the first linked contribution, constructed so the
+# ledger-history precheck cannot decide the outcome: the Account has NO
+# ledger rows (the capacity check is bypassed in the test only, to let a
+# contribution reach the insert for such an Account). The linked-history /
+# row-lock path is therefore the only protection.
+#
+# Order 1 - the contribution wins: it inserts and is held with the Account
+# lock; the delete waits on the Account row, then is rejected with the
+# controlled 409 (linked history). The Account survives with one linked row.
+def test_delete_waits_for_linked_contribution_then_is_blocked_by_linked_history(
+    clean_database: None, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        account_service, "get_reservable_amount", lambda **kwargs: Decimal("1000.00"),
+    )
+    user_id = uuid4()
+    goal_id = _create_goal(user_id)
+    account_id = _create_account(user_id, None)
+    inserted, release = _gate_after_insert(monkeypatch, "contribute")
+    results: dict = {}
+
+    def delete(db_session: Session) -> str:
+        try:
+            account_service.delete_account(db_session, account_id, user_id)
+            return "deleted"
+        except AccountReferencedByGoalAllocationError:
+            return "referenced"
+        except AccountDeletionNotAllowedError:
+            return "ledger_history"
+
+    contribute = _start("contribute", _linked(goal_id, user_id, _request(account_id, "10.00")), results)
+    assert inserted.wait(timeout=10)
+    deleter = _start("delete", delete, results)
+    waiter_seen = _wait_for_account_row_waiter()
+    assert "delete" not in results
+    release.set()
+    contribute.join(timeout=15)
+    deleter.join(timeout=15)
+
+    assert waiter_seen
+    assert results == {"contribute": "created", "delete": "referenced"}
+    assert _account_state(account_id) == ("EUR", 1)
+
+
+# Order 2 - the delete wins: it holds the Account row lock (gated right after
+# the linked-history predicate found nothing); the contribution is queued on
+# the Account row. After the delete commits, the contribution gets the
+# controlled Account-not-found; no linked row exists and the Account is gone
+# (no deleted Account with a linked GoalTransaction, no raw FK error).
+def test_linked_contribution_after_account_delete_is_account_not_found(
+    clean_database: None, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        account_service, "get_reservable_amount", lambda **kwargs: Decimal("1000.00"),
+    )
+    user_id = uuid4()
+    goal_id = _create_goal(user_id)
+    account_id = _create_account(user_id, None)
+    reached, release = _gate_in_account_mutation(monkeypatch, "delete")
+    results: dict = {}
+
+    def delete(db_session: Session) -> str:
+        try:
+            account_service.delete_account(db_session, account_id, user_id)
+            return "deleted"
+        except AccountReferencedByGoalAllocationError:
+            return "referenced"
+
+    deleter = _start("delete", delete, results)
+    assert reached.wait(timeout=10), "the delete never took the Account lock"
+    contribute = _start("contribute", _linked(goal_id, user_id, _request(account_id, "10.00")), results)
+    waiter_seen = _wait_for_account_row_waiter()
+    assert "contribute" not in results
+    release.set()
+    deleter.join(timeout=15)
+    contribute.join(timeout=15)
+
+    assert waiter_seen
+    assert results == {"delete": "deleted", "contribute": "account_missing"}
+    assert _account_state(account_id) == (None, 0)

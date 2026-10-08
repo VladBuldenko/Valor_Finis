@@ -74,6 +74,7 @@ def _build_account_responses(
 
     zero = Decimal("0.00")
     account_ids = [account_model.id for account_model in account_models]
+    cent = Decimal("0.01")
 
     balances = account_transaction_repository.get_ledger_balances_for_user(
         db_session=db_session,
@@ -106,6 +107,15 @@ def _build_account_responses(
         )
         planned_transfer_outflows = planned_outflows.get(account_model.id, zero)
         reserved_amount = reserved.get(account_model.id, zero)
+
+        # Single normalization point for the new money fields: SQL sums of a
+        # literal 0 come back with scale 0 ("0"), while money on the API is
+        # always two-decimal. Quantizing never changes the numeric value
+        # (every input is a NUMERIC(12,2) sum), it only fixes the scale.
+        balance_as_of_today = balance_as_of_today.quantize(cent)
+        scheduled_outflows = scheduled_outflows.quantize(cent)
+        planned_transfer_outflows = planned_transfer_outflows.quantize(cent)
+        reserved_amount = reserved_amount.quantize(cent)
         unallocated_amount = balance_as_of_today - reserved_amount
         reservable_amount = (
             unallocated_amount - scheduled_outflows - planned_transfer_outflows

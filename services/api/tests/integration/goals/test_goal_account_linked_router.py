@@ -839,3 +839,79 @@ def test_old_clients_unchanged(client: TestClient, clean_database: None) -> None
     view = _goal(client, user_id, goal["id"])
     assert view["current_amount"] == "20.00" and view["tracked_amount"] == "20.00"
     assert view["linked_amount"] == "0.00" and view["allocations"] == []
+
+
+# ------------------------------------------------------------------
+# Review-fix coverage (second commit)
+# ------------------------------------------------------------------
+
+MONEY_FIELDS = (
+    "current_balance", "balance_as_of_today", "scheduled_outflows", "planned_transfer_outflows",
+    "reserved_amount", "unallocated_amount", "reservable_amount",
+)
+TWO_PLACES = __import__("re").compile(r"^-?\d+\.\d{2}$")
+
+
+# Tests every money field of an Account response is a two-decimal string,
+# including the zero aggregates of an Account whose ledger has only
+# future-dated rows (SQL sums of a literal 0 used to serialize as "0").
+def test_account_money_fields_are_always_two_decimal_strings(client: TestClient, clean_database: None) -> None:
+    user_id = str(uuid4())
+    future_only = create_account(client, user_id)
+    create_account_transaction(
+        client, user_id, future_only["id"], amount="5.00", direction="credit", transaction_date=FUTURE,
+    )
+    future_debit_only = create_account(client, user_id)
+    create_account_transaction(
+        client, user_id, future_debit_only["id"], amount="7.00", direction="debit", transaction_date=FUTURE,
+    )
+    empty = create_account(client, user_id)
+    funded = _funded_account(client, user_id, "0.00")
+
+    views = client.get("/api/v1/accounts", headers=auth_headers(user_id)).json()
+    assert len(views) == 4
+    for view in views:
+        for field in MONEY_FIELDS:
+            assert TWO_PLACES.match(view[field]), (view["id"], field, view[field])
+
+    by_id = {view["id"]: view for view in views}
+    assert by_id[future_only["id"]]["balance_as_of_today"] == "0.00"
+    assert by_id[future_only["id"]]["scheduled_outflows"] == "0.00"
+    assert by_id[future_debit_only["id"]]["scheduled_outflows"] == "7.00"
+    assert by_id[future_debit_only["id"]]["balance_as_of_today"] == "0.00"
+    assert empty["balance_as_of_today"] == "0.00" and funded["reservable_amount"] == "0.00"
+    for created in (future_only, empty, funded):
+        for field in MONEY_FIELDS:
+            assert TWO_PLACES.match(created[field]), (field, created[field])
+
+
+# Tests a planned outgoing transfer reduces reservable_amount and that,
+# once the same transfer is posted (now represented in the ledger), it is
+# no longer subtracted as planned: the capacity does not drop twice.
+def test_posted_transfer_is_not_double_subtracted(client: TestClient, clean_database: None) -> None:
+    user_id = str(uuid4())
+    source = _funded_account(client, user_id, "500.00")
+    destination = _funded_account(client, user_id, "0.00")
+    transfer = create_account_transfer(
+        client, user_id, source["id"], destination["id"], amount="150.00", transfer_date=FUTURE,
+    )
+
+    planned_view = _account(client, user_id, source["id"])
+    assert planned_view["planned_transfer_outflows"] == "150.00"
+    assert planned_view["balance_as_of_today"] == "500.00"
+    assert planned_view["reservable_amount"] == "350.00"
+
+    posted = client.post(f"/api/v1/account-transfers/{transfer['id']}/post", headers=auth_headers(user_id))
+    assert posted.status_code == 200, posted.text
+
+    posted_view = _account(client, user_id, source["id"])
+    destination_view = _account(client, user_id, destination["id"])
+    assert posted_view["planned_transfer_outflows"] == "0.00"
+    assert posted_view["balance_as_of_today"] == "350.00"
+    assert posted_view["reservable_amount"] == "350.00"
+    assert destination_view["balance_as_of_today"] == "150.00"
+    assert destination_view["reservable_amount"] == "150.00"
+
+    goal = create_goal(client, user_id)
+    assert _linked(client, user_id, goal["id"], source["id"], "350.01").status_code == 409
+    assert _linked(client, user_id, goal["id"], source["id"], "350.00").status_code == 201
