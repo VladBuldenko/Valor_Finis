@@ -782,6 +782,23 @@ computed from the goal_transactions ledger as described above and never
 persisted on the Goal row itself. It may exceed target_amount -
 overfunding is a valid, representable state.
 
+Partitions (VF-020C2), all read-only and ledger-derived:
+
+tracked_amount - net amount of the unlinked partition (rows without an
+Account).
+
+linked_amount - net amount reserved against Accounts (linked contributions
+minus linked withdrawals, all Accounts). current_amount = tracked_amount +
+linked_amount.
+
+allocations - array of { "account_id", "amount" } with the Goal's CURRENT
+non-zero Account partitions, ordered by account_id. It is a summary, not an
+audit history: released (zero) partitions are not listed. The Goal's
+transaction history is the audit trail; each transaction exposes a nullable
+account_id. These fields appear on every Goal response (list, create,
+PATCH). GET /api/v1/analytics/goal-progress is unchanged and keeps using
+current_amount.
+
 Delete Goal
 
 DELETE /api/v1/goals/{goal_id}
@@ -863,8 +880,16 @@ client_request_id
 no
 
 UUID create idempotency key (VF-020B3), see Idempotency below. Optional
-during the rollout so older clients keep working; the mobile app always
-sends one.
+for tracked requests so older clients keep working; the mobile app always
+sends one. Required when account_id is set (VF-020C2).
+
+account_id
+
+no
+
+UUID of an Account of the same user (VF-020C2). Omitted or null: tracked
+partition. Set: linked partition of that Account, see Account-linked
+operations below. Requires client_request_id.
 
 currency is not a request field: the transaction's currency is always
 copied from the Goal and a client-sent currency is rejected (422).
@@ -877,6 +902,39 @@ Conflict ("Withdrawal exceeds the current goal balance.").
 
 Overfunding above target_amount is allowed for contributions - there is no
 upper bound on a Goal's balance.
+
+Account-linked operations (VF-020C2): the optional account_id selects the
+partition the operation applies to. Omitted or null means the tracked
+partition (everything above applies unchanged: the balance check of a
+withdrawal is against the tracked partition only). An Account id means the
+Goal's partition linked to that Account: a contribution is a reservation, a
+withdrawal is a release. A reservation moves no money and writes no
+AccountTransaction; the Account's current_balance does not change. A linked
+request (contribution or withdrawal) MUST carry client_request_id (422
+otherwise) and its effective_date must be omitted or equal to the server
+date today (422 for a past or a future date); the stored date is always
+today. Validation order for a NEW request (a key that already identifies a
+stored transaction is resolved first, see Idempotency):
+
+- linked contribution: schema (422) -> date (422) -> Goal (404) -> Account
+  (404) -> archived Goal (409) -> archived Account (409) -> currency
+  mismatch between Goal and Account (422, "Goal and Account currencies must
+  match.") -> capacity (409, "Reservation exceeds the Account's reservable
+  capacity."): the Account's reservable_amount must be positive and at
+  least the amount;
+- linked withdrawal: schema (422) -> date (422) -> Goal (404) -> Account
+  (404) -> currency mismatch (422) -> amount greater than the Goal's
+  partition for that Account (409, "Withdrawal exceeds the goal amount
+  reserved against this account."). Archived Goals and Accounts still allow
+  releases; no capacity check applies;
+- tracked: unchanged (future date 422 -> Goal 404 -> archived contribution
+  409 -> tracked-partition shortfall 409 with the existing message).
+
+A missing and another user's Goal or Account are indistinguishable (both
+404). Locks are taken in the order Goal -> Account (a linked contribution
+locks the Account row; a linked withdrawal only reads it), so concurrent
+reservations against one Account can never exceed its capacity, while
+reservations against different Accounts do not serialize.
 
 Archived goals (VF-020B1): a contribution to a Goal whose status is
 archived is rejected with 409 Conflict ("Archived goal cannot receive
@@ -1990,6 +2048,46 @@ updated_at
 
 current_balance is always ledger-derived, never read from a stored
 column, and may be negative.
+
+Goal reservation read model (VF-020C2), read-only, on every Account
+response (list, create, PATCH). D is the server date, resolved once per
+request; all values are signed Decimal strings with two places and are
+derived from SQL aggregates (no floats, no currency conversion):
+
+balance_as_of_today - signed ledger sum of rows with transaction_date <= D.
+
+scheduled_outflows - positive sum of debit rows with transaction_date > D.
+Future credits are ignored (money that has not arrived is not reservable).
+
+planned_transfer_outflows - sum of the amounts of planned AccountTransfers
+whose source is this Account, whatever their planned_date. Posted transfers
+are already in the ledger; planned incoming transfers add nothing.
+
+reserved_amount - linked Goal contributions minus linked withdrawals over
+all of the user's Goals (archived included).
+
+unallocated_amount - balance_as_of_today - reserved_amount.
+
+reservable_amount - unallocated_amount - scheduled_outflows -
+planned_transfer_outflows (may be negative). A new reservation requires it
+to be positive and at least the requested amount.
+
+allocation_status - "overcommitted" when reserved_amount > 0 and
+unallocated_amount < 0 (money was spent after it was reserved; existing
+reservations are never rewritten), otherwise "normal".
+
+negative_balance - true when balance_as_of_today < 0.
+
+current_balance keeps its meaning (the whole ledger, future rows included).
+
+Account delete and currency change (VF-020C2): an Account that any Goal
+transaction was ever linked to cannot be deleted and its currency cannot be
+actually changed - 409 "Account is referenced by Goal reservations and
+cannot be deleted or have its currency changed." - even when the net
+reservation is zero and whether or not the Goal is archived. Existing
+errors keep precedence: ledger history first, then linked Goal history,
+then planned transfers. A same-currency resend is a no-op. The database
+foreign key (RESTRICT) is the backstop and surfaces as the same 409.
 
 Account Transaction Response
 

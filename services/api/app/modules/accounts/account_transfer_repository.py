@@ -271,6 +271,40 @@ def has_planned_transfers_for_account(
     return first_transfer_id is not None
 
 
+# Returns, per Account, the total amount of PLANNED transfers leaving it
+# (VF-020C2): SUM(amount) of status='planned' transfers grouped by
+# source_account_id, regardless of planned_date - a planned transfer is a
+# commitment that will debit the source whenever it is posted. Posted
+# transfers are already in the ledger (no double counting) and planned
+# INCOMING transfers add nothing (the money has not arrived). Accounts
+# without a planned outgoing transfer are absent.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier (ownership filter).
+# - account_ids: optional restriction to these source Accounts.
+# Returns:
+# - Dict mapping source account_id to its Decimal planned outflow total.
+def get_planned_transfer_outflows_for_user(
+    db_session: Session,
+    user_id: UUID,
+    account_ids: Optional[list[UUID]] = None,
+) -> dict[UUID, Decimal]:
+    query = db_session.query(
+        AccountTransferModel.source_account_id,
+        func.sum(AccountTransferModel.amount),
+    ).filter(
+        AccountTransferModel.user_id == user_id,
+        AccountTransferModel.status == "planned",
+    )
+
+    if account_ids is not None:
+        query = query.filter(AccountTransferModel.source_account_id.in_(account_ids))
+
+    rows = query.group_by(AccountTransferModel.source_account_id).all()
+
+    return {account_id: Decimal(total) for account_id, total in rows}
+
+
 # Moves an already-locked planned AccountTransfer to posted and flushes.
 # This function exists as the only way a transfer's lifecycle fields
 # change after creation (VF-018D manual posting): it sets status, the

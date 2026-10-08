@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -73,6 +74,15 @@ class GoalTransactionModel(Base):
             Every row created since VF-020B3 has one (request value, or the
             server date when omitted). NULL only for history created before
             VF-020B3 - it is never derived from created_at.
+        account_id: Account this transaction is reserved against (VF-020C).
+            NULL = tracked / unlinked Goal money (every row created before
+            VF-020C2, and every tracked row since); non-NULL = a linked
+            partition of the Goal tied to that Account. A reservation is NOT
+            an AccountTransaction and never changes the Account's ledger
+            balance. Enforced by the database: the Account must exist, belong
+            to the row's user and have the row's currency (composite FK,
+            RESTRICT); an opening_balance is never linked; a linked row
+            always carries a client_request_id and an effective_date.
         client_request_id: Optional client-generated idempotency key for
             the create request (VF-020B3). Unique per user through
             uq_goal_transactions_user_id_client_request_id; NULL for rows
@@ -80,11 +90,13 @@ class GoalTransactionModel(Base):
             treats NULLs as distinct, so any number of key-less rows is
             allowed.
 
-    Note: the three columns above were added by the VF-020B2 expand
-    migration (1e921a4a4412) and are mapped since VF-020B3. The VF-020B4
-    contract migration made currency NOT NULL and added the
+    Note: currency, effective_date and client_request_id were added by the
+    VF-020B2 expand migration (1e921a4a4412) and are mapped since VF-020B3.
+    The VF-020B4 contract migration made currency NOT NULL and added the
     (goal_id, user_id, currency) foreign key. effective_date (NULL for
     older history) and client_request_id (optional key) stay nullable.
+    account_id was added by the VF-020C1 expand migration (98acdc7016d2) and
+    is mapped since VF-020C2.
     """
 
     __tablename__ = "goal_transactions"
@@ -117,6 +129,31 @@ class GoalTransactionModel(Base):
             ["goals.id", "goals.user_id", "goals.currency"],
             name="fk_goal_transactions_goal_id_user_id_currency",
             ondelete="RESTRICT",
+        ),
+        # Account link (VF-020C1 constraints, used since VF-020C2). With the
+        # default MATCH SIMPLE behavior a NULL account_id is not constrained.
+        ForeignKeyConstraint(
+            ["account_id", "user_id", "currency"],
+            ["accounts.id", "accounts.user_id", "accounts.currency"],
+            name="fk_goal_transactions_account_id_user_id_currency",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "type <> 'opening_balance' OR account_id IS NULL",
+            name="ck_goal_transactions_opening_balance_unlinked",
+        ),
+        CheckConstraint(
+            "account_id IS NULL OR client_request_id IS NOT NULL",
+            name="ck_goal_transactions_linked_requires_client_request_id",
+        ),
+        CheckConstraint(
+            "account_id IS NULL OR effective_date IS NOT NULL",
+            name="ck_goal_transactions_linked_requires_effective_date",
+        ),
+        Index(
+            "ix_goal_transactions_linked_account_id",
+            "account_id",
+            postgresql_where=text("account_id IS NOT NULL"),
         ),
         # Create idempotency key (VF-020B2 constraint, used since VF-020B3):
         # a key identifies at most one transaction per user, across all of
@@ -178,6 +215,11 @@ class GoalTransactionModel(Base):
     )
 
     client_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         nullable=True,
     )

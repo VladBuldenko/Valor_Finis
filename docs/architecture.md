@@ -172,9 +172,11 @@ Owns spending limits: weekly/monthly/yearly periods, versioned budget history (B
 
 Goals
 
-Owns savings goals and their GoalTransaction ledger (opening balance, contributions, withdrawals). A Goal's balance is derived from its ledger. Goals are not connected to Accounts.
+Owns savings goals and their GoalTransaction ledger (opening balance, contributions, withdrawals). A Goal's balance is derived from its ledger and, since VF-020C2, is split into a tracked partition and Account-linked partitions (reservations that move no money; see docs/modules/smart-goals-rules.md). Goals still do not move money between Accounts.
 
-Every Goal read and write is scoped to the authenticated user; the goals repository has no query path that returns other users' goals (VF-020B1). An archived Goal rejects new contributions with 409 but still allows withdrawals; active and completed Goals accept both. Transaction writes and status changes lock the owned Goal row (SELECT ... FOR UPDATE), so a contribution racing an archive is serialized and the outcome is always consistent. Since VF-020B3 each new GoalTransaction stores the Goal's currency (copied from the locked Goal row, never sent by the client) and an effective_date (request value or server today, never in the future), and contribution/withdrawal creation is idempotent when the request carries a client_request_id: the service looks the key up before locking (an existing transaction is a 200 replay or a 409 conflict, resolved before the Goal's archived status or balance is checked), locks the Goal, looks it up again, then applies the normal rules; UNIQUE(user_id, client_request_id) is the final defense against concurrent duplicates, recognized by its constraint name. The key is optional for older clients; the mobile app always sends one.
+Every Goal read and write is scoped to the authenticated user; the goals repository has no query path that returns other users' goals (VF-020B1). An archived Goal rejects new contributions with 409 but still allows withdrawals; active and completed Goals accept both. Transaction writes and status changes lock the owned Goal row (SELECT ... FOR UPDATE), so a contribution racing an archive is serialized and the outcome is always consistent. Since VF-020B3 each new GoalTransaction stores the Goal's currency (copied from the locked Goal row, never sent by the client) and an effective_date (request value or server today, never in the future), and contribution/withdrawal creation is idempotent when the request carries a client_request_id: the service looks the key up before locking (an existing transaction is a 200 replay or a 409 conflict, resolved before the Goal's archived status or balance is checked), locks the Goal, looks it up again, then applies the normal rules; UNIQUE(user_id, client_request_id) is the final defense against concurrent duplicates, recognized by its constraint name. The key is optional for older tracked clients; the mobile app always sends one.
+
+VF-020C2 adds Account-linked reservations in the same service: goal_transactions.account_id (NULL = tracked) selects the partition; a linked request requires the key and today's date, locks Goal -> Account (a linked contribution locks the Account row, a linked withdrawal only reads it) and enforces the Account's capacity (balance as of today minus existing reservations, scheduled debits and planned outgoing transfers) from SQL aggregates computed under that lock, so concurrent reservations can never exceed it. account_id is part of the idempotency payload. The goals module reads accounts through the accounts repositories/service; the accounts module reads linked-Goal aggregates through goal_transaction_repository (no foreign repository writes). Account delete / currency change is blocked by any linked history (409), with the composite foreign key as the backstop.
 
 Accounts
 
@@ -759,7 +761,7 @@ Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
 Financial overview (Income/Expenses/Net) ✅ backend + mobile; device refresh acceptance pending (first suitable real transaction)
-Goal ↔ Account semantics              pending product discovery
+Goal ↔ Account reservations (VF-020C) ✅ backend (C2); mobile (C3) pending
 Web client                            later
 
 Production operational and security hardening is ongoing.

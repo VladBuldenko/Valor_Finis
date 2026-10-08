@@ -142,3 +142,94 @@ class GoalTransactionEffectiveDateInFutureError(Exception):
     """
 
     pass
+
+
+class GoalAccountCurrencyMismatchError(Exception):
+    """
+    Raised when a linked Goal operation names an Account whose currency
+    differs from the Goal's currency.
+
+    What:
+        Represents a Goal/Account currency mismatch (VF-020C2).
+
+    Why:
+        A reservation is a same-currency claim on an Account's money; no
+        conversion is ever performed. Evaluated after the Goal and Account
+        are found and (for contributions) their lifecycle is checked.
+    """
+
+    pass
+
+
+class GoalReservationCapacityError(Exception):
+    """
+    Raised when a new linked contribution exceeds the Account's reservable
+    capacity.
+
+    What:
+        Represents a capacity shortfall (VF-020C2): reservable_amount is
+        not positive, or is smaller than the requested amount.
+
+    Why:
+        The Account's balance as of today, minus what is already reserved,
+        scheduled debits and planned outgoing transfers, is all that may
+        still be reserved. Existing reservations are never rewritten.
+    """
+
+    pass
+
+
+class GoalPartitionInsufficientFundsError(Exception):
+    """
+    Raised when a linked withdrawal (release) exceeds the Goal's linked
+    partition for that Account.
+
+    What:
+        Represents a linked-partition shortfall (VF-020C2).
+
+    Why:
+        Money can only be released from the partition it was reserved in;
+        the tracked partition and other Accounts' partitions are never
+        used to cover it. A tracked shortfall keeps
+        GoalInsufficientFundsError.
+    """
+
+    pass
+
+
+class GoalAccountLinkInvalidError(Exception):
+    """
+    Raised by the repository when the account link foreign key rejects a
+    linked Goal transaction insert.
+
+    What:
+        Internal signal (VF-020C2); the service maps it to a not-found
+        Account.
+
+    Why:
+        The service validates and locks the Account before inserting, so
+        this only fires if the Account disappeared or changed currency in
+        between - the database constraint is the final backstop.
+    """
+
+    pass
+
+
+class GoalLinkedTransactionDateError(Exception):
+    """
+    Raised when a linked Goal transaction states an effective_date other
+    than the server date today.
+
+    What:
+        Represents the linked date rule (VF-020C2, VF-020C P58): a
+        reservation or release is dated at the moment it is recorded, so
+        effective_date must be omitted or equal to the server date.
+
+    Why:
+        Past and future dates are both rejected; a reservation cannot be
+        back-dated. A key that already identifies a stored transaction is
+        resolved first (replay / conflict), so this applies to new
+        requests only.
+    """
+
+    pass

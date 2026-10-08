@@ -303,5 +303,64 @@ class AccountResponse(AccountBase):
         examples=["874.50"],
     )
 
+    balance_as_of_today: Decimal = Field(
+        description=(
+            "Signed sum of the ledger rows dated on or before the server "
+            "date today. Read-only; may be negative."
+        ),
+        examples=["2000.00"],
+    )
+
+    scheduled_outflows: Decimal = Field(
+        description=(
+            "Sum of debit ledger rows dated after today (a positive number). "
+            "Read-only."
+        ),
+        examples=["0.00"],
+    )
+
+    planned_transfer_outflows: Decimal = Field(
+        description=(
+            "Sum of planned (not yet posted) AccountTransfers leaving this "
+            "Account. Planned incoming transfers are ignored. Read-only."
+        ),
+        examples=["0.00"],
+    )
+
+    reserved_amount: Decimal = Field(
+        description=(
+            "Net amount of Goals reserved against this Account (linked "
+            "contributions minus linked withdrawals) across all Goals, "
+            "archived ones included. A reservation never changes "
+            "current_balance. Read-only."
+        ),
+        examples=["500.00"],
+    )
+
+    unallocated_amount: Decimal = Field(
+        description="balance_as_of_today minus reserved_amount. Read-only; may be negative.",
+        examples=["1500.00"],
+    )
+
+    reservable_amount: Decimal = Field(
+        description=(
+            "unallocated_amount minus scheduled_outflows minus "
+            "planned_transfer_outflows. Signed; a new reservation needs it "
+            "to be positive and at least the reserved amount. Read-only."
+        ),
+        examples=["1500.00"],
+    )
+
+    allocation_status: Literal["normal", "overcommitted"] = Field(
+        description=(
+            "overcommitted when reserved_amount > 0 and unallocated_amount "
+            "< 0 (spending after reserving), otherwise normal."
+        ),
+    )
+
+    negative_balance: bool = Field(
+        description="True when balance_as_of_today is below zero.",
+    )
+
     created_at: datetime
     updated_at: datetime

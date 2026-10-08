@@ -7,7 +7,10 @@ from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.goals.goal_errors import GoalTransactionClientRequestIdTakenError
+from app.modules.goals.goal_errors import (
+    GoalAccountLinkInvalidError,
+    GoalTransactionClientRequestIdTakenError,
+)
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 
 # The create-idempotency unique constraint (VF-020B2, used since VF-020B3).
@@ -15,6 +18,11 @@ from app.modules.goals.goal_transaction_models import GoalTransactionModel
 # GoalTransactionClientRequestIdTakenError; every other IntegrityError
 # propagates unchanged.
 CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT = "uq_goal_transactions_user_id_client_request_id"
+
+# The Account link foreign key (VF-020C1). A violation on insert means the
+# named Account vanished or changed currency after the service validated it;
+# the service layer locks the Account first, so this is a backstop only.
+ACCOUNT_LINK_FK_CONSTRAINT = "fk_goal_transactions_account_id_user_id_currency"
 
 
 # Calculates a goal's ledger balance from its transaction history.
@@ -81,6 +89,8 @@ def calculate_ledger_balance(
 # - effective_date: business date of the transaction (None only for
 #   rows that represent history without a known date).
 # - client_request_id: optional client-generated idempotency key.
+# - account_id: Account the row is reserved against (linked partition), or
+#   None for the tracked partition.
 # - commit: whether the repository should commit the transaction
 #   immediately. Pass False when composing this write with other changes
 #   the caller will commit together.
@@ -90,6 +100,8 @@ def calculate_ledger_balance(
 # - GoalTransactionClientRequestIdTakenError: the user already has a goal
 #   transaction with this client_request_id (original IntegrityError
 #   chained).
+# - GoalAccountLinkInvalidError: the account link foreign key rejected the
+#   row (original IntegrityError chained).
 def create_transaction(
     db_session: Session,
     goal_id: UUID,
@@ -100,6 +112,7 @@ def create_transaction(
     currency: str,
     effective_date: Optional[date],
     client_request_id: Optional[UUID] = None,
+    account_id: Optional[UUID] = None,
     commit: bool = True,
 ) -> GoalTransactionModel:
     transaction_model = GoalTransactionModel(
@@ -111,6 +124,7 @@ def create_transaction(
         currency=currency,
         effective_date=effective_date,
         client_request_id=client_request_id,
+        account_id=account_id,
     )
 
     db_session.add(transaction_model)
@@ -126,6 +140,9 @@ def create_transaction(
 
         if constraint_name == CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT:
             raise GoalTransactionClientRequestIdTakenError() from error
+
+        if constraint_name == ACCOUNT_LINK_FK_CONSTRAINT:
+            raise GoalAccountLinkInvalidError() from error
 
         raise
 
@@ -271,3 +288,142 @@ def has_transactions_for_goal(
     )
 
     return first_transaction_id is not None
+
+
+# Signed ledger amount of a goal transaction: withdrawals subtract.
+_SIGNED_AMOUNT = case(
+    (GoalTransactionModel.type == "withdrawal", -GoalTransactionModel.amount),
+    else_=GoalTransactionModel.amount,
+)
+
+
+# Returns a goal's net amount in one partition.
+# account_id None = the tracked partition (rows with no Account link);
+# otherwise the partition linked to that Account. One SQL aggregate; a
+# partition with no rows is exactly Decimal("0.00"). The caller holds the
+# Goal row lock, which serializes every writer of this Goal's rows, so the
+# value cannot change before the dependent insert commits.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: goal identifier.
+# - user_id: authenticated owner (defense-in-depth filter).
+# - account_id: linked Account, or None for the tracked partition.
+# Returns:
+# - Decimal net amount of the partition.
+def calculate_partition_balance(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+    account_id: Optional[UUID],
+) -> Decimal:
+    if account_id is None:
+        partition_filter = GoalTransactionModel.account_id.is_(None)
+    else:
+        partition_filter = GoalTransactionModel.account_id == account_id
+
+    total = (
+        db_session.query(func.coalesce(func.sum(_SIGNED_AMOUNT), 0))
+        .filter(
+            GoalTransactionModel.goal_id == goal_id,
+            GoalTransactionModel.user_id == user_id,
+            partition_filter,
+        )
+        .scalar()
+    )
+
+    return Decimal(total).quantize(Decimal("0.01"))
+
+
+# Returns every one of a user's goals' partition amounts in one grouped
+# query: {goal_id: {account_id or None: net amount}}.
+# Used by the Goal read model (tracked_amount, linked_amount, allocations)
+# so listing Goals never issues a query per Goal. Groups with no rows are
+# absent; callers default to Decimal("0.00").
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier to scope the aggregation to.
+# - goal_ids: optional restriction to these Goals.
+# Returns:
+# - Nested dict of Decimal net amounts per goal and partition.
+def get_partition_balances_for_user(
+    db_session: Session,
+    user_id: UUID,
+    goal_ids: Optional[list[UUID]] = None,
+) -> dict[UUID, dict[Optional[UUID], Decimal]]:
+    query = db_session.query(
+        GoalTransactionModel.goal_id,
+        GoalTransactionModel.account_id,
+        func.sum(_SIGNED_AMOUNT).label("balance"),
+    ).filter(GoalTransactionModel.user_id == user_id)
+
+    if goal_ids is not None:
+        query = query.filter(GoalTransactionModel.goal_id.in_(goal_ids))
+
+    rows = query.group_by(
+        GoalTransactionModel.goal_id, GoalTransactionModel.account_id
+    ).all()
+
+    balances: dict[UUID, dict[Optional[UUID], Decimal]] = {}
+
+    for goal_id, account_id, balance in rows:
+        balances.setdefault(goal_id, {})[account_id] = balance
+
+    return balances
+
+
+# Returns the user's net reserved amount per Account in one grouped query.
+# reserved_amount = linked contributions - linked withdrawals across ALL of
+# the user's Goals, archived included. Accounts with no linked rows are
+# absent; callers default to Decimal("0.00").
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier.
+# - account_ids: optional restriction to these Accounts.
+# Returns:
+# - Dict mapping account_id to its Decimal reserved amount.
+def get_reserved_amounts_for_user(
+    db_session: Session,
+    user_id: UUID,
+    account_ids: Optional[list[UUID]] = None,
+) -> dict[UUID, Decimal]:
+    query = db_session.query(
+        GoalTransactionModel.account_id,
+        func.sum(_SIGNED_AMOUNT).label("reserved"),
+    ).filter(
+        GoalTransactionModel.user_id == user_id,
+        GoalTransactionModel.account_id.isnot(None),
+    )
+
+    if account_ids is not None:
+        query = query.filter(GoalTransactionModel.account_id.in_(account_ids))
+
+    rows = query.group_by(GoalTransactionModel.account_id).all()
+
+    return {account_id: reserved for account_id, reserved in rows}
+
+
+# Returns whether ANY Goal transaction (contribution or withdrawal, any
+# Goal, archived or not, any net amount) was ever linked to the Account.
+# Used by Account delete / currency-change protection: linked history is
+# financial history even when the net reservation is zero.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_id: account identifier.
+# - user_id: authenticated owner (defense-in-depth filter).
+# Returns:
+# - True if at least one linked row exists.
+def has_linked_transactions_for_account(
+    db_session: Session,
+    account_id: UUID,
+    user_id: UUID,
+) -> bool:
+    first_id = (
+        db_session.query(GoalTransactionModel.id)
+        .filter(
+            GoalTransactionModel.account_id == account_id,
+            GoalTransactionModel.user_id == user_id,
+        )
+        .first()
+    )
+
+    return first_id is not None

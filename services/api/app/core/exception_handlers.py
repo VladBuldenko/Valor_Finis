@@ -8,6 +8,7 @@ from app.modules.accounts.account_errors import (
     AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
     AccountNotFoundError,
+    AccountReferencedByGoalAllocationError,
     AccountReferencedByPlannedTransferError,
 )
 from app.modules.accounts.account_transfer_errors import (
@@ -40,11 +41,15 @@ from app.modules.fx.fx_errors import (
     FxRateUnavailableError,
 )
 from app.modules.goals.goal_errors import (
+    GoalAccountCurrencyMismatchError,
     GoalArchivedError,
     GoalCurrencyImmutableError,
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
+    GoalLinkedTransactionDateError,
     GoalNotFoundError,
+    GoalPartitionInsufficientFundsError,
+    GoalReservationCapacityError,
     GoalTransactionEffectiveDateInFutureError,
     GoalTransactionIdempotencyConflictError,
 )
@@ -95,6 +100,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     AccountReferencedByPlannedTransferError: (
         status.HTTP_409_CONFLICT,
         "Account is referenced by planned transfers. Delete them first.",
+    ),
+    AccountReferencedByGoalAllocationError: (
+        status.HTTP_409_CONFLICT,
+        "Account is referenced by Goal reservations and cannot be deleted or have its currency changed.",
     ),
     AccountTransferNotFoundError: (
         status.HTTP_404_NOT_FOUND,
@@ -185,6 +194,22 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalInsufficientFundsError: (
         status.HTTP_409_CONFLICT,
         "Withdrawal exceeds the current goal balance.",
+    ),
+    GoalPartitionInsufficientFundsError: (
+        status.HTTP_409_CONFLICT,
+        "Withdrawal exceeds the goal amount reserved against this account.",
+    ),
+    GoalReservationCapacityError: (
+        status.HTTP_409_CONFLICT,
+        "Reservation exceeds the Account's reservable capacity.",
+    ),
+    GoalLinkedTransactionDateError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Linked goal transactions are dated today; effective_date must be omitted or equal to today.",
+    ),
+    GoalAccountCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Goal and Account currencies must match.",
     ),
     GoalArchivedError: (
         status.HTTP_409_CONFLICT,

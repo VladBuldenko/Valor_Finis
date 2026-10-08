@@ -14,6 +14,7 @@ from app.modules.accounts.account_errors import (
     AccountArchivedError,
     AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
+    AccountReferencedByGoalAllocationError,
     AccountReferencedByPlannedTransferError,
 )
 from app.modules.accounts.account_models import AccountModel
@@ -27,35 +28,146 @@ from app.modules.accounts.account_transaction_schemas import (
     AccountTransactionCreate,
     AccountTransactionResponse,
 )
+from app.modules.goals import goal_transaction_repository
 
 
-# Builds an AccountResponse from an Account model and an already-computed
-# ledger-derived balance.
-# This function exists to make the source of current_balance explicit and
-# auditable: every public read path must pass in a balance it calculated
-# from account_transactions, never AccountResponse.model_validate(
-# account_model) - the Account row has no balance column to read in the
-# first place, so this is the only way to populate current_balance.
+# Builds AccountResponses (ledger balance + Goal reservation read model) for
+# the given Account models of one user.
+# This function exists to make the source of every money field explicit and
+# auditable: current_balance and the VF-020C2 capacity fields are all
+# derived from the ledger, planned transfers and linked Goal transactions -
+# the Account row has no balance column to read, so never use
+# AccountResponse.model_validate(account_model).
+#
+# Formulas (all signed Decimal, D = the single server date for the request):
+# - balance_as_of_today = signed ledger sum with transaction_date <= D;
+# - scheduled_outflows = positive sum of debits with transaction_date > D;
+# - planned_transfer_outflows = amount of planned transfers leaving the
+#   Account, whatever their planned_date;
+# - reserved_amount = linked Goal contributions - linked withdrawals over
+#   ALL Goals, archived included;
+# - unallocated_amount = balance_as_of_today - reserved_amount;
+# - reservable_amount = unallocated_amount - scheduled_outflows
+#   - planned_transfer_outflows (signed; may be negative);
+# - allocation_status = "overcommitted" iff reserved_amount > 0 and
+#   unallocated_amount < 0, else "normal";
+# - negative_balance = balance_as_of_today < 0.
+# current_balance is unchanged: the full ledger sum, future rows included.
+# Query count is constant in the number of Accounts: one grouped query each
+# for the full balance, the dated aggregates, planned transfers and
+# reservations.
 # Parameters:
-# - account_model: the Account database record (name/type/etc.).
-# - current_balance: ledger-derived balance to report for this account.
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier that owns the Accounts.
+# - account_models: Account database records to serialize.
+# - as_of: server "today" used for the whole request.
 # Returns:
-# - AccountResponse with current_balance set to the given ledger balance.
-def _build_account_response(
-    account_model: AccountModel,
-    current_balance: Decimal,
-) -> AccountResponse:
-    return AccountResponse(
-        id=account_model.id,
-        user_id=account_model.user_id,
-        name=account_model.name,
-        type=account_model.type,
-        currency=account_model.currency,
-        status=account_model.status,
-        current_balance=current_balance,
-        created_at=account_model.created_at,
-        updated_at=account_model.updated_at,
+# - AccountResponse list in the same order as account_models.
+def _build_account_responses(
+    db_session: Session,
+    user_id: UUID,
+    account_models: list[AccountModel],
+    as_of: date,
+) -> list[AccountResponse]:
+    if not account_models:
+        return []
+
+    zero = Decimal("0.00")
+    account_ids = [account_model.id for account_model in account_models]
+    cent = Decimal("0.01")
+
+    balances = account_transaction_repository.get_ledger_balances_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        account_ids=account_ids,
     )
+    dated = account_transaction_repository.get_ledger_aggregates_as_of_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        as_of=as_of,
+        account_ids=account_ids,
+    )
+    planned_outflows = account_transfer_repository.get_planned_transfer_outflows_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        account_ids=account_ids,
+    )
+    reserved = goal_transaction_repository.get_reserved_amounts_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        account_ids=account_ids,
+    )
+
+    responses = []
+
+    for account_model in account_models:
+        balance_as_of_today, scheduled_outflows = dated.get(
+            account_model.id,
+            (zero, zero),
+        )
+        planned_transfer_outflows = planned_outflows.get(account_model.id, zero)
+        reserved_amount = reserved.get(account_model.id, zero)
+
+        # Single normalization point for the new money fields: SQL sums of a
+        # literal 0 come back with scale 0 ("0"), while money on the API is
+        # always two-decimal. Quantizing never changes the numeric value
+        # (every input is a NUMERIC(12,2) sum), it only fixes the scale.
+        balance_as_of_today = balance_as_of_today.quantize(cent)
+        scheduled_outflows = scheduled_outflows.quantize(cent)
+        planned_transfer_outflows = planned_transfer_outflows.quantize(cent)
+        reserved_amount = reserved_amount.quantize(cent)
+        unallocated_amount = balance_as_of_today - reserved_amount
+        reservable_amount = (
+            unallocated_amount - scheduled_outflows - planned_transfer_outflows
+        )
+
+        responses.append(
+            AccountResponse(
+                id=account_model.id,
+                user_id=account_model.user_id,
+                name=account_model.name,
+                type=account_model.type,
+                currency=account_model.currency,
+                status=account_model.status,
+                current_balance=balances.get(account_model.id, zero),
+                balance_as_of_today=balance_as_of_today,
+                scheduled_outflows=scheduled_outflows,
+                planned_transfer_outflows=planned_transfer_outflows,
+                reserved_amount=reserved_amount,
+                unallocated_amount=unallocated_amount,
+                reservable_amount=reservable_amount,
+                allocation_status=(
+                    "overcommitted"
+                    if reserved_amount > 0 and unallocated_amount < 0
+                    else "normal"
+                ),
+                negative_balance=balance_as_of_today < 0,
+                created_at=account_model.created_at,
+                updated_at=account_model.updated_at,
+            )
+        )
+
+    return responses
+
+
+# Returns the Account's current signed reservable_amount for a new Goal
+# reservation (VF-020C2). Callers must hold the Account row lock: every
+# writer of the Account's ledger or planned transfers locks the Account, so
+# the aggregates read here are consistent until the caller commits.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - account_model: the locked Account.
+# - as_of: server "today" for the request.
+# Returns:
+# - Decimal reservable_amount (signed).
+def get_reservable_amount(
+    db_session: Session,
+    account_model: AccountModel,
+    as_of: date,
+) -> Decimal:
+    return _build_account_responses(
+        db_session, account_model.user_id, [account_model], as_of
+    )[0].reservable_amount
 
 
 # Creates a new account using validated input data and authenticated user
@@ -111,13 +223,9 @@ def create_account(
     db_session.commit()
     db_session.refresh(account_model)
 
-    current_balance = account_transaction_repository.calculate_ledger_balance(
-        db_session=db_session,
-        account_id=account_model.id,
-        user_id=user_id,
-    )
-
-    return _build_account_response(account_model, current_balance)
+    return _build_account_responses(
+        db_session, user_id, [account_model], date.today()
+    )[0]
 
 
 # Returns accounts for the authenticated user.
@@ -141,18 +249,9 @@ def get_accounts(
         user_id=user_id,
     )
 
-    balances = account_transaction_repository.get_ledger_balances_for_user(
-        db_session=db_session,
-        user_id=user_id,
+    return _build_account_responses(
+        db_session, user_id, account_models, date.today()
     )
-
-    return [
-        _build_account_response(
-            account_model,
-            balances.get(account_model.id, Decimal("0.00")),
-        )
-        for account_model in account_models
-    ]
 
 
 # Updates an existing account owned by the authenticated user, enforcing
@@ -200,6 +299,9 @@ def get_accounts(
 #   to the user.
 # - AccountCurrencyImmutableError: when currency is actually changing and
 #   the account already has transaction history.
+# - AccountReferencedByGoalAllocationError: when currency is actually
+#   changing and linked Goal transactions reference the account (checked
+#   after ledger history, before planned transfers).
 # - AccountReferencedByPlannedTransferError: when currency is actually
 #   changing and a planned transfer references the account.
 def update_account(
@@ -228,6 +330,14 @@ def update_account(
                 db_session.rollback()
                 raise AccountCurrencyImmutableError()
 
+            if goal_transaction_repository.has_linked_transactions_for_account(
+                db_session=db_session,
+                account_id=account_id,
+                user_id=user_id,
+            ):
+                db_session.rollback()
+                raise AccountReferencedByGoalAllocationError()
+
             has_planned_transfers = account_transfer_repository.has_planned_transfers_for_account(
                 db_session=db_session,
                 account_id=account_id,
@@ -244,13 +354,9 @@ def update_account(
         account_data=account_data,
     )
 
-    current_balance = account_transaction_repository.calculate_ledger_balance(
-        db_session=db_session,
-        account_id=account_id,
-        user_id=user_id,
-    )
-
-    return _build_account_response(account_model, current_balance)
+    return _build_account_responses(
+        db_session, user_id, [account_model], date.today()
+    )[0]
 
 
 # Deletes an existing account owned by the authenticated user, refusing to
@@ -292,6 +398,9 @@ def update_account(
 #   to the user.
 # - AccountDeletionNotAllowedError: when the account has any transaction
 #   history.
+# - AccountReferencedByGoalAllocationError: when any linked Goal
+#   transaction references the account (checked after ledger history,
+#   before planned transfers).
 # - AccountReferencedByPlannedTransferError: when a planned transfer
 #   references the account.
 def delete_account(
@@ -314,6 +423,16 @@ def delete_account(
     if has_history:
         db_session.rollback()
         raise AccountDeletionNotAllowedError()
+
+    # Linked Goal history (VF-020C2) blocks deletion even at a zero net
+    # reservation and whether or not the Goal is archived.
+    if goal_transaction_repository.has_linked_transactions_for_account(
+        db_session=db_session,
+        account_id=account_id,
+        user_id=user_id,
+    ):
+        db_session.rollback()
+        raise AccountReferencedByGoalAllocationError()
 
     has_planned_transfers = account_transfer_repository.has_planned_transfers_for_account(
         db_session=db_session,

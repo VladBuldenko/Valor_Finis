@@ -596,22 +596,39 @@ def test_upgrade_downgrade_upgrade_cycle(b4_database: Engine) -> None:
 # ------------------------------------------------------------------
 
 
-# Tests the C1 rollout rule: the application ORM is deliberately unaware of
-# account_id (mapping it before the production migration would break every
-# goal_transactions SELECT), so metadata intentionally differs from the C1
-# database until C2.
+# Tests the VF-020C2 ORM mapping of the C1 objects: account_id is a nullable
+# UUID column, and the Account foreign key (RESTRICT, composite), the three
+# CHECKs (exact SQL) and the partial index exist in the metadata under the
+# exact names and definitions the C1 migration created.
 # Parameters:
 # - None.
 # Returns:
-# - None. The test passes if the ORM has no account_id column or constraint.
-def test_orm_does_not_map_account_id_in_c1() -> None:
+# - None. The test passes if the ORM mirrors the migration.
+def test_orm_maps_account_id_and_c1_objects_as_in_the_migration() -> None:
+    module = _load_migration()
     table = GoalTransactionModel.__table__
 
-    assert "account_id" not in table.columns
-    assert not hasattr(GoalTransactionModel, "account_id")
-    constraint_names = {constraint.name for constraint in table.constraints}
-    assert not (constraint_names & C1_CONSTRAINTS)
-    assert LINKED_INDEX not in {index.name for index in table.indexes}
+    assert table.columns["account_id"].nullable is True
+    assert GoalTransactionModel.account_id is not None
+
+    constraints = {constraint.name: constraint for constraint in table.constraints}
+    foreign_key = constraints[ACCOUNT_FK]
+    assert [column.name for column in foreign_key.columns] == ["account_id", "user_id", "currency"]
+    assert [element.target_fullname for element in foreign_key.elements] == [
+        "accounts.id", "accounts.user_id", "accounts.currency",
+    ]
+    assert foreign_key.ondelete == "RESTRICT"
+
+    for name, sql in (
+        (OPENING_CHECK, module.OPENING_BALANCE_CHECK_SQL),
+        (KEY_CHECK, module.KEY_CHECK_SQL),
+        (DATE_CHECK, module.DATE_CHECK_SQL),
+    ):
+        assert str(constraints[name].sqltext) == sql
+
+    index = next(index for index in table.indexes if index.name == LINKED_INDEX)
+    assert [column.name for column in index.columns] == ["account_id"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "account_id IS NOT NULL"
 
 
 def _load_migration():
@@ -751,35 +768,19 @@ def test_goal_and_account_currency_must_both_match_the_row(c1_database: Engine) 
     assert _row_count(c1_database) == 1
 
 
-# Tests the intentional C1 divergence between ORM metadata and the database:
-# Alembic's own comparison against a C1 database reports ONLY the C1 objects
-# as present in the database but unknown to the ORM (the account_id column,
-# its partial index and the Account foreign key). Nothing else differs, and
-# the divergence is kept (account_id is not mapped until C2).
+# Tests that, since VF-020C2 maps account_id, Alembic's own comparison of the
+# ORM metadata against a database at the C1 revision reports NO difference at
+# all (the ORM and the C1 schema are in sync; CHECK constraints are not
+# compared by Alembic and are covered by the mapping test above).
 # Parameters:
 # - c1_database: throwaway database at the C1 revision.
 # Returns:
-# - None. The test passes if the difference set is exactly the C1 objects.
-def test_orm_metadata_differs_from_c1_database_only_by_the_c1_objects(c1_database: Engine) -> None:
+# - None. The test passes if the difference set is empty.
+def test_orm_metadata_matches_c1_database_exactly(c1_database: Engine) -> None:
     import_database_models()
 
     with c1_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    flat = []
-    for difference in differences:
-        flat.extend(difference if isinstance(difference, list) else [difference])
-    summary = set()
-    for difference in flat:
-        kind = difference[0]
-        # remove_column is ("remove_column", schema, table, Column); the
-        # index/foreign-key entries carry the object at position 1.
-        target = difference[3] if kind == "remove_column" else difference[1]
-        summary.add((kind, target.name))
-
-    assert summary == {
-        ("remove_column", "account_id"),
-        ("remove_index", LINKED_INDEX),
-        ("remove_fk", ACCOUNT_FK),
-    }
+    assert differences == []
