@@ -6,18 +6,27 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.accounts import account_repository, account_service
+from app.modules.accounts.account_models import AccountModel
+from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals.goal_errors import (
+    GoalAccountCurrencyMismatchError,
+    GoalAccountLinkInvalidError,
     GoalArchivedError,
     GoalCurrencyImmutableError,
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
+    GoalLinkedTransactionDateError,
+    GoalPartitionInsufficientFundsError,
+    GoalReservationCapacityError,
     GoalTransactionClientRequestIdTakenError,
     GoalTransactionEffectiveDateInFutureError,
     GoalTransactionIdempotencyConflictError,
 )
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_schemas import (
+    GoalAllocationResponse,
     GoalCreate,
     GoalResponse,
     GoalUpdate,
@@ -54,34 +63,73 @@ class GoalTransactionCreateResult:
     created: bool
 
 
-# Builds a GoalResponse from a Goal model and an already-computed
-# ledger-derived balance.
-# This function exists to make the source of current_amount explicit and
-# auditable (VF-016D): every public read path must pass in a balance it
+# Builds a GoalResponse from a Goal model and its ledger-derived partition
+# amounts.
+# This function exists to make the source of every amount explicit and
+# auditable (VF-016D, VF-020C2): all public read paths pass in partitions
 # calculated from goal_transactions, never GoalResponse.model_validate(
-# goal_model) - the Goal row has no balance column to read in the first
-# place (VF-016G), so this is the only way to populate current_amount.
+# goal_model) - the Goal row has no balance column to read (VF-016G).
+# - tracked_amount: the partition with no Account link;
+# - linked_amount: the sum of all Account-linked partitions;
+# - current_amount = tracked_amount + linked_amount (the whole-ledger
+#   balance, unchanged for every pre-existing Goal);
+# - allocations: the current NON-ZERO linked partitions, ordered by
+#   account_id. A summary, not an audit trail.
 # Parameters:
 # - goal_model: the Goal database record (name/target_amount/etc.).
-# - current_amount: ledger-derived balance to report for this goal.
+# - partitions: {account_id or None: net amount} for this goal; a missing
+#   goal or partition counts as 0.00.
 # Returns:
-# - GoalResponse with current_amount set to the given ledger balance.
+# - GoalResponse with the derived amounts.
 def _build_goal_response(
     goal_model: GoalModel,
-    current_amount: Decimal,
+    partitions: dict[Optional[UUID], Decimal],
 ) -> GoalResponse:
+    zero = Decimal("0.00")
+    tracked_amount = partitions.get(None, zero)
+    linked = {
+        account_id: amount
+        for account_id, amount in partitions.items()
+        if account_id is not None
+    }
+    linked_amount = sum(linked.values(), zero)
+
+    # Sorted by the UUID's canonical string so the order is deterministic
+    # and the same in every environment.
+    allocations = [
+        GoalAllocationResponse(account_id=account_id, amount=amount)
+        for account_id, amount in sorted(linked.items(), key=lambda item: str(item[0]))
+        if amount != 0
+    ]
+
     return GoalResponse(
         id=goal_model.id,
         user_id=goal_model.user_id,
         name=goal_model.name,
         target_amount=goal_model.target_amount,
-        current_amount=current_amount,
+        current_amount=tracked_amount + linked_amount,
+        tracked_amount=tracked_amount,
+        linked_amount=linked_amount,
+        allocations=allocations,
         currency=goal_model.currency,
         target_date=goal_model.target_date,
         status=goal_model.status,
         created_at=goal_model.created_at,
         updated_at=goal_model.updated_at,
     )
+
+
+# Returns one goal's partition amounts (one grouped query).
+def _get_goal_partitions(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+) -> dict[Optional[UUID], Decimal]:
+    return goal_transaction_repository.get_partition_balances_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        goal_ids=[goal_id],
+    ).get(goal_id, {})
 
 
 # Creates a new financial goal using validated input data and authenticated user id.
@@ -107,13 +155,10 @@ def create_goal(
         user_id=user_id,
     )
 
-    current_amount = goal_transaction_repository.calculate_ledger_balance(
-        db_session=db_session,
-        goal_id=goal_model.id,
-        user_id=user_id,
+    return _build_goal_response(
+        goal_model,
+        _get_goal_partitions(db_session, goal_model.id, user_id),
     )
-
-    return _build_goal_response(goal_model, current_amount)
 
 
 # Returns financial goals for the authenticated user.
@@ -137,7 +182,7 @@ def get_goals(
         user_id=user_id,
     )
 
-    balances = goal_transaction_repository.get_ledger_balances_for_user(
+    partitions = goal_transaction_repository.get_partition_balances_for_user(
         db_session=db_session,
         user_id=user_id,
     )
@@ -145,7 +190,7 @@ def get_goals(
     return [
         _build_goal_response(
             goal_model,
-            balances.get(goal_model.id, Decimal("0.00")),
+            partitions.get(goal_model.id, {}),
         )
         for goal_model in goal_models
     ]
@@ -216,13 +261,10 @@ def update_goal(
         goal_data=goal_data,
     )
 
-    current_amount = goal_transaction_repository.calculate_ledger_balance(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
+    return _build_goal_response(
+        goal_model,
+        _get_goal_partitions(db_session, goal_id, user_id),
     )
-
-    return _build_goal_response(goal_model, current_amount)
 
 
 # Deletes an existing financial goal owned by the authenticated user,
@@ -290,6 +332,9 @@ def delete_goal(
 #   exactly as sent - so None and "" are different payloads, the same rule
 #   AccountTransfer idempotency uses.
 # - amount is compared as Decimal, so "10" equals the stored "10.00".
+# - account_id is compared strictly (VF-020C2): the same key sent without
+#   an account (tracked) when the original was linked, or with another
+#   account, is a different payload - never a replay.
 # - effective_date is compared only when this request states one. An
 #   omitted (or null) effective_date means "the server date at creation";
 #   recomputing today and comparing it would turn a retry after midnight
@@ -319,6 +364,7 @@ def _matches_original_transaction_request(
         and transaction_model.type == transaction_data.type
         and transaction_model.amount == transaction_data.amount
         and transaction_model.description == transaction_data.description
+        and transaction_model.account_id == transaction_data.account_id
     )
 
 
@@ -352,6 +398,84 @@ def _resolve_existing_transaction(
         transaction=GoalTransactionResponse.model_validate(transaction_model),
         created=False,
     )
+
+
+# Applies the lifecycle, currency, balance and capacity rules for a NEW
+# (non-replay) goal transaction, in the approved order (VF-020C2). The
+# caller holds the Goal lock (and, for a linked contribution, the Account
+# lock) and rolls back on any raise.
+# Order:
+# - contribution, tracked: archived Goal (409);
+# - contribution, linked: archived Goal (409), archived Account (409),
+#   currency mismatch (422), capacity (409);
+# - withdrawal, tracked: amount <= tracked partition (409), archived
+#   status is not checked;
+# - withdrawal, linked: currency mismatch (422), amount <= linked partition
+#   for that Account (409); no archived or capacity checks.
+# Raises:
+# - GoalArchivedError, AccountArchivedError,
+#   GoalAccountCurrencyMismatchError, GoalReservationCapacityError,
+#   GoalInsufficientFundsError, GoalPartitionInsufficientFundsError.
+def _validate_new_transaction(
+    db_session: Session,
+    goal_model: GoalModel,
+    account_model: Optional[AccountModel],
+    transaction_data: GoalTransactionCreate,
+    user_id: UUID,
+    today: date,
+) -> None:
+    is_contribution = transaction_data.type == "contribution"
+
+    if account_model is None:
+        if is_contribution:
+            if goal_model.status == "archived":
+                raise GoalArchivedError()
+
+            return
+
+        tracked_balance = goal_transaction_repository.calculate_partition_balance(
+            db_session=db_session,
+            goal_id=goal_model.id,
+            user_id=user_id,
+            account_id=None,
+        )
+
+        if transaction_data.amount > tracked_balance:
+            raise GoalInsufficientFundsError()
+
+        return
+
+    if is_contribution:
+        if goal_model.status == "archived":
+            raise GoalArchivedError()
+
+        if account_model.status == "archived":
+            raise AccountArchivedError()
+
+    if goal_model.currency != account_model.currency:
+        raise GoalAccountCurrencyMismatchError()
+
+    if is_contribution:
+        reservable_amount = account_service.get_reservable_amount(
+            db_session=db_session,
+            account_model=account_model,
+            as_of=today,
+        )
+
+        if reservable_amount <= 0 or transaction_data.amount > reservable_amount:
+            raise GoalReservationCapacityError()
+
+        return
+
+    linked_balance = goal_transaction_repository.calculate_partition_balance(
+        db_session=db_session,
+        goal_id=goal_model.id,
+        user_id=user_id,
+        account_id=account_model.id,
+    )
+
+    if transaction_data.amount > linked_balance:
+        raise GoalPartitionInsufficientFundsError()
 
 
 # Creates a contribution or withdrawal transaction for a goal owned by the
@@ -396,6 +520,18 @@ def _resolve_existing_transaction(
 # withdrawals but no new contributions; active and completed goals accept
 # both.
 #
+# Account-linked operations (VF-020C2) extend this algorithm without
+# changing the key semantics. account_id selects the partition (omitted =
+# tracked). A linked request additionally requires the key (422 at the
+# schema), a date that is omitted or equal to the server date (422), and
+# takes the locks Goal -> Account (contribution only; a withdrawal reads the
+# Account unlocked). The occupied key is still resolved first, so a replay
+# is never subject to the date, ownership, lifecycle or capacity rules, and
+# account_id is part of the compared payload (strict equality). The full
+# validation order is documented on _validate_new_transaction and in
+# docs/modules/smart-goals-rules.md. Missing and foreign Goals/Accounts are
+# both 404.
+#
 # "today" is the server date, resolved once per call (the same notion
 # AccountTransfer uses); as_of exists so tests can pin it.
 # Parameters:
@@ -414,7 +550,14 @@ def _resolve_existing_transaction(
 #   different payload.
 # - GoalNotFoundError: when goal does not exist or does not belong to the user.
 # - GoalArchivedError: when a new contribution targets an archived goal.
-# - GoalInsufficientFundsError: when a new withdrawal exceeds the balance.
+# - GoalInsufficientFundsError: when a new tracked withdrawal exceeds the
+#   tracked partition.
+# - GoalLinkedTransactionDateError: a new linked request names a date other
+#   than today.
+# - AccountNotFoundError: the linked Account is missing or foreign.
+# - AccountArchivedError / GoalAccountCurrencyMismatchError /
+#   GoalReservationCapacityError / GoalPartitionInsufficientFundsError: see
+#   _validate_new_transaction.
 def create_or_replay_goal_transaction(
     db_session: Session,
     goal_id: UUID,
@@ -425,6 +568,9 @@ def create_or_replay_goal_transaction(
     today = as_of if as_of is not None else date.today()
     requested_date = transaction_data.effective_date
     client_request_id = transaction_data.client_request_id
+    account_id = transaction_data.account_id
+    is_linked = account_id is not None
+    is_contribution = transaction_data.type == "contribution"
 
     if client_request_id is not None:
         existing_transaction = goal_transaction_repository.get_transaction_by_client_request_id(
@@ -444,7 +590,12 @@ def create_or_replay_goal_transaction(
         # both tables.
         db_session.rollback()
 
-    if requested_date is not None and requested_date > today:
+    if is_linked:
+        # P58: a linked operation is dated "now"; omitted or equal to the
+        # server date, so both past and future are rejected.
+        if requested_date is not None and requested_date != today:
+            raise GoalLinkedTransactionDateError()
+    elif requested_date is not None and requested_date > today:
         raise GoalTransactionEffectiveDateInFutureError()
 
     goal_model = goal_repository.get_goal_by_id_for_update(
@@ -452,6 +603,31 @@ def create_or_replay_goal_transaction(
         goal_id=goal_id,
         user_id=user_id,
     )
+
+    account_model = None
+
+    if is_linked:
+        # Lock order Goal -> Account. A contribution locks the Account row
+        # (capacity depends on its ledger and reservations, and every writer
+        # of those locks the Account too). A withdrawal only releases an
+        # existing partition, which depends on this Goal's rows alone, so it
+        # reads the Account without a lock.
+        try:
+            if is_contribution:
+                account_model = account_repository.get_account_by_id_for_update(
+                    db_session=db_session,
+                    account_id=account_id,
+                    user_id=user_id,
+                )
+            else:
+                account_model = account_repository.get_account_by_id(
+                    db_session=db_session,
+                    account_id=account_id,
+                    user_id=user_id,
+                )
+        except AccountNotFoundError:
+            db_session.rollback()
+            raise
 
     if client_request_id is not None:
         existing_transaction = goal_transaction_repository.get_transaction_by_client_request_id(
@@ -469,22 +645,18 @@ def create_or_replay_goal_transaction(
                 # Nothing was written; release the goal lock taken above.
                 db_session.rollback()
 
-    if goal_model.status == "archived" and transaction_data.type == "contribution":
+    try:
+        _validate_new_transaction(
+            db_session=db_session,
+            goal_model=goal_model,
+            account_model=account_model,
+            transaction_data=transaction_data,
+            user_id=user_id,
+            today=today,
+        )
+    except Exception:
         db_session.rollback()
-        raise GoalArchivedError()
-
-    current_balance = goal_transaction_repository.calculate_ledger_balance(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
-
-    if (
-        transaction_data.type == "withdrawal"
-        and transaction_data.amount > current_balance
-    ):
-        db_session.rollback()
-        raise GoalInsufficientFundsError()
+        raise
 
     try:
         transaction_model = goal_transaction_repository.create_transaction(
@@ -497,10 +669,18 @@ def create_or_replay_goal_transaction(
             currency=goal_model.currency,
             effective_date=requested_date if requested_date is not None else today,
             client_request_id=client_request_id,
+            account_id=account_id,
             commit=False,
         )
 
         db_session.commit()
+    except GoalAccountLinkInvalidError:
+        # The Account vanished or changed currency after it was validated;
+        # the database foreign key is the backstop. Practically unreachable
+        # because the Account is locked (contribution) or the delete /
+        # currency change is blocked by existing history.
+        db_session.rollback()
+        raise AccountNotFoundError()
     except GoalTransactionClientRequestIdTakenError:
         db_session.rollback()
 

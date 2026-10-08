@@ -161,7 +161,7 @@ Financial Overview (VF-019): discovery (VF-019A), backend (VF-019B, PR #67), mob
 
 6. Next — VF-020 Smart Goals & Rules
 
-Goals are not connected to Accounts today. Goal funding from Accounts is not implemented and must not be assumed until VF-020C2 (the backend runtime) ships.
+Goals can be linked to Accounts at the backend since VF-020C2 (implemented locally; not yet reviewed, merged or deployed, and the mobile client does not use it until VF-020C3). Goal funding never moves money: a linked contribution is a reservation against an Account.
 
 Product discovery asked whether funding a Goal means (1) moving actual money out of an Account into a real destination, or (2) earmarking money that remains physically in the Account. The approved VF-020A contract (docs/modules/smart-goals-rules.md) answers it for VF-020: earmarking (an Account-linked reservation that moves no money) alongside the existing tracked-only Goal progress. Moving money is not part of VF-020, and internal rules never initiate payments or transfers.
 
@@ -171,7 +171,7 @@ The contract is approved for documentation and implementation planning only. Eac
 
 2. VF-020B — Goals hardening (implemented; production at revision 8799b7fd923d)
 
-3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4); it is not implemented. C1 (schema expand: the migration exists in the repository, applied to production only after separate authorization) adds database structure only and the application does not use it yet. Fixed order: C1 schema expand only (nullable goal_transactions.account_id, not ORM-mapped) → production migration → C2 backend runtime → C3 mobile with physical-device acceptance. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
+3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4). C1 (schema expand, nullable goal_transactions.account_id) is merged and applied to production (revision 98acdc7016d2). C2 (backend runtime: ORM mapping, partitions, linked contributions/withdrawals, Account capacity read model, lifecycle protection; no new migration) is implemented on its own branch and is pending strict review, push, PR, CI and the user's merge. C3 (mobile with physical-device acceptance) has not started. Fixed order: C1 → production migration → C2 → C3. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
 
 4. VF-020D — Goal priorities
 

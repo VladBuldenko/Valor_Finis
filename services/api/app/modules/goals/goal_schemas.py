@@ -280,6 +280,30 @@ class GoalUpdate(BaseModel):
         return self
 
 
+class GoalAllocationResponse(BaseModel):
+    """
+    One current Account-linked partition of a Goal (VF-020C2).
+
+    What:
+        The Goal's net amount reserved against one Account:
+        linked contributions minus linked withdrawals.
+
+    Why:
+        allocations[] is a summary of the CURRENT non-zero partitions, not
+        an audit history: fully released partitions are not listed, and no
+        dates or past movements are exposed. The audit trail is the Goal's
+        transaction history.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: UUID
+    amount: Decimal = Field(
+        description="Net amount of the Goal reserved against this Account. Never zero.",
+        examples=["250.00"],
+    )
+
+
 class GoalResponse(GoalBase):
     """
     Schema for returning financial goal data.
@@ -313,6 +337,32 @@ class GoalResponse(GoalBase):
             "goal_transactions ledger. Read-only. May exceed target_amount."
         ),
         examples=["500.00"],
+    )
+
+    tracked_amount: Decimal = Field(
+        description=(
+            "Net amount of the tracked (unlinked) partition: opening balance "
+            "and contributions minus withdrawals where no Account is linked. "
+            "Read-only."
+        ),
+        examples=["300.00"],
+    )
+
+    linked_amount: Decimal = Field(
+        description=(
+            "Net amount reserved against Accounts: linked contributions "
+            "minus linked withdrawals, over all Accounts. Read-only. "
+            "current_amount = tracked_amount + linked_amount."
+        ),
+        examples=["200.00"],
+    )
+
+    allocations: list[GoalAllocationResponse] = Field(
+        default_factory=list,
+        description=(
+            "Current non-zero Account-linked partitions, ordered by "
+            "account_id. A summary, not an audit history."
+        ),
     )
 
     created_at: datetime

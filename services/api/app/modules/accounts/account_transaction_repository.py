@@ -230,6 +230,7 @@ def get_transactions_with_transfer_counterparty_for_account(
 # since an account that was never funded has nothing to aggregate.
 # Parameters:
 # - db_session: active SQLAlchemy database session.
+# - account_ids: optional restriction to these Accounts.
 # - user_id: authenticated user identifier to scope the aggregation to.
 #   Ownership-safe by construction: another user's transactions can never
 #   appear in the result, even for an account_id that happens to collide
@@ -242,23 +243,76 @@ def get_transactions_with_transfer_counterparty_for_account(
 def get_ledger_balances_for_user(
     db_session: Session,
     user_id: UUID,
+    account_ids: Optional[list[UUID]] = None,
 ) -> dict[UUID, Decimal]:
     signed_amount = case(
         (AccountTransactionModel.direction == "debit", -AccountTransactionModel.amount),
         else_=AccountTransactionModel.amount,
     )
 
-    rows = (
-        db_session.query(
-            AccountTransactionModel.account_id,
-            func.sum(signed_amount).label("balance"),
-        )
-        .filter(AccountTransactionModel.user_id == user_id)
-        .group_by(AccountTransactionModel.account_id)
-        .all()
-    )
+    query = db_session.query(
+        AccountTransactionModel.account_id,
+        func.sum(signed_amount).label("balance"),
+    ).filter(AccountTransactionModel.user_id == user_id)
+
+    if account_ids is not None:
+        query = query.filter(AccountTransactionModel.account_id.in_(account_ids))
+
+    rows = query.group_by(AccountTransactionModel.account_id).all()
 
     return {account_id: balance for account_id, balance in rows}
+
+
+# Returns, per Account, the two dated ledger aggregates the Goal reservation
+# capacity needs (VF-020C2), in ONE grouped query:
+# - balance_as_of_today: signed ledger sum of rows with
+#   transaction_date <= as_of;
+# - scheduled_outflows: positive sum of DEBIT rows with
+#   transaction_date > as_of (future-dated spending; future credits are
+#   deliberately ignored - money that has not arrived is not reservable).
+# Pure SQL aggregation in NUMERIC; no float, no FX. Accounts without any
+# ledger row are absent - callers default both values to Decimal("0.00").
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier to scope the aggregation to.
+# - as_of: the single server date used for the whole request.
+# - account_ids: optional restriction to these Accounts.
+# Returns:
+# - Dict mapping account_id to (balance_as_of_today, scheduled_outflows).
+def get_ledger_aggregates_as_of_for_user(
+    db_session: Session,
+    user_id: UUID,
+    as_of: date,
+    account_ids: Optional[list[UUID]] = None,
+) -> dict[UUID, tuple[Decimal, Decimal]]:
+    signed_amount = case(
+        (AccountTransactionModel.direction == "debit", -AccountTransactionModel.amount),
+        else_=AccountTransactionModel.amount,
+    )
+    past_or_today = AccountTransactionModel.transaction_date <= as_of
+    future_debit = and_(
+        AccountTransactionModel.transaction_date > as_of,
+        AccountTransactionModel.direction == "debit",
+    )
+
+    query = db_session.query(
+        AccountTransactionModel.account_id,
+        func.coalesce(func.sum(case((past_or_today, signed_amount), else_=0)), 0),
+        func.coalesce(
+            func.sum(case((future_debit, AccountTransactionModel.amount), else_=0)),
+            0,
+        ),
+    ).filter(AccountTransactionModel.user_id == user_id)
+
+    if account_ids is not None:
+        query = query.filter(AccountTransactionModel.account_id.in_(account_ids))
+
+    rows = query.group_by(AccountTransactionModel.account_id).all()
+
+    return {
+        account_id: (Decimal(balance), Decimal(scheduled))
+        for account_id, balance, scheduled in rows
+    }
 
 
 # Returns whether an account has any transaction history at all.

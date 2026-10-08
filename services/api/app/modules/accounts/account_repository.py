@@ -1,11 +1,39 @@
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.accounts.account_errors import AccountNotFoundError
+from app.modules.accounts.account_errors import (
+    AccountNotFoundError,
+    AccountReferencedByGoalAllocationError,
+)
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_schemas import AccountCreate, AccountUpdate
+
+# The Goal reservation foreign key (VF-020C1). A RESTRICT violation naming it
+# on an Account delete or currency UPDATE means linked Goal history exists;
+# the service prechecks this under the Account lock, so reaching the
+# constraint is a race/last-line-of-defense case and becomes a controlled 409
+# instead of a 500.
+GOAL_ACCOUNT_LINK_FK_CONSTRAINT = "fk_goal_transactions_account_id_user_id_currency"
+
+
+def _commit_translating_goal_link_violation(db_session: Session) -> None:
+    try:
+        db_session.commit()
+    except IntegrityError as error:
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+        db_session.rollback()
+
+        if constraint_name == GOAL_ACCOUNT_LINK_FK_CONSTRAINT:
+            raise AccountReferencedByGoalAllocationError() from error
+
+        raise
 
 
 # Creates and saves a new account database record.
@@ -210,7 +238,7 @@ def apply_account_update(
     for field_name, field_value in update_data.items():
         setattr(account_model, field_name, field_value)
 
-    db_session.commit()
+    _commit_translating_goal_link_violation(db_session)
     db_session.refresh(account_model)
 
     return account_model
@@ -234,4 +262,4 @@ def delete_locked_account(
     account_model: AccountModel,
 ) -> None:
     db_session.delete(account_model)
-    db_session.commit()
+    _commit_translating_goal_link_violation(db_session)

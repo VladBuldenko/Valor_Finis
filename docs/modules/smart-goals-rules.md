@@ -18,7 +18,7 @@ explicit authorization.
 | Baseline | `main` @ `635ea7506f50f4df669c569a7407fd356ef0b790` (after VF-019D, PR #69) |
 | History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) → v0.4 VF-020C finalization after discovery against `main` @ `ad42baf` (2026-10-07) |
 | Scope | VF-020 Smart Goals & Rules. VF-021 Financial Connections & Import is a separate milestone (§22) |
-| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). The VF-020C1 schema-expand migration (`98acdc7016d2`, nullable `goal_transactions.account_id`) exists in the repository but is **not applied to production** and is unused by the application. **Nothing else in this document is implemented**: VF-020C2/C3 and VF-020D…F are not started and Goals are still not connected to Accounts |
+| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). The VF-020C1 schema-expand migration (`98acdc7016d2`, nullable `goal_transactions.account_id`) is applied to production. **VF-020C2 (backend runtime) is implemented locally** on its own branch (pending strict review, merge and deploy; no new migration): ORM mapping, tracked/linked partitions, linked contributions and withdrawals, the Account capacity read model, Goal `tracked_amount`/`linked_amount`/`allocations`, Account delete/currency protection and the approved 404/409/422 precedence. **Not implemented**: VF-020C3 (mobile) and VF-020D…F; the mobile client does not use account links. The semantics of P58 and P60–P66 are unchanged by the implementation |
 
 Status tags used throughout:
 

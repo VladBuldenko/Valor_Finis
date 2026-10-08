@@ -90,3 +90,21 @@ class AccountReferencedByPlannedTransferError(Exception):
     """
 
     pass
+
+
+class AccountReferencedByGoalAllocationError(Exception):
+    """
+    Raised when an Account delete or actual currency change is attempted
+    while Goal reservations (linked Goal transactions) reference the Account.
+
+    What:
+        Represents the Goal-allocation lifecycle protection (VF-020C2).
+
+    Why:
+        Any historical linked row blocks the change, even when the net
+        reservation is zero and whether the Goal is archived or not: the
+        linked history is financial history and must keep its Account and
+        currency. The database foreign key (RESTRICT) is the backstop.
+    """
+
+    pass
