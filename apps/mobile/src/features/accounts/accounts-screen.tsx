@@ -11,6 +11,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../auth/auth-context";
+import { isZeroMoney } from "../goals/goal-partitions";
 import { getAccounts } from "./account.service";
 import { styles } from "./accounts.styles";
 import type { Account, AccountStatus, AccountType } from "./account.types";
@@ -154,6 +155,19 @@ export function AccountsScreen() {
                 <Text style={styles.amount}>
                   {account.current_balance} {account.currency}
                 </Text>
+
+                {isZeroMoney(account.reserved_amount) ? null : (
+                  <Text style={styles.secondaryText}>
+                    Reserved for goals: {account.reserved_amount}{" "}
+                    {account.currency}
+                  </Text>
+                )}
+
+                {account.allocation_status === "overcommitted" ? (
+                  <Text style={styles.noticeText}>
+                    Goal reservations exceed available balance.
+                  </Text>
+                ) : null}
 
                 <Link
                   href={{

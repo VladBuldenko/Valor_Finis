@@ -19,6 +19,7 @@ import { getGoalProgress } from "../analytics/analytics.service";
 import type { GoalProgressItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
 import { getGoalErrorMessage } from "./goal-error-message";
+import { isZeroMoney } from "./goal-partitions";
 import { deleteGoal, getGoals } from "./goal.service";
 import { styles } from "./goals.styles";
 import type { Goal, GoalStatus } from "./goal.types";
@@ -240,6 +241,12 @@ export function GoalsScreen() {
                   <Text style={styles.secondaryText}>
                     Saved: {goal.current_amount} {goal.currency}
                   </Text>
+
+                  {isZeroMoney(goal.linked_amount) ? null : (
+                    <Text style={styles.secondaryText}>
+                      Reserved in accounts: {goal.linked_amount} {goal.currency}
+                    </Text>
+                  )}
 
                   {progress ? (
                     <>

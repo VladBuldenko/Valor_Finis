@@ -383,6 +383,33 @@ export function AccountDetailScreen() {
             {account.current_balance} {account.currency}
           </Text>
 
+          {account.balance_as_of_today !== account.current_balance ? (
+            <Text style={styles.secondaryText}>
+              Balance as of today: {account.balance_as_of_today}{" "}
+              {account.currency}
+            </Text>
+          ) : null}
+
+          <Text style={styles.sectionTitle}>Goal reservations</Text>
+
+          <Text style={styles.secondaryText}>
+            Reserved for goals: {account.reserved_amount} {account.currency}
+          </Text>
+
+          <Text style={styles.secondaryText}>
+            Available to reserve: {account.reservable_amount} {account.currency}
+          </Text>
+
+          <Text style={styles.helperText}>
+            Reservations don&apos;t move money.
+          </Text>
+
+          {account.allocation_status === "overcommitted" ? (
+            <Text style={styles.noticeText}>
+              Goal reservations exceed available balance.
+            </Text>
+          ) : null}
+
           <Link
             href={{
               pathname: "/accounts/[id]/edit",

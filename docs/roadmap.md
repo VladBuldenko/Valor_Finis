@@ -161,7 +161,7 @@ Financial Overview (VF-019): discovery (VF-019A), backend (VF-019B, PR #67), mob
 
 6. Next — VF-020 Smart Goals & Rules
 
-Goals can be linked to Accounts at the backend since VF-020C2 (implemented locally; not yet reviewed, merged or deployed, and the mobile client does not use it until VF-020C3). Goal funding never moves money: a linked contribution is a reservation against an Account.
+Goals can be linked to Accounts since VF-020C2 (backend, merged and deployed; production runtime verified read-only via the public OpenAPI schema). The mobile integration (VF-020C3) is implemented locally on its own branch and is pending strict review, merge and physical-device acceptance. Goal funding never moves money: a linked contribution is a reservation (an earmark) against an Account.
 
 Product discovery asked whether funding a Goal means (1) moving actual money out of an Account into a real destination, or (2) earmarking money that remains physically in the Account. The approved VF-020A contract (docs/modules/smart-goals-rules.md) answers it for VF-020: earmarking (an Account-linked reservation that moves no money) alongside the existing tracked-only Goal progress. Moving money is not part of VF-020, and internal rules never initiate payments or transfers.
 
@@ -171,7 +171,7 @@ The contract is approved for documentation and implementation planning only. Eac
 
 2. VF-020B — Goals hardening (implemented; production at revision 8799b7fd923d)
 
-3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4). C1 (schema expand, nullable goal_transactions.account_id) is merged and applied to production (revision 98acdc7016d2). C2 (backend runtime: ORM mapping, partitions, linked contributions/withdrawals, Account capacity read model, lifecycle protection; no new migration) is implemented on its own branch and is pending strict review, push, PR, CI and the user's merge. C3 (mobile with physical-device acceptance) has not started. Fixed order: C1 → production migration → C2 → C3. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
+3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4). C1 (schema expand, nullable goal_transactions.account_id) is merged and applied to production (revision 98acdc7016d2). C2 (backend runtime: ORM mapping, partitions, linked contributions/withdrawals, Account capacity read model, lifecycle protection; no new migration) is merged and deployed. C3 (mobile) is implemented locally on its own branch (Goal detail contribution source and explicit withdrawal partition, Goal and Account reservation displays, idempotency payload including account_id, cache invalidation, operation-aware error copy; no FX, no partial allocation, no safety floor, no AUTO/CONFIRM) and still needs strict review, merge and physical-device acceptance, which has NOT been run. Fixed order: C1 → production migration → C2 → C3. The safety floor and the user advisory lock are deferred (VF-020E and VF-020D/E).
 
 4. VF-020D — Goal priorities
 

@@ -7,14 +7,19 @@ import type {
 // the backend compares on an idempotent replay (VF-020B3) -- in the exact
 // form that is sent. amount is canonical (see canonicalizeGoalAmount) and
 // description is null when the note is blank; a null description is
-// omitted from the request. effective_date is deliberately not part of it:
-// this client never sends one, so the server assigns the date and a retry
+// omitted from the request. accountId (VF-020C3) is the partition: null for
+// the tracked partition (account_id is then omitted from the request), an
+// Account id for a linked reservation / release. The backend compares
+// account_id strictly on replay, so it is part of the logical request here
+// too. effective_date is deliberately not part of it: this client never
+// sends one (tracked or linked), so the server assigns the date and a retry
 // after midnight still replays the original transaction.
 export type GoalTransactionPayload = {
   goalId: string;
   type: "contribution" | "withdrawal";
   amount: string;
   description: string | null;
+  accountId: string | null;
 };
 
 // One logical create request of the goal detail form and the
@@ -48,7 +53,8 @@ export function isSameGoalTransactionPayload(
     first.goalId === second.goalId &&
     first.type === second.type &&
     first.amount === second.amount &&
-    first.description === second.description
+    first.description === second.description &&
+    first.accountId === second.accountId
   );
 }
 
@@ -59,8 +65,8 @@ export function isSameGoalTransactionPayload(
  * committed by the backend, so a retry of the SAME logical request must
  * reuse its client_request_id -- the backend then replays the existing
  * transaction (200) instead of creating a duplicate. A changed request
- * (goal, type, amount or note) is a new logical request and gets a new
- * key; reusing the old one would be a backend 409 idempotency conflict.
+ * (goal, type, amount, note or Account) is a new logical request and gets
+ * a new key; reusing the old one would be a backend 409 idempotency conflict.
  *
  * `attempts` holds every not-yet-successful attempt made from the current
  * form, not just the latest one: if the user edits the form after a
@@ -98,21 +104,34 @@ export function resolveGoalTransactionAttempt(
   return { attempt: newAttempt, attempts: [...attempts, newAttempt] };
 }
 
+// Removes one attempt (by its client_request_id) from the list. Used after an
+// idempotency conflict has been shown, so the stale key is not reused.
+export function discardGoalTransactionAttempt(
+  attempts: readonly GoalTransactionAttempt[],
+  clientRequestId: string,
+): GoalTransactionAttempt[] {
+  return attempts.filter(
+    (candidate) => candidate.clientRequestId !== clientRequestId,
+  );
+}
+
 // Builds the request body for an attempt. goalId travels in the URL path,
 // not the body. A null description is omitted, never sent as "" -- the
 // backend compares description as-is on replay, so the same convention
-// must hold on every retry. effective_date is never sent (see
+// must hold on every retry. A null accountId (tracked) is omitted too;
+// a linked request includes account_id. effective_date is never sent (see
 // GoalTransactionPayload).
 export function toGoalTransactionCreateInput(
   attempt: GoalTransactionAttempt,
 ): GoalTransactionCreateInput {
-  const { type, amount, description } = attempt.payload;
+  const { type, amount, description, accountId } = attempt.payload;
 
   return {
     client_request_id: attempt.clientRequestId,
     type,
     amount,
     ...(description !== null ? { description } : {}),
+    ...(accountId !== null ? { account_id: accountId } : {}),
   };
 }
 

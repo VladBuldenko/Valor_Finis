@@ -8,6 +8,17 @@ export type AccountStatus = "active" | "archived";
 // every other financial contract in this app (see Goal in
 // ../goals/goal.types.ts) -- never parse them for display or arithmetic,
 // only render the exact string the backend returns.
+//
+// VF-020C3 adds the Goal reservation read model of backend AccountResponse
+// (VF-020C2): balance_as_of_today, scheduled_outflows,
+// planned_transfer_outflows, reserved_amount, unallocated_amount,
+// reservable_amount, allocation_status and negative_balance. Only
+// current_balance, reserved_amount, reservable_amount, balance_as_of_today
+// and allocation_status are shown in the UI; the others are API fields kept
+// in the type for completeness. current_balance keeps its meaning (the
+// whole ledger). A reservation never changes it.
+export type AllocationStatus = "normal" | "overcommitted";
+
 export type Account = {
   id: string;
   user_id: string;
@@ -16,6 +27,14 @@ export type Account = {
   currency: string;
   status: AccountStatus;
   current_balance: string;
+  balance_as_of_today: string;
+  scheduled_outflows: string;
+  planned_transfer_outflows: string;
+  reserved_amount: string;
+  unallocated_amount: string;
+  reservable_amount: string;
+  allocation_status: AllocationStatus;
+  negative_balance: boolean;
   created_at: string;
   updated_at: string;
 };
