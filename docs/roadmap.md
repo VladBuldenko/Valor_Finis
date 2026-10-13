@@ -11,7 +11,7 @@ Mobile client (Expo / React Native)       ✅ Implemented for the core finance f
 Financial ledger / money-flow foundation  ✅ Implemented
 Account Transfers                         ✅ Implemented (VF-018, backend + mobile)
 Financial Overview                        ✅ Implemented (VF-019, backend + mobile); device refresh acceptance pending
-Smart Goals & Rules (VF-020)              ⏳ Next — contract approved (VF-020A); implementation not started
+Smart Goals & Rules (VF-020)              🚧 In progress — VF-020A contract, VF-020B hardening and VF-020C Goal-Account reservations (backend and mobile) are complete; VF-020D (priorities) contract finalized, runtime not implemented; VF-020E (rules engine) not implemented
 Financial Connections & Import (VF-021)   Later — separate stream; discovery may run in parallel
 Web client                                Later
 
@@ -141,7 +141,7 @@ BUDGET
 GOAL
 = an aspirational savings target
 = has its own GoalTransaction ledger
-= currently NOT connected to any Account or other cash source
+= may be linked to an Account through reservations (VF-020C): a reservation earmarks money and never moves it; a Goal is not stored cash and is not connected to any other cash source
 
 Income and Expense are the canonical records; their AccountTransaction rows are synchronized projections. GoalTransaction and AccountTransaction are separate ledgers.
 
@@ -151,7 +151,7 @@ The Financial Overview's Net (Income - Expenses) is recorded income minus record
 
 Financial ledger / money-flow foundation
 
-Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Money can also move between the user's own Accounts through transfers, and the Financial Overview summarizes recorded income versus expenses. Goals track savings progress on their own ledger. Goal ↔ Account semantics discovery is complete: the approved VF-020A contract defines the next implementation stages, none of which is implemented yet.
+Money can be recorded as spent (Expense) or received (Income) and, optionally, reflected in the balance of the real-world Account it affected. Money can also move between the user's own Accounts through transfers, and the Financial Overview summarizes recorded income versus expenses. Goals track savings progress on their own ledger. Goal ↔ Account semantics discovery is complete: VF-020B (Goals hardening) and VF-020C (Goal-Account reservations, backend and mobile) are implemented, the VF-020D (priorities) contract is finalized but its runtime is not implemented, and VF-020E (rules engine) and VF-020F are not implemented.
 
 5. Completed Milestones — Account Transfers and Financial Overview
 
@@ -173,7 +173,7 @@ The contract is approved for documentation and implementation planning only. Eac
 
 3. VF-020C — Goal Account allocations (reservations, as-of capacity). The VF-020C contract is finalized in docs/modules/smart-goals-rules.md (v0.4). C1 (schema expand, nullable goal_transactions.account_id) is merged and applied to production (revision 98acdc7016d2). C2 (backend runtime: ORM mapping, partitions, linked contributions/withdrawals, Account capacity read model, lifecycle protection; no new migration) is merged and deployed. C3 (mobile) is merged (PR #78; Goal detail contribution source and explicit withdrawal partition, Goal and Account reservation displays, idempotency payload including account_id, cache invalidation, operation-aware error copy; no FX, no partial allocation, no safety floor, no AUTO/CONFIRM, no priorities, no advisory L0, no persistent idempotency storage). Independent strict review: PASS (0 blocker, 0 high, 0 medium). Physical-device acceptance, cases A-M (tracked and linked contribution, Account and Goal read-model refresh, tracked and explicit linked-partition withdrawal, insufficient partition and capacity errors, archived Account excluded from new reservations but still releasable, dropped-response retry / idempotent replay, legacy tracked-only Goal, Account lifecycle 409 UX): recorded as user-confirmed PASS, with no blocking UI defect reported; no automated or log evidence is attached to this record. VF-020C is complete. Fixed order: C1 → production migration → C2 → C3. The safety floor is deferred to VF-020E; the user advisory lock L0 is introduced in VF-020D (P68).
 
-4. VF-020D — Goal priorities (next; contract finalized in docs/modules/smart-goals-rules.md v0.5, not implemented): `priority_rank` for all non-archived Goals (active and completed), a priority-aware Goal order, `PUT /api/v1/goals/priorities`, mobile Priorities screen, and the user advisory lock L0 on every Goal write. Stages: D1 contract, D2 expand migration, production gates, D3 backend runtime, D4 mobile, D5 contract migration. No rules, AUTO/CONFIRM, safety floor or holds (VF-020E).
+4. VF-020D — Goal priorities (next; contract finalized in docs/modules/smart-goals-rules.md v0.5, not implemented): `priority_rank` for all non-archived Goals (active and completed), a priority-aware Goal order, `PUT /api/v1/goals/priorities`, mobile Priorities screen, and the user advisory lock L0 on every Goal write. Stages: D1 contract, D2 expand migration, production gates, D3 backend runtime, D4 mobile, D5 contract migration. Each production migration (D2 and D5) follows the same ordered gates: explicit authorization, read-only preflight, backup, backup verification, short lock timeout, migration, post-migration verification. No rules, AUTO/CONFIRM, safety floor or holds (VF-020E).
 
 5. VF-020E — Rules engine: durable outbox, AUTO and CONFIRM internal allocation rules; unattended AUTO requires a durable periodic dispatcher
 
