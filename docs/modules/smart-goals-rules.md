@@ -13,12 +13,12 @@ explicit authorization.
 
 | | |
 |---|---|
-| Contract version | v0.4 (VF-020C finalization), approved for documentation / implementation planning |
-| Approval date | 2026-10-05 (v0.3); 2026-10-07 (v0.4 VF-020C decisions P58, P60–P66) |
+| Contract version | v0.5 (VF-020D finalization), approved for documentation / implementation planning |
+| Approval date | 2026-10-05 (v0.3); 2026-10-07 (v0.4 VF-020C decisions P58, P60–P66); 2026-10-13 (v0.5 VF-020D decisions P67–P77) |
 | Baseline | `main` @ `635ea7506f50f4df669c569a7407fd356ef0b790` (after VF-019D, PR #69) |
-| History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) → v0.4 VF-020C finalization after discovery against `main` @ `ad42baf` (2026-10-07) |
+| History | v0.1 draft (2026-10-03) → v0.2 revision (2026-10-03) → v0.3 consolidated (2026-10-04) → approval of the remaining product decisions (2026-10-05) → v0.4 VF-020C finalization after discovery against `main` @ `ad42baf` (2026-10-07) → v0.5 VF-020D finalization (Goal priorities and L0) after discovery against `main` @ `146451577eb63501dcde54942021148d90278710` (2026-10-13) |
 | Scope | VF-020 Smart Goals & Rules. VF-021 Financial Connections & Import is a separate milestone (§22) |
-| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). The VF-020C1 schema-expand migration (`98acdc7016d2`, nullable `goal_transactions.account_id`) is applied to production. **VF-020C2 (backend runtime) is merged and deployed** (no new migration): ORM mapping, tracked/linked partitions, linked contributions and withdrawals, the Account capacity read model, Goal `tracked_amount`/`linked_amount`/`allocations`, Account delete/currency protection and the approved 404/409/422 precedence. **VF-020C3 (mobile) is implemented** on its own branch (independent strict review PASS; physical-device acceptance cases A-M recorded as user-confirmed PASS, with no blocking UI defect and no automated or log evidence attached; ready for push and PR, NOT yet merged or deployed): tracked vs linked contribution source ("Reserve from account"), an explicit withdrawal partition choice that is never preselected, Goal "Reserved in accounts" / allocations and Account "Reserved for goals" / "Available to reserve" displays, Reservation / Release history labels, `account_id` in the screen-local idempotency attempt, and targeted cache invalidation (an Account refresh only for linked operations). Acceptance confirmed: a reservation does not change the Account's `current_balance`; Account reserved/reservable amounts and the Goal tracked/linked/allocation values refresh after an operation; a withdrawal always needs an explicit partition; an archived Account's partition stays releasable while the Account is excluded from new reservations; the error UX shows controlled messages; and a dropped-response retry replays the original transaction. Reservations earmark money and never move it. Not implemented, by design: FX reservations, partial allocation, safety floor, AUTO/CONFIRM rules, priorities, advisory L0 and persistent idempotency storage. Known residual (inherited from B3): the idempotency attempt lives in the open Goal form, so if a response is lost and the user leaves the Goal form before retrying, the screen-local `client_request_id` may be lost. **Not implemented**: VF-020D…F. The semantics of P58 and P60–P66 are unchanged by the implementation |
+| Implementation state | VF-020B (Goals hardening, B1–B4) is implemented and applied to production (revision `8799b7fd923d`). The VF-020C1 schema-expand migration (`98acdc7016d2`, nullable `goal_transactions.account_id`) is applied to production. **VF-020C2 (backend runtime) is merged and deployed** (no new migration): ORM mapping, tracked/linked partitions, linked contributions and withdrawals, the Account capacity read model, Goal `tracked_amount`/`linked_amount`/`allocations`, Account delete/currency protection and the approved 404/409/422 precedence. **VF-020C3 (mobile) is merged** (PR #78; `main` @ `146451577eb63501dcde54942021148d90278710` contains C3; independent strict review PASS; physical-device acceptance cases A-M recorded as user-confirmed PASS with no blocking UI defect; no local proxy or database evidence and no automated or log evidence is attached to that record): tracked vs linked contribution source ("Reserve from account"), an explicit withdrawal partition choice that is never preselected, Goal "Reserved in accounts" / allocations and Account "Reserved for goals" / "Available to reserve" displays, Reservation / Release history labels, `account_id` in the screen-local idempotency attempt, and targeted cache invalidation (an Account refresh only for linked operations). Acceptance confirmed: a reservation does not change the Account's `current_balance`; Account reserved/reservable amounts and the Goal tracked/linked/allocation values refresh after an operation; a withdrawal always needs an explicit partition; an archived Account's partition stays releasable while the Account is excluded from new reservations; the error UX shows controlled messages; and a dropped-response retry replays the original transaction. Reservations earmark money and never move it. Not implemented in C3, by design: FX reservations, partial allocation, safety floor, AUTO/CONFIRM rules, priorities, advisory L0 and persistent idempotency storage. Known residual (inherited from B3): the idempotency attempt lives in the open Goal form, so if a response is lost and the user leaves the Goal form before retrying, the screen-local `client_request_id` may be lost. **VF-020D (Goal priorities and the user lock L0) has its contract finalized here (v0.5, VF-020D1, decisions P67–P77) and is NOT implemented**: no migration is created or applied and no runtime code exists. **Not implemented**: VF-020D…F. The semantics of P58 and P60–P66 are unchanged by the implementation, except that P61 is superseded by P68 |
 
 Status tags used throughout:
 
@@ -116,12 +116,23 @@ VF-021 items remain UDR/EXT.
 | P56 | The Account safety floor is strict for rule-generated allocations and **warning-only** for an explicit manual Goal reservation. The floor warning never overrides P04 capacity, ownership, currency equality, partition non-negativity, Goal/Account lifecycle restrictions or any other hard invariant: a manual reservation can never reserve money that does not exist under the reservable-capacity model. *The principle is unchanged; the floor itself is introduced in VF-020E (P60).* |
 | P58 | **`effective_date` rules differ for tracked and linked operations** (approved 2026-10-07; supersedes the earlier PROPOSED wording). *Tracked* (`account_id IS NULL`): exactly the established B3 semantics (P13) - omitted = server `date.today()`, today and any past date accepted, a future date → 422. *Linked* (`account_id IS NOT NULL`), for **both** a linked contribution and a linked withdrawal/release: `client_request_id` is mandatory (422 without it); `effective_date` omitted = server `date.today()`; an explicit `effective_date` must equal server today, otherwise **422** (past and future alike). Idempotency precedence is unchanged (P14, B3): an occupied `client_request_id` is resolved **before** any new-request date or lifecycle check, so an omitted-date retry on a later day replays the original linked transaction with its original `effective_date` (200). |
 | P60 | **Safety floor deferred to VF-020E.** VF-020C adds no `Account.floor` or equivalent, no floor field and no floor warning. Manual linked reservation capacity in VF-020C is based only on the base capacity formula (§8.1 `reservable`). P56 stays approved as a principle. |
-| P61 | **User-wide advisory lock L0 deferred to VF-020D/E.** VF-020C adds no advisory lock. Correctness uses deterministic row locking: Goal `FOR UPDATE` → Account `FOR UPDATE` → `goal_transactions` insert/read (§14.2). Adding L0 later is additive and must then cover every goal write, manual ones included. |
+| P61 | **User-wide advisory lock L0 deferred to VF-020D/E.** VF-020C adds no advisory lock. Correctness uses deterministic row locking: Goal `FOR UPDATE` → Account `FOR UPDATE` → `goal_transactions` insert/read (§14.2). Adding L0 later is additive and must then cover every goal write, manual ones included. **Superseded by P68 (2026-10-13): L0 is introduced in VF-020D and, from that point, applies to every Goal write; it is not scoped to rank-affecting writes only.** |
 | P62 | **Account read model (VF-020C):** `current_balance` is unchanged; the additive fields and their exact formulas are in §8.1 and §20.3 (`balance_as_of_today`, `scheduled_outflows`, `planned_transfer_outflows`, `reserved_amount`, `unallocated_amount`, `reservable_amount` (signed), `allocation_status` ∈ {`normal`, `overcommitted`}, `negative_balance`). No `proposal_holds_amount` and no floor fields before VF-020E. A new reservation requires `reservable_amount > 0` and `amount ≤ reservable_amount`; otherwise 409 with no partial write. |
 | P63 | **Goal read model (VF-020C):** `current_amount` stays the total Goal balance; additive `tracked_amount`, `linked_amount` and `allocations[]` (§7.2, §20.1). `allocations[]` is the **current non-zero partition summary**, not an audit history; no historical Account ownership is inferred. |
 | P64 | **Partition selection and idempotency (VF-020C):** a withdrawal/release always names its partition through `account_id` (omitted/null = tracked; `A` = the linked partition of Account A). No FIFO, no automatic Account selection, no cross-partition withdrawal. `amount` above the selected partition's balance → 409. The canonical idempotency payload gains `account_id`: same key + same payload including `account_id` → 200; same key with a different `account_id`, or a retry that omits `account_id` for a transaction that is linked → 409. Archived Account: no new linked contribution, linked withdrawal/release allowed. Archived Goal: no new contribution of any kind, tracked and linked withdrawals allowed. Completed Goal: unchanged (P11). |
 | P65 | **Account lifecycle protection (VF-020C):** deleting an Account, or changing its currency, returns a controlled **409** whenever **any** linked `goal_transactions` row references the Account - historical references count even when the linked net balance is zero. A raw foreign-key `IntegrityError` must never surface as a 500. |
 | P66 | **Schema and rollout (VF-020C):** one architecture - nullable `goal_transactions.account_id`, no separate allocations table, no provenance/source column; schema candidate in §19.2; rollout **C1 (schema expand only) → production migration → C2 (backend runtime) → C3 (mobile)** with no later contract migration, because `account_id` intentionally stays nullable (§28). |
+| P67 | **Ranked Goals (VF-020D, D01):** all non-archived Goals are ranked: `active` → ranked, `completed` → ranked, `archived` → `priority_rank = NULL`. This matches current product semantics (completed Goals stay current and remain valid targets, P11). The older wording "only active Goals are ranked" is withdrawn. |
+| P68 | **L0 is introduced in VF-020D (D02) and covers every Goal write.** Goal create, Goal PATCH (edit and status transition), Goal DELETE, tracked contribution, tracked withdrawal, linked contribution, linked withdrawal/release and the priority reorder all take L0 before any Goal or Account row lock. Account delete and Account currency change do **not** take L0. An occupied-key idempotent replay that performs no new Goal write does not take L0. Exact contract in §14.5. |
+| P69 | **L0 key (D02):** `pg_advisory_xact_lock(bigint)`, key = first 8 bytes (big-endian, signed int64) of `SHA-256(b"valor-finis:l0:user:v1:" + user_id.bytes)`. No Python `hash()`. §14.5. |
+| P70 | **Rank gaps (D03):** archive and hard delete never compact ranks automatically; gaps are valid. An explicit reorder rewrites the ranked set to `1..n`. |
+| P71 | **Backfill (D04):** existing non-archived Goals are ranked per user by `created_at DESC, id ASC` (`row_number()` = `priority_rank`), which preserves the existing newest-first semantics (equal `created_at` values are deterministically ordered by `id ASC`); archived Goals stay NULL. A deterministic initial preference only; it invents no financial history. After priorities exist, `priority_rank` is authoritative. |
+| P72 | **Schema and staging (D05, D06):** `priority_rank INTEGER NULL`; `CHECK (priority_rank IS NULL OR priority_rank >= 1)`; `UNIQUE (user_id, priority_rank) DEFERRABLE INITIALLY DEFERRED` (NULLs allowed; no partial index). The lifecycle invariant `(status = 'archived') = (priority_rank IS NULL)` is added only in VF-020D5, after the runtime is deployed and rollout stragglers are normalized. Primary correctness is L0 plus the locked rewrite; the unique constraint is a backstop. |
+| P73 | **Reorder API (D07, D08):** `PUT /api/v1/goals/priorities`, body `{"goal_ids": [uuid, ...]}` = the complete ordered set of the user's non-archived Goals. Status codes and the response are in §9. Archived Goals keep `created_at DESC, id ASC`. |
+| P74 | **API exposure and canonical order (D09, D13):** `GoalResponse` adds `priority_rank: int \| null`; `GoalCreate` and `GoalUpdate` never accept it. `GET /goals` is priority-aware: non-archived by `priority_rank ASC`, then archived by `created_at DESC, id ASC`. Consumers (including the Dashboard) follow it; no separate creation-date sort is added. Analytics stay keyed by Goal identity. |
+| P75 | **Mobile (D10):** a dedicated Priorities screen/mode with ▲ / ▼ and Save, a local draft, no request per arrow press, one PUT on Save, no drag-and-drop dependency. Details in §9. |
+| P76 | **Idempotency and boundary (D12):** the reorder needs no `client_request_id` and no idempotency table (a full-state PUT is naturally idempotent). Priority operations never write `GoalTransaction`, `AccountTransaction`, Income, Expense or Transfer rows. VF-020D provides only the ordering and lock foundation for VF-020E. |
+| P77 | **Rollout and production gates (D14):** D1 contract, D2 expand migration, production gates, D3 backend runtime, D4 mobile, D5 contract migration, then integration and acceptance (§28). Each production migration (D2 and D5) follows the same ordered sequence: (1) explicit authorization, before any production access; (2) read-only preflight; (3) backup; (4) backup verification; (5) short lock timeout; (6) migration; (7) post-migration verification. |
 
 P34 (reversal after a trigger change) is **superseded by P47**.
 
@@ -404,19 +415,113 @@ Bank-reported balances (VF-021) are a separate observation and never enter these
 
 ---
 
-## 9. Goal Priorities (PROPOSED; principles follow APPROVED P48)
+## 9. Goal Priorities (APPROVED, VF-020D; P67–P77; principles follow APPROVED P48)
 
-- `priority_rank` INT, 1 = highest; only active Goals are ranked.
-- Deterministic order: `(priority_rank NULLS LAST, created_at, id)`.
-- Reorder: `PUT /api/v1/goals/priorities` with the complete ordered list of the
-  user's active Goals; under the user lock L0 (§14) the Goals are locked in
-  ascending UUID order and ranks rewritten as 1…n; idempotent.
-- No database uniqueness on rank (a partial unique index cannot be deferrable);
-  the tie-break plus the locked rewrite are sufficient.
-- Archive sets `priority_rank = NULL`; reactivation appends the Goal last.
-- Rule order precedes Goal priority (P48 levels 3 → 4); Goal priority orders the
-  targets **inside** one rule.
-- A priority change affects only future evaluations; a deadline affects only estimates.
+Status: contract finalized in VF-020D1. Not implemented.
+
+**Ranked set (P67).** All non-archived Goals are ranked: `active` and
+`completed` have a non-NULL `priority_rank`, `archived` has
+`priority_rank = NULL`. Completed Goals remain current, visible and valid
+targets (P11, E9).
+
+**Data (P72).** `priority_rank INTEGER NULL`, 1 = highest;
+`CHECK (priority_rank IS NULL OR priority_rank >= 1)`;
+`UNIQUE (user_id, priority_rank) DEFERRABLE INITIALLY DEFERRED` as a backstop
+(NULL ranks are allowed; no partial index; the deferral lets a reorder rewrite
+swap ranks inside one transaction). Primary correctness is L0 (§14.5) plus the
+locked rewrite. The lifecycle invariant
+`(status = 'archived') = (priority_rank IS NULL)` is added only in VF-020D5.
+
+**Order (P74).** Canonical Goal order: non-archived Goals by
+`priority_rank ASC`; then archived Goals by `created_at DESC, id ASC`. Priority
+does not reorder archived Goals. A non-archived Goal that still has a NULL rank
+(created between the D2 migration and the D3 deployment) sorts after the ranked
+ones by `created_at ASC, id ASC` until normalized.
+
+**Backfill (P71).** Per user over non-archived Goals:
+`row_number() OVER (PARTITION BY user_id ORDER BY created_at DESC, id ASC)` =
+`priority_rank`. The backfill preserves the existing newest-first semantics; equal
+`created_at` values are deterministically ordered by `id ASC`.
+Archived Goals stay NULL. Completed Goals are ranked. This invents no financial
+history; it is only a deterministic initial preference.
+
+**Lifecycle (P70).**
+
+| Event | Rank |
+|---|---|
+| create, non-archived | appended last: `COALESCE(MAX(priority_rank), 0) + 1` for the user, under L0 |
+| create, archived | NULL |
+| active ↔ completed | unchanged |
+| active/completed → archived | NULL; remaining ranks are **not** compacted |
+| archived → active/completed | appended last (same formula, under L0) |
+| non-status edit | unchanged |
+| hard delete | row removed; a gap remains (no compaction) |
+
+Gaps are valid (`1,2,3,4` → archive rank 2 → `1,3,4`). A later explicit
+reorder rewrites the ranked set to `1..n`. The unrestricted valid-status PATCH
+behavior is otherwise unchanged.
+
+**Reorder (P73).** `PUT /api/v1/goals/priorities`
+
+```json
+{ "goal_ids": ["<uuid>", "<uuid>"] }
+```
+
+`goal_ids` is the **complete** ordered set of the user's non-archived Goals;
+`extra="forbid"`.
+
+| Case | Result |
+|---|---|
+| malformed UUID, duplicate ids | 422 |
+| unknown Goal, or a Goal owned by another user | 404 "Goal not found." (indistinguishable) |
+| an archived Goal supplied | 409 |
+| a ranked Goal missing from the list (stale set) | 409, reload and retry |
+| an extra or ineligible Goal after ownership/existence passed | 409 |
+| empty list | 200 only when the user has zero ranked Goals; otherwise 409 |
+| the exact current order again | 200 (idempotent) |
+| one Goal | 200 |
+
+Under L0 the server re-reads and revalidates the current ranked set after
+acquiring the lock (and the Goal rows, ascending id); if the set differs from
+the client's list the answer is 409 reload-and-retry. On success ranks are
+rewritten `1..n` in the given order.
+
+**Response.** 200 with the complete canonical Goal list in the normal
+`GoalResponse` shape, **including archived Goals**, ordered as above, so a
+client can replace `["goals", userId]` from one authoritative payload. There is
+no 204/refetch design.
+
+**Exposure (P74).** `GoalResponse` adds `priority_rank: int | null`.
+`GoalCreate` and `GoalUpdate` do **not** accept `priority_rank`; the only way a
+user changes it is the PUT. Lifecycle operations control it automatically.
+
+**Idempotency (P76).** The PUT is a full-state replacement and is naturally
+idempotent: no `client_request_id`, no idempotency table. It never writes
+`GoalTransaction`, `AccountTransaction`, Income, Expense or Transfer rows.
+
+**Mobile (P75).** A dedicated Priorities screen (or mode):
+
+- shows only non-archived Goals, active and completed;
+- ▲ move up and ▼ move down on a local draft order (no request per press;
+  boundary buttons are disabled; no drag-and-drop dependency);
+- one PUT on Save; Save is disabled while the request is pending and while the
+  draft equals the server order;
+- on success the Goals cache is replaced from the response;
+- on a stale-set 409: refetch Goals, reset the draft and show a controlled
+  reload/retry message;
+- every button has a meaningful accessibility label.
+
+Cache: the authoritative response replaces `["goals", userId]`. Accounts, Goal
+transactions, Financial Overview and Goal progress analytics are not
+invalidated (analytics are joined by Goal identity and never derive meaning
+from list order). No VF-020E query keys exist yet and none are invented here.
+
+**Position relative to rules (P48).** Rule order precedes Goal priority
+(levels 3 → 4); Goal priority orders the targets **inside** one rule. A
+priority change affects only future evaluations; a deadline affects only
+estimates. VF-020D provides only the rank, the canonical order, lifecycle rank
+handling, the reorder endpoint, L0 for every Goal write and the mobile
+priorities UX - none of the VF-020E rules machinery.
 
 ---
 
@@ -800,7 +905,7 @@ serialized by the user lock L0, in strict per-user FIFO order (P52, PROPOSED;
 
 | Level | Lock | Taken by |
 |---|---|---|
-| L0 | `pg_advisory_xact_lock(key(user_id))` (alternative: a per-user lock row) | **every** write of the goals and financial-rules modules: manual goal transactions, Goal CRUD/archive, priority reorder, rule create/edit/state, confirm/reject, dispatcher |
+| L0 | `pg_advisory_xact_lock(key(user_id))`, key per §14.5 (P68, P69) | **every** write of the goals and financial-rules modules: manual goal transactions, Goal CRUD/archive, priority reorder (VF-020D); rule create/edit/state, confirm/reject, dispatcher (VF-020E) |
 | L1 | event `FOR UPDATE`, then execution rows (`INSERT … ON CONFLICT DO NOTHING` + `SELECT … FOR UPDATE`) | dispatcher, confirm/reject |
 | L2 | Goals `FOR UPDATE`, ascending UUID (all targets of all rules, locked together) | goal-financial paths |
 | L3 | Accounts `FOR UPDATE`, ascending UUID | goal-financial paths |
@@ -826,8 +931,8 @@ Cycle analysis:
 Deadlock freedom is a **design claim** that must be confirmed by CT-01…CT-12
 (§25); any `deadlock_detected` is handled as a retryable failure.
 
-**VF-020C lock order (APPROVED P61).** L0 is **not** introduced in VF-020C
-(deferred to VF-020D/E). The manual paths use row locks only, in this order,
+**VF-020C lock order (APPROVED P61, superseded by P68 from VF-020D).** L0 is
+**not** introduced in VF-020C (it is introduced in VF-020D, §14.5). The manual paths use row locks only, in this order,
 which is a subset of the global order above:
 
 1. fast lookup by `(user_id, client_request_id)` without row locks; when the key
@@ -858,8 +963,63 @@ explicit Account lock, which does not change the approved ordering rule for
 every path that locks both entities (Goal first, then Account). No new product
 decision is implied.
 
-When L0 is added later it must wrap every goal write, manual ones
-included.
+From VF-020D (§14.5) L0 wraps every Goal write, manual ones included; the
+VF-020C row-lock order above then runs *after* L0.
+
+### 14.5 VF-020D: L0 contract (APPROVED P68, P69)
+
+**Scope.** L0 is the user-wide, transaction-scoped PostgreSQL advisory lock
+`pg_advisory_xact_lock(bigint)`. Once introduced in VF-020D it is taken by
+**every** Goal write:
+
+| Goal write | L0 |
+|---|---|
+| Goal create | yes |
+| Goal PATCH / edit / status transition | yes |
+| Goal DELETE | yes |
+| tracked contribution | yes (new write) |
+| tracked withdrawal | yes (new write) |
+| linked contribution | yes (new write) |
+| linked withdrawal / release | yes (new write) |
+| priority reorder | yes |
+| read-only Goal requests (`GET`) | no |
+| occupied-key idempotent replay that performs no new Goal write | no |
+| Account delete, Account currency change | **no** (existing Account-lock and read-reference semantics are retained) |
+
+**Order.** `L0(user)` → Goal row(s), ascending id when several → Account
+row(s) where applicable → `goal_transactions` interaction.
+
+**B3/C2 fast path preserved.** An initial lookup of an occupied
+`client_request_id` happens before the write transaction and holds no row
+locks. If the key resolves to a stored transaction the replay (or conflict) is
+returned without L0. If the key is unused the lookup transaction is **ended**,
+and then the write transaction runs: `L0` → Goal `FOR UPDATE` → Account
+`FOR UPDATE` where required → second idempotency lookup → validation → write.
+No `goal_transactions` lock may be held while waiting for L0 or `goals`.
+
+**Key derivation (identical in every implementation).**
+
+```python
+digest = sha256(b"valor-finis:l0:user:v1:" + user_id.bytes).digest()
+lock_key = int.from_bytes(digest[:8], byteorder="big", signed=True)
+```
+
+The lock is acquired through the **same** SQLAlchemy session and transaction
+that performs the write, with no Python `hash()`, no network call under L0 and
+no use of a different connection. It is released at commit or rollback. A hash
+collision may serialize two unrelated users briefly; it can never mix
+ownership or data.
+
+**No-cycle analysis.** Every L0 holder takes L0 first and never waits for L0
+while holding a Goal or Account row lock. The remaining orders are the
+approved Goal → Account order (C2). Account lifecycle paths lock only the
+Account and read `goal_transactions` references; they take no Goal lock and no
+L0, so there is no Account → Goal or Account → L0 edge. Reorder locks Goals in
+ascending id under L0; two reorders, or a reorder and any other Goal write,
+are serialized by L0. Canonical Income/Expense/Transfer paths lock their own
+row and Accounts and never Goals or L0. Different users never share a lock
+except by hash collision. Deadlock freedom remains a design claim to be
+confirmed by the VF-020D concurrency tests (§25).
 
 ### 14.3 Timeline: higher-priority rule wins (S31)
 
@@ -1017,8 +1177,8 @@ change.
 
 | Object | Action | Contract |
 |---|---|---|
-| Goal | create / edit | currency validation hardened (G1); under L0 from VF-020D/E (P61) |
-| Goal | archive | allowed; `priority_rank = NULL` (VF-020D); new contributions (tracked and linked) → 409 (P10); tracked and linked withdrawals and releases allowed; rules targeting it → `blocked` (VF-020E) |
+| Goal | create / edit | currency validation hardened (G1); under L0 from VF-020D (P68); create appends the rank last (P70) |
+| Goal | archive | allowed; `priority_rank = NULL`, no compaction (VF-020D, P70); new contributions (tracked and linked) → 409 (P10); tracked and linked withdrawals and releases allowed; rules targeting it → `blocked` (VF-020E) |
 | Goal | complete | manual status; no restrictions (P11) |
 | Goal | delete | only without history (EST); also 409 if referenced by a rule target (P57) |
 | Goal | currency | immutable once history exists (EST); composite FK as last line of defense |
@@ -1040,7 +1200,11 @@ change.
 
 `uq(id, user_id)`, `uq(id, user_id, currency)`;
 `CHECK status IN ('active','completed','archived')`;
-`CHECK currency ~ '^[A-Z]{3}$'`; `priority_rank INT NULL`;
+`CHECK currency ~ '^[A-Z]{3}$'`; `priority_rank INTEGER NULL` with
+`CHECK (priority_rank IS NULL OR priority_rank >= 1)` and
+`UNIQUE (user_id, priority_rank) DEFERRABLE INITIALLY DEFERRED` (VF-020D2,
+P72); the lifecycle check `(status = 'archived') = (priority_rank IS NULL)` is
+added only in VF-020D5;
 `description VARCHAR(255) NULL` (PROPOSED).
 
 ### 19.2 `goal_transactions` (VF-020B/C)
@@ -1122,7 +1286,9 @@ backup, migration plan and approval (G3). The only data operation is the
   `allocations[]` is the current non-zero partition summary, not an audit
   history (§7.2). Further additions: `priority_rank` (VF-020D) and
   `monthly_contribution_estimate` (backend-computed, ROUND_UP 0.01, PROPOSED).
-- `PUT /api/v1/goals/priorities` (VF-020D).
+- `PUT /api/v1/goals/priorities` (VF-020D, §9, P73): body `{"goal_ids": [...]}`,
+  the complete ordered non-archived set; 200 with the canonical Goal list.
+  `GoalCreate` and `GoalUpdate` never accept `priority_rank` (P74).
 
 ### 20.2 Idempotency transition (P14 APPROVED; cutover timing P59 PROPOSED)
 
@@ -1388,6 +1554,13 @@ are independent literals, never copies of production formulas.
 | Periodic dispatcher | readiness checks for the chosen mechanism; cross-user batches; bounded queries (S43) |
 | Concurrency | CT-01 S31 with two workers (repeat N times); CT-02 S31 + concurrent manual reservation; CT-03 two events of one user (FIFO, no duplicates); CT-04 confirmation vs dispatcher; CT-05 Income update vs processing of the same Income; CT-06 Expense/Transfer vs reservation; CT-07 Account delete / currency change vs reservation (409 or success, never 500); CT-08 reorder vs dispatcher; CT-09 rule edit vs dispatcher (no surviving old-version proposal); CT-10 two users in parallel; CT-11 manual reservation vs confirmation (S39); CT-12 planned Transfer create/post vs reservation |
 | Priority | S25/S31 deterministic; reorder |
+| Priority - schema/backfill (VF-020D) | active and completed ranked; archived NULL; newest-first preserved (`created_at DESC, id ASC`); deterministic id tie on equal `created_at`; several users independent; `priority_rank >= 1` CHECK; deferred uniqueness (a swap inside one transaction succeeds, a committed duplicate fails); D5 normalizes rollout stragglers (appended after the user's max by `created_at ASC, id ASC`) before the lifecycle CHECK |
+| Priority - L0 (VF-020D) | deterministic key derivation (§14.5); same UUID same key; different UUIDs normally different keys; released after commit and after rollback; every Goal write path takes it (create, PATCH, DELETE, tracked and linked contribution/withdrawal, reorder); read-only requests do not; an occupied-key replay does not enter the write path; Account delete and currency change do not take it |
+| Priority - CRUD (VF-020D) | create non-archived appended last; create archived NULL; archive NULL without compaction; reactivate appended last; active ↔ completed keeps rank; non-status edit keeps rank; delete leaves a gap; `GoalCreate`/`GoalUpdate` reject `priority_rank` |
+| Priority - reorder (VF-020D) | valid reorder; same-order idempotence; duplicate id → 422; malformed UUID → 422; missing ranked Goal → 409; archived supplied → 409; foreign and nonexistent → indistinguishable 404; empty with zero ranked → 200; empty with ranked → 409; response is the canonical full list including archived; ranks rewritten `1..n` |
+| Priority - concurrency (VF-020D) | reorder vs reorder, create, archive, reactivate, delete, tracked contribution, tracked withdrawal, linked contribution, linked withdrawal; create vs create; reactivate vs create; different users proceed independently (apart from a theoretical hash collision); no deadlock |
+| Priority - regression (VF-020D) | B3 idempotency; C2 linked capacity and lifecycle protections; archived-Goal restrictions; completed-Goal money semantics |
+| Priority - mobile (VF-020D) | draft move up/down and boundaries; unchanged draft keeps Save disabled; Save pending state; lifecycle filtering (active and completed only); stale-set 409 resets and refetches; cache replacement from the response; no new test framework |
 | Income CRUD | every row of §15.3 |
 | Provenance | S23, S32, S33, S37, S42; reclassification; Income without a creation event |
 | Proposals | expiry (S41), stale (S26/S35/S39), superseded, source_changed; holds: `rule_capacity` for AUTO and new proposals, `confirm_capacity` excluding the own hold (S38), later holds never defeating an earlier proposal (S44); hold order deterministic for the chosen mechanism |
@@ -1480,12 +1653,23 @@ matching the implemented state, the user performs the merge.
 | P58 | `effective_date` of linked rows | tracked: B3 semantics (past/today ok, future 422); linked contribution **and** withdrawal/release: key mandatory, omitted = today, explicit must equal today else 422; occupied key resolved first | **APPROVED** (2026-10-07) |
 | P59 | Mandatory `client_request_id` for all clients | after all supported clients send it | PROPOSED |
 | P60 | Safety floor timing | deferred to VF-020E; no floor storage, field or warning in VF-020C | **APPROVED** (2026-10-07) |
-| P61 | User advisory lock L0 | deferred to VF-020D/E; VF-020C uses Goal → Account row locks | **APPROVED** (2026-10-07) |
+| P61 | User advisory lock L0 | deferred to VF-020D/E; VF-020C uses Goal → Account row locks; **superseded by P68** | **APPROVED** (2026-10-07), superseded |
 | P62 | Account read model | eight additive fields and exact formulas (§8.1, §20.3); `reservable_amount` signed; no holds/floor fields | **APPROVED** (2026-10-07) |
 | P63 | Goal read model | `tracked_amount`, `linked_amount`, `allocations[]` = current non-zero partition summary, not an audit history | **APPROVED** (2026-10-07) |
 | P64 | Partition selection and idempotency with `account_id` | explicit partition; no FIFO or auto-selection; archived Account/Goal rules; `account_id` in the canonical payload | **APPROVED** (2026-10-07) |
 | P65 | Account lifecycle protection | delete / currency change → controlled 409 on any historical linked reference | **APPROVED** (2026-10-07) |
 | P66 | Schema and rollout | nullable `account_id`, no allocations table, no provenance column; C1 → production migration → C2 → C3; no contract migration | **APPROVED** (2026-10-07) |
+| P67 | Ranked Goals | all non-archived (active and completed) ranked; archived NULL | **APPROVED** (2026-10-13) |
+| P68 | L0 introduced in VF-020D | every Goal write takes L0; Account delete / currency change do not; occupied-key replay does not | **APPROVED** (2026-10-13) |
+| P69 | L0 key derivation | `pg_advisory_xact_lock(bigint)` from SHA-256 of the namespaced user UUID bytes | **APPROVED** (2026-10-13) |
+| P70 | Rank gaps | no automatic compaction on archive or delete; reorder rewrites `1..n` | **APPROVED** (2026-10-13) |
+| P71 | Backfill | `created_at DESC, id ASC` per user over non-archived Goals; archived NULL | **APPROVED** (2026-10-13) |
+| P72 | Constraints | `>= 1` CHECK and deferrable `UNIQUE (user_id, priority_rank)` in D2; lifecycle CHECK only in D5 | **APPROVED** (2026-10-13) |
+| P73 | Reorder API | `PUT /goals/priorities`, complete ordered `goal_ids`, 200 with the canonical Goal list | **APPROVED** (2026-10-13) |
+| P74 | API exposure and order | read-only `priority_rank`; priority-aware `GET /goals`; archived `created_at DESC, id ASC` | **APPROVED** (2026-10-13) |
+| P75 | Mobile priorities UX | Priorities screen, ▲ / ▼ + Save, no drag-and-drop dependency | **APPROVED** (2026-10-13) |
+| P76 | Reorder idempotency and boundary | no key, no table; never writes money rows; ordering and lock foundation only | **APPROVED** (2026-10-13) |
+| P77 | Rollout and production gates | D1 → D2 → gates → D3 → D4 → D5 | **APPROVED** (2026-10-13) |
 
 ---
 
@@ -1498,7 +1682,7 @@ matching the implemented state, the user performs the merge.
 | VF-020A Contract | this document; product-requirements and roadmap updates | — (complete when merged) |
 | VF-020B Goals Hardening | G1–G6; P10; P13 column; P14 keys; composite owner FK; `currency` copy. **Implemented**: B1 app hardening, B2 expand, B3 runtime, B4 contract; production at `8799b7fd923d` | VF-020A; G3 (authorized read-only production check, migration approval) |
 | VF-020C Goal Account Allocations | three sub-stages, strictly in this order (below): **C1** schema expand, **C2** backend runtime, **C3** mobile. Partitions; as-of model incl. P49; capacity; Account lifecycle pre-checks; API and minimal mobile surface. **No floor warning (P60), no L0 (P61)** | VF-020B; G3, G4 |
-| VF-020D Goal Priorities | rank, reorder, L0 (introduced here or in VF-020E, P61) | VF-020C |
+| VF-020D Goal Priorities | rank, reorder and L0 on every Goal write (P67–P77). Stages: **D1** contract (this document), **D2** expand migration (nullable `priority_rank`, `>= 1` CHECK, deferrable unique, deterministic backfill; the runtime does not depend on the column before the production migration), then the production gates for D2 (explicit authorization → read-only preflight → backup → backup verification → short lock timeout → migration → post-migration verification), **D3** backend runtime (ORM/API, L0 helper on all Goal writes, lifecycle rank handling, canonical order, reorder endpoint, concurrency and regression tests), **D4** mobile priorities UI, **D5** contract migration (normalize stragglers appended after the user's max rank by `created_at ASC, id ASC`, then the lifecycle CHECK), which passes through the same seven-step production gate sequence as D2, then integration and acceptance. Every stage has its own strict review gate | VF-020C |
 | VF-020E Rules Engine / Outbox / AUTO / CONFIRM | Account safety floor (P56, P60); outbox; dispatcher drains (a)+(b); periodic dispatcher (c) with verified mechanism (P50); executions; holds (P55); expiry (P54); eligibility and provenance (P51); alerts; Inbox | VF-020D; G4, G5; P52 finalized |
 | VF-020F Mobile & Acceptance | complete mobile UX, device acceptance, documentation, independent review | VF-020E; G6, G7 |
 
@@ -1602,10 +1786,10 @@ No integration code before G2 and G5.
 | No contradiction with AccountTransfer semantics (planned = no ledger rows) | PASS (§8, INV-08) |
 | No contradiction with Financial Overview semantics | PASS (FIN-012) |
 | No unapproved decision labeled APPROVED (P52, P53, P57, P59 PROPOSED; VF-021 UDR/EXT) | PASS |
-| VF-020C decisions P58, P60–P66 approved 2026-10-07 and consistently stated in §3, §7, §8, §10.6, §14.2, §18, §19.2, §20, §21, §24, §25, §27, §28; no floor, no `proposal_holds_amount`, no L0, no allocations table or provenance column in VF-020C | PASS |
+| VF-020C decisions P58, P60–P66 approved 2026-10-07 and consistently stated in §3, §7, §8, §10.6, §14.2, §18, §19.2, §20, §21, §24, §25, §27, §28; no floor, no `proposal_holds_amount`, no L0, no allocations table or provenance column in VF-020C (L0 is introduced by P68 in VF-020D) | PASS |
 | Tracked vs linked `effective_date` semantics stated consistently (P58 is the normative text; §7.3, §7.4, §20.1, §25, S45/S46 repeat it without deviation) | PASS |
 | `allocations[]` described as a current non-zero summary, never an audit history (§7.2, §20.1, S50) | PASS |
-| VF-020C not presented as implemented | PASS |
+| VF-020C implementation state is represented consistently as complete (C1 and C2 deployed, C3 merged); VF-020D is contract-finalized but not implemented | PASS |
 | No migration, production access or implementation authorized | PASS |
 | Requirements traceable to tests | PASS (§24 ↔ §25) |
 | Implementation sequence valid | PASS |
