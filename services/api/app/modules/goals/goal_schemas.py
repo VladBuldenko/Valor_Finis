@@ -339,6 +339,16 @@ class GoalResponse(GoalBase):
         examples=["500.00"],
     )
 
+    priority_rank: Optional[int] = Field(
+        default=None,
+        description=(
+            "Goal priority, 1 = highest. Read-only: changed only through "
+            "PUT /goals/priorities and lifecycle rules. Null for archived "
+            "Goals (and for Goals not yet ranked by the rollout)."
+        ),
+        examples=[1],
+    )
+
     tracked_amount: Decimal = Field(
         description=(
             "Net amount of the tracked (unlinked) partition: opening balance "
@@ -367,3 +377,33 @@ class GoalResponse(GoalBase):
 
     created_at: datetime
     updated_at: datetime
+
+class GoalPriorityReorderRequest(BaseModel):
+    """
+    Request body of PUT /api/v1/goals/priorities (VF-020D3).
+
+    What:
+        The COMPLETE ordered set of the user's non-archived Goals, highest
+        priority first.
+
+    Why:
+        A full-state replacement is naturally idempotent, so it needs no
+        client_request_id. Duplicate ids are a request-validation error
+        (422); everything that depends on current data (unknown or foreign
+        ids, archived ids, a stale set) is decided by the service under the
+        user lock.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal_ids: list[UUID] = Field(
+        description="Complete ordered list of the user's non-archived Goal ids.",
+    )
+
+    @field_validator("goal_ids")
+    @classmethod
+    def reject_duplicate_goal_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("goal_ids must not contain duplicates")
+
+        return value

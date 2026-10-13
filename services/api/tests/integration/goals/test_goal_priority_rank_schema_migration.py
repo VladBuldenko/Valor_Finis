@@ -14,6 +14,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import IntegrityError
 
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from app.db.database_base import Base
+from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
 
@@ -452,3 +456,17 @@ def test_migration_declares_revision_chain_and_lock_first() -> None:
     source = MIGRATION_PATH.read_text()
     assert "SET lock_timeout" not in source and "SET LOCAL lock_timeout" not in source
     assert "lock_timeout =" not in source
+
+
+# Tests that, since VF-020D3 maps goals.priority_rank, Alembic's own comparison
+# of the ORM metadata against a database at the D2 revision reports NO
+# difference at all (the ORM and the D2 schema are in sync; the CHECK is not
+# compared by Alembic and is covered by the behavior tests above).
+def test_orm_metadata_matches_d2_database_exactly(d2_database: Engine) -> None:
+    import_database_models()
+
+    with d2_database.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        differences = compare_metadata(context, Base.metadata)
+
+    assert differences == []

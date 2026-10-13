@@ -49,6 +49,8 @@ from app.modules.goals.goal_errors import (
     GoalLinkedTransactionDateError,
     GoalNotFoundError,
     GoalPartitionInsufficientFundsError,
+    GoalPriorityGoalArchivedError,
+    GoalPrioritySetStaleError,
     GoalReservationCapacityError,
     GoalTransactionEffectiveDateInFutureError,
     GoalTransactionIdempotencyConflictError,
@@ -210,6 +212,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     GoalAccountCurrencyMismatchError: (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "Goal and Account currencies must match.",
+    ),
+    GoalPriorityGoalArchivedError: (
+        status.HTTP_409_CONFLICT,
+        "Archived goals cannot be ranked.",
+    ),
+    GoalPrioritySetStaleError: (
+        status.HTTP_409_CONFLICT,
+        "Goal list is out of date. Reload goals and try again.",
     ),
     GoalArchivedError: (
         status.HTTP_409_CONFLICT,
