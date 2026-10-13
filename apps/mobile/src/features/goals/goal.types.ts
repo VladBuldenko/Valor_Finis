@@ -7,12 +7,29 @@ export type GoalStatus = "active" | "completed" | "archived";
 // only render the exact string the backend returns. target_date is nullable:
 // a goal can be created without a target date. This slice is read-only, so
 // no Create/Update input types are defined here.
+//
+// VF-020C3 (backend VF-020C2) partitions, all read-only JSON strings:
+// - current_amount stays the TOTAL (tracked_amount + linked_amount);
+// - tracked_amount is the part not tied to any Account;
+// - linked_amount is the part reserved against Accounts;
+// - allocations lists the CURRENT non-zero Account partitions (a summary,
+//   not a history), ordered by account_id by the backend.
+// A reservation earmarks money for the Goal; it never moves money out of an
+// Account.
+export type GoalAllocation = {
+  account_id: string;
+  amount: string;
+};
+
 export type Goal = {
   id: string;
   user_id: string;
   name: string;
   target_amount: string;
   current_amount: string;
+  tracked_amount: string;
+  linked_amount: string;
+  allocations: GoalAllocation[];
   currency: string;
   target_date: string | null;
   status: GoalStatus;
@@ -84,6 +101,10 @@ export type GoalTransactionType =
 //   getGoalTransactionDisplayDate). A date-only string: never parse it
 //   into a Date.
 // - client_request_id: idempotency key the create request carried, if any.
+// VF-020C3 (backend VF-020C2): account_id is the Account a row is reserved
+// against (null = tracked row, and every row recorded before reservations
+// existed). A non-null account_id makes the row a Reservation (contribution)
+// or a Release (withdrawal).
 export type GoalTransaction = {
   id: string;
   goal_id: string;
@@ -95,6 +116,7 @@ export type GoalTransaction = {
   currency: string | null;
   effective_date: string | null;
   client_request_id: string | null;
+  account_id: string | null;
 };
 
 // Mirrors backend GoalTransactionCreate. Only contribution and withdrawal
@@ -109,11 +131,16 @@ export type GoalTransaction = {
 // the backend contract for older clients, but this app always sends one
 // (see goal-transaction-attempts.ts). effective_date is optional too and
 // this app never sends it -- the server assigns today's date, which keeps a
-// retry after midnight an exact replay.
+// retry after midnight an exact replay -- for tracked and linked requests
+// alike.
+// account_id (VF-020C3) selects the partition: omitted = tracked, an Account
+// id = that Account's linked partition (reservation / release). A linked
+// request requires client_request_id, which this app always sends.
 export type GoalTransactionCreateInput = {
   type: "contribution" | "withdrawal";
   amount: string;
   description?: string;
   client_request_id?: string;
   effective_date?: string;
+  account_id?: string;
 };

@@ -66,3 +66,38 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
 
   return fallback;
 }
+
+
+// Structured view of a failed apiRequest, for callers that must branch on
+// the HTTP status and the backend's exact "detail" text (the backend has no
+// error codes). status is null when the error is not an apiRequest failure
+// (for example a network error); detail is the backend's string detail, or
+// null when the body is not JSON or its detail is not a string (a 422
+// validation list, for instance). Never throws.
+export function readApiFailure(error: unknown): {
+  status: number | null;
+  detail: string | null;
+} {
+  if (!(error instanceof Error)) {
+    return { status: null, detail: null };
+  }
+
+  const match = error.message.match(/^API request failed: (\d+) (.*)$/s);
+
+  if (!match) {
+    return { status: null, detail: null };
+  }
+
+  const status = Number(match[1]);
+
+  try {
+    const detail = (JSON.parse(match[2]) as { detail?: unknown } | null)?.detail;
+
+    return {
+      status,
+      detail: typeof detail === "string" && detail ? detail : null,
+    };
+  } catch {
+    return { status, detail: null };
+  }
+}

@@ -12,12 +12,15 @@ import { test } from "node:test";
 
 import {
   canonicalizeGoalAmount,
+  discardGoalTransactionAttempt,
   getGoalTransactionDisplayDate,
   resolveGoalTransactionAttempt,
   toGoalTransactionCreateInput,
 } from "./goal-transaction-attempts.ts";
 
 const GOAL_ID = "11111111-1111-4111-8111-111111111111";
+const ACCOUNT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const ACCOUNT_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 function payload(overrides = {}) {
   return {
@@ -25,6 +28,7 @@ function payload(overrides = {}) {
     type: "contribution",
     amount: "10.00",
     description: null,
+    accountId: null,
     ...overrides,
   };
 }
@@ -58,6 +62,7 @@ test("a materially changed payload gets a new key", () => {
     { type: "withdrawal" },
     { description: "Payday" },
     { goalId: "22222222-2222-4222-8222-222222222222" },
+    { accountId: ACCOUNT_A },
   ];
 
   for (const change of changes) {
@@ -155,4 +160,93 @@ test("legacy history without effective_date falls back to created_at", () => {
   });
 
   assert.equal(displayed, "2026-01-01T10:00:00Z");
+});
+
+// ---- VF-020C3: Account-linked requests ----
+
+test("a tracked payload retried unchanged reuses its key", () => {
+  const generate = sequentialKeys();
+  const first = resolveGoalTransactionAttempt([], payload(), generate);
+
+  const retry = resolveGoalTransactionAttempt(first.attempts, payload(), generate);
+
+  assert.equal(retry.attempt.clientRequestId, first.attempt.clientRequestId);
+});
+
+test("a linked payload retried unchanged reuses its key (network retry of the same submit)", () => {
+  const generate = sequentialKeys();
+  const first = resolveGoalTransactionAttempt([], payload({ accountId: ACCOUNT_A }), generate);
+
+  const retry = resolveGoalTransactionAttempt(
+    first.attempts, payload({ accountId: ACCOUNT_A }), generate,
+  );
+
+  assert.equal(first.attempt.clientRequestId, "key-1");
+  assert.equal(retry.attempt.clientRequestId, "key-1");
+  assert.equal(retry.attempts.length, 1);
+});
+
+test("tracked and linked requests with the same amount get different keys", () => {
+  const generate = sequentialKeys();
+  const tracked = resolveGoalTransactionAttempt([], payload(), generate);
+
+  const linked = resolveGoalTransactionAttempt(
+    tracked.attempts, payload({ accountId: ACCOUNT_A }), generate,
+  );
+
+  assert.notEqual(linked.attempt.clientRequestId, tracked.attempt.clientRequestId);
+});
+
+test("Account A and Account B get different keys", () => {
+  const generate = sequentialKeys();
+  const forA = resolveGoalTransactionAttempt([], payload({ accountId: ACCOUNT_A }), generate);
+
+  const forB = resolveGoalTransactionAttempt(
+    forA.attempts, payload({ accountId: ACCOUNT_B }), generate,
+  );
+
+  assert.notEqual(forB.attempt.clientRequestId, forA.attempt.clientRequestId);
+  assert.equal(forB.attempts.length, 2);
+});
+
+test("a new user action after a success gets a new key even for the same linked payload", () => {
+  const generate = sequentialKeys();
+  resolveGoalTransactionAttempt([], payload({ accountId: ACCOUNT_A }), generate);
+
+  const next = resolveGoalTransactionAttempt([], payload({ accountId: ACCOUNT_A }), generate);
+
+  assert.equal(next.attempt.clientRequestId, "key-2");
+});
+
+test("a tracked request body omits account_id", () => {
+  const input = toGoalTransactionCreateInput({ clientRequestId: "key-1", payload: payload() });
+
+  assert.equal("account_id" in input, false);
+  assert.equal("effective_date" in input, false);
+});
+
+test("a linked request body includes account_id and the key, and still no effective_date", () => {
+  const input = toGoalTransactionCreateInput({
+    clientRequestId: "key-1",
+    payload: payload({ accountId: ACCOUNT_A, type: "withdrawal" }),
+  });
+
+  assert.deepEqual(input, {
+    client_request_id: "key-1",
+    type: "withdrawal",
+    amount: "10.00",
+    account_id: ACCOUNT_A,
+  });
+  assert.equal("effective_date" in input, false);
+});
+
+test("discarding an attempt removes only that key", () => {
+  const generate = sequentialKeys();
+  const first = resolveGoalTransactionAttempt([], payload(), generate);
+  const second = resolveGoalTransactionAttempt(first.attempts, payload({ amount: "12.00" }), generate);
+
+  const remaining = discardGoalTransactionAttempt(second.attempts, "key-1");
+
+  assert.deepEqual(remaining.map((attempt) => attempt.clientRequestId), ["key-2"]);
+  assert.equal(second.attempts.length, 2);
 });
