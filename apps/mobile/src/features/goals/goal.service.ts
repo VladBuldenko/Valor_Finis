@@ -1,4 +1,5 @@
 import { apiRequest } from "../../api/api-client";
+import { buildGoalPrioritiesRequest } from "./goal-priorities";
 
 import type {
   Goal,
@@ -46,6 +47,27 @@ export async function updateGoal(
   return apiRequest<Goal>(`/api/v1/goals/${goalId}`, {
     method: "PATCH",
     body: JSON.stringify(goalData),
+  });
+}
+
+/**
+ * Replaces the priority order of the user's non-archived Goals (VF-020D).
+ *
+ * goalIds is the COMPLETE ordered list of the user's current non-archived
+ * Goals (active and completed), highest priority first. The backend answers
+ * 200 with the complete canonical Goal list INCLUDING archived Goals, which
+ * is authoritative; 409 means the non-archived set changed since the client
+ * loaded it. The call is a naturally idempotent full-state replacement and
+ * carries no client_request_id.
+ */
+export async function updateGoalPriorities(
+  goalIds: string[],
+): Promise<Goal[]> {
+  const request = buildGoalPrioritiesRequest(goalIds);
+
+  return apiRequest<Goal[]>(request.path, {
+    method: request.method,
+    body: request.body,
   });
 }
 

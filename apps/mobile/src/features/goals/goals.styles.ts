@@ -248,4 +248,37 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
+  // --- Goal Priorities editor (VF-020D4) ---
+  priorityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  priorityRowText: {
+    flex: 1,
+    marginRight: 12,
+  },
+  priorityMoveGroup: {
+    flexDirection: "row",
+  },
+  priorityMoveButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 44,
+    height: 44,
+    marginLeft: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  priorityMoveButtonDisabled: {
+    opacity: 0.35,
+  },
+  priorityMoveButtonText: {
+    fontSize: 18,
+    fontWeight: "700",
+  },
 });

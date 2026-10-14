@@ -124,6 +124,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="goals/priorities"
+        options={{
+          title: "Goal Priorities",
+        }}
+      />
+      <Stack.Screen
         name="goals/new"
         options={{
           title: "Add Goal",
