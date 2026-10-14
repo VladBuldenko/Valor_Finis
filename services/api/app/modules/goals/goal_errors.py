@@ -233,3 +233,36 @@ class GoalLinkedTransactionDateError(Exception):
     """
 
     pass
+
+
+class GoalPriorityGoalArchivedError(Exception):
+    """
+    Raised when a priority reorder names an archived Goal.
+
+    What:
+        Represents an ineligible Goal in the reorder list (VF-020D3).
+
+    Why:
+        Only non-archived Goals are ranked; an archived Goal has no rank
+        and can never be part of the ordered set.
+    """
+
+    pass
+
+
+class GoalPrioritySetStaleError(Exception):
+    """
+    Raised when a priority reorder list is not exactly the user's current
+    non-archived Goal set.
+
+    What:
+        Represents a stale or incomplete reorder request (VF-020D3).
+
+    Why:
+        The client's list is a complete ordered set. If a Goal was created,
+        archived, reactivated or deleted since the client loaded it, the
+        server answers 409 so the client reloads and retries instead of
+        silently ranking a different set.
+    """
+
+    pass

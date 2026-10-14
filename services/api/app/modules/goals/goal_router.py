@@ -9,6 +9,7 @@ from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.goals import goal_service
 from app.modules.goals.goal_schemas import (
     GoalCreate,
+    GoalPriorityReorderRequest,
     GoalResponse,
     GoalUpdate,
 )
@@ -35,6 +36,25 @@ router = APIRouter(
 # - GoalResponse containing the saved financial goal.
 # Raises:
 # - Domain exceptions propagated to the global exception handlers.
+# Declared BEFORE every dynamic "/{goal_id}" route so the static path
+# "/goals/priorities" can never be captured as a goal id (VF-020D3).
+@router.put(
+    "/priorities",
+    response_model=list[GoalResponse],
+    status_code=status.HTTP_200_OK,
+)
+def reorder_goal_priorities(
+    reorder_data: GoalPriorityReorderRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> list[GoalResponse]:
+    return goal_service.reorder_goal_priorities(
+        db_session=db_session,
+        goal_ids=reorder_data.goal_ids,
+        user_id=current_user.id,
+    )
+
+
 @router.post(
     "",
     response_model=GoalResponse,

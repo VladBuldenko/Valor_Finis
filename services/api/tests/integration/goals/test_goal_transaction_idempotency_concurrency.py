@@ -359,21 +359,55 @@ def test_same_goal_waiter_with_different_payload_conflicts(
     assert _stored_amounts(user_id) == [Decimal("100.00")]
 
 
-# Tests the unique-violation recovery path: a same-key request for ANOTHER
-# goal is not serialized by the first goal's row lock, so its INSERT blocks
-# on the uncommitted key in uq_goal_transactions_user_id_client_request_id.
-# When the first request commits, the second INSERT fails on that
-# constraint; the service rolls back, reloads the winner and resolves a
-# conflict - no raw IntegrityError reaches the caller.
+# Tests the same-key request for ANOTHER goal of the same user under the user
+# lock L0 (VF-020D3): L0 serializes every Goal write of one user, so the second
+# request waits for the first to commit, then finds the key in its second
+# lookup and resolves a conflict - the unique constraint is never reached.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # - monkeypatch: pytest fixture used to gate create_transaction.
 # Returns:
-# - None. The test passes if the recovery path ran and one row exists.
-def test_other_goal_insert_race_recovers_from_unique_violation(
+# - None. The test passes if the conflict is resolved without a unique violation.
+def test_other_goal_race_is_serialized_by_l0(
     clean_database: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    user_id = uuid4()
+    first_goal = _create_goal(user_id)
+    second_goal = _create_goal(user_id)
+    key = uuid4()
+
+    results, lock_waiter_observed, unique_violations = _run_first_inserts_then_second(
+        monkeypatch,
+        _create(first_goal, user_id, _request(key)),
+        _create(second_goal, user_id, _request(key)),
+    )
+
+    assert lock_waiter_observed, "the second request never waited on L0"
+    assert results == {"first": "created", "second": "conflict"}
+    assert unique_violations == []
+    assert _row_count(user_id) == 1
+
+
+# Tests the unique-violation recovery path as defense in depth: with L0
+# disabled (monkeypatched to a no-op), a same-key request for ANOTHER goal is
+# not serialized by the first goal's row lock, so its INSERT blocks on the
+# uncommitted key in uq_goal_transactions_user_id_client_request_id. When the
+# first request commits, the second INSERT fails on that constraint; the
+# service rolls back, reloads the winner and resolves a conflict - no raw
+# IntegrityError reaches the caller.
+# Parameters:
+# - clean_database: Fixture that cleans database tables before and after the test.
+# - monkeypatch: pytest fixture used to gate create_transaction and disable L0.
+# Returns:
+# - None. The test passes if the recovery path ran and one row exists.
+def test_other_goal_insert_race_recovers_from_unique_violation_without_l0(
+    clean_database: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.goals import goal_user_lock
+
+    monkeypatch.setattr(goal_user_lock, "acquire_goal_user_lock", lambda db_session, user_id: None)
     user_id = uuid4()
     first_goal = _create_goal(user_id)
     second_goal = _create_goal(user_id)

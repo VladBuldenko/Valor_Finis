@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -37,6 +38,12 @@ class GoalModel(Base):
         currency: Currency code such as EUR or USD.
         target_date: Optional date when the user wants to reach the goal.
         status: Current goal state such as active, completed, or archived.
+        priority_rank: Goal priority, 1 = highest (VF-020D). Non-NULL for
+            ranked (non-archived) Goals, NULL for archived Goals and for
+            rows created between the D2 migration and the D3 runtime
+            (rollout stragglers, normalized by VF-020D5). Gaps are valid.
+            Changed only through the reorder endpoint and lifecycle rules,
+            under the user lock L0 - never from a client write payload.
         created_at: Record creation timestamp.
         updated_at: Record update timestamp.
 
@@ -67,6 +74,22 @@ class GoalModel(Base):
         # carry a (goal_id, user_id) -> goals(id, user_id) foreign key, so a
         # goal transaction can never belong to another user than its goal.
         UniqueConstraint("id", "user_id", name="uq_goals_id_user_id"),
+        # Priority rank (VF-020D2 objects, mapped since VF-020D3). The
+        # unique constraint is a deferrable backstop so a reorder can
+        # rewrite ranks inside one transaction; NULL ranks are distinct.
+        # The lifecycle check (status = 'archived') = (priority_rank IS NULL)
+        # is deliberately NOT here (VF-020D5).
+        CheckConstraint(
+            "priority_rank IS NULL OR priority_rank >= 1",
+            name="ck_goals_priority_rank_positive",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "priority_rank",
+            name="uq_goals_user_id_priority_rank",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         # Composite-unique FK target (VF-020B4): lets goal_transactions bind
         # (goal_id, user_id, currency) to the goal's own identity, owner and
         # currency at the database level.
@@ -115,6 +138,11 @@ class GoalModel(Base):
         nullable=False,
         default="active",
         server_default="active",
+    )
+
+    priority_rank: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(

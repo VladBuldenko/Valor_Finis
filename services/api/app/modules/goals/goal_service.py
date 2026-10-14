@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 from app.modules.accounts import account_repository, account_service
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
-from app.modules.goals import goal_repository, goal_transaction_repository
+from app.modules.goals import (
+    goal_repository,
+    goal_transaction_repository,
+    goal_user_lock,
+)
 from app.modules.goals.goal_errors import (
     GoalAccountCurrencyMismatchError,
     GoalAccountLinkInvalidError,
@@ -18,7 +22,10 @@ from app.modules.goals.goal_errors import (
     GoalDeletionNotAllowedError,
     GoalInsufficientFundsError,
     GoalLinkedTransactionDateError,
+    GoalNotFoundError,
     GoalPartitionInsufficientFundsError,
+    GoalPriorityGoalArchivedError,
+    GoalPrioritySetStaleError,
     GoalReservationCapacityError,
     GoalTransactionClientRequestIdTakenError,
     GoalTransactionEffectiveDateInFutureError,
@@ -108,6 +115,7 @@ def _build_goal_response(
         name=goal_model.name,
         target_amount=goal_model.target_amount,
         current_amount=tracked_amount + linked_amount,
+        priority_rank=goal_model.priority_rank,
         tracked_amount=tracked_amount,
         linked_amount=linked_amount,
         allocations=allocations,
@@ -149,11 +157,32 @@ def create_goal(
     goal_data: GoalCreate,
     user_id: UUID,
 ) -> GoalResponse:
-    goal_model = goal_repository.create_goal(
-        db_session=db_session,
-        goal_data=goal_data,
-        user_id=user_id,
-    )
+    # One transaction: L0 -> rank allocation -> insert -> single commit
+    # (VF-020D3). A non-archived Goal is appended last
+    # (COALESCE(MAX(priority_rank), 0) + 1, gaps not compacted); an archived
+    # Goal has no rank.
+    try:
+        goal_user_lock.acquire_goal_user_lock(db_session, user_id)
+
+        priority_rank = None
+
+        if goal_data.status != "archived":
+            priority_rank = (
+                goal_repository.get_max_priority_rank(db_session, user_id) + 1
+            )
+
+        goal_model = goal_repository.create_goal(
+            db_session=db_session,
+            goal_data=goal_data,
+            user_id=user_id,
+            priority_rank=priority_rank,
+            commit=False,
+        )
+
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
 
     return _build_goal_response(
         goal_model,
@@ -235,31 +264,58 @@ def update_goal(
     goal_data: GoalUpdate,
     user_id: UUID,
 ) -> GoalResponse:
-    goal_model = goal_repository.get_goal_by_id_for_update(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
+    # One transaction: L0 -> Goal FOR UPDATE -> validation -> rank handling
+    # -> flush -> single commit (VF-020D3). Rank rules: a status change to
+    # archived clears the rank (no compaction); archived -> active/completed
+    # appends the Goal last; active <-> completed and every non-status edit
+    # leave the rank unchanged. A non-archived Goal that still has a NULL rank
+    # (rollout straggler) is NOT ranked by an unrelated edit - normalization
+    # belongs to VF-020D5.
+    try:
+        goal_user_lock.acquire_goal_user_lock(db_session, user_id)
 
-    if "currency" in goal_data.model_fields_set:
-        is_actual_currency_change = goal_data.currency != goal_model.currency
+        goal_model = goal_repository.get_goal_by_id_for_update(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        )
 
-        if is_actual_currency_change:
-            has_history = goal_transaction_repository.has_transactions_for_goal(
-                db_session=db_session,
-                goal_id=goal_id,
-                user_id=user_id,
-            )
+        if "currency" in goal_data.model_fields_set:
+            is_actual_currency_change = goal_data.currency != goal_model.currency
 
-            if has_history:
-                db_session.rollback()
-                raise GoalCurrencyImmutableError()
+            if is_actual_currency_change:
+                has_history = goal_transaction_repository.has_transactions_for_goal(
+                    db_session=db_session,
+                    goal_id=goal_id,
+                    user_id=user_id,
+                )
 
-    goal_model = goal_repository.apply_goal_update(
-        db_session=db_session,
-        goal_model=goal_model,
-        goal_data=goal_data,
-    )
+                if has_history:
+                    raise GoalCurrencyImmutableError()
+
+        previous_status = goal_model.status
+
+        if "status" in goal_data.model_fields_set and goal_data.status is not None:
+            new_status = goal_data.status
+
+            if new_status == "archived" and previous_status != "archived":
+                goal_model.priority_rank = None
+            elif previous_status == "archived" and new_status != "archived":
+                goal_model.priority_rank = (
+                    goal_repository.get_max_priority_rank(db_session, user_id) + 1
+                )
+
+        goal_model = goal_repository.apply_goal_update(
+            db_session=db_session,
+            goal_model=goal_model,
+            goal_data=goal_data,
+            commit=False,
+        )
+
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
 
     return _build_goal_response(
         goal_model,
@@ -301,26 +357,93 @@ def delete_goal(
     goal_id: UUID,
     user_id: UUID,
 ) -> None:
-    goal_model = goal_repository.get_goal_by_id_for_update(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
+    # One transaction: L0 -> Goal FOR UPDATE -> history check -> delete ->
+    # single commit (VF-020D3). The hard delete leaves a rank gap.
+    try:
+        goal_user_lock.acquire_goal_user_lock(db_session, user_id)
 
-    has_history = goal_transaction_repository.has_transactions_for_goal(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
+        goal_model = goal_repository.get_goal_by_id_for_update(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        )
 
-    if has_history:
+        has_history = goal_transaction_repository.has_transactions_for_goal(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        )
+
+        if has_history:
+            raise GoalDeletionNotAllowedError()
+
+        goal_repository.delete_locked_goal(
+            db_session=db_session,
+            goal_model=goal_model,
+            commit=False,
+        )
+
+        db_session.commit()
+    except Exception:
         db_session.rollback()
-        raise GoalDeletionNotAllowedError()
+        raise
 
-    goal_repository.delete_locked_goal(
-        db_session=db_session,
-        goal_model=goal_model,
-    )
+
+# Reorders the user's non-archived Goals (PUT /goals/priorities, VF-020D3).
+# One transaction: L0 -> every Goal of the user FOR UPDATE (ascending id) ->
+# validation -> rank rewrite 1..n -> single commit. Validation precedence:
+# (1) every supplied id must be one of the user's Goals (unknown and foreign
+# ids are indistinguishable: 404); (2) a supplied archived Goal is 409;
+# (3) the supplied set must equal the user's CURRENT non-archived set (a
+# missing Goal - including a rollout straggler - is a stale set: 409). The
+# unique constraint is deferred, so the rewrite is checked once, at commit.
+# Nothing but goals.priority_rank is written.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_ids: the complete ordered list, highest priority first.
+# - user_id: authenticated user identifier.
+# Returns:
+# - The complete canonical Goal list (archived included).
+# Raises:
+# - GoalNotFoundError, GoalPriorityGoalArchivedError,
+#   GoalPrioritySetStaleError.
+def reorder_goal_priorities(
+    db_session: Session,
+    goal_ids: list[UUID],
+    user_id: UUID,
+) -> list[GoalResponse]:
+    try:
+        goal_user_lock.acquire_goal_user_lock(db_session, user_id)
+
+        goal_models = goal_repository.get_all_goals_for_update(db_session, user_id)
+        goals_by_id = {goal_model.id: goal_model for goal_model in goal_models}
+
+        for goal_id in goal_ids:
+            if goal_id not in goals_by_id:
+                raise GoalNotFoundError()
+
+        for goal_id in goal_ids:
+            if goals_by_id[goal_id].status == "archived":
+                raise GoalPriorityGoalArchivedError()
+
+        current_set = {
+            goal_model.id
+            for goal_model in goal_models
+            if goal_model.status != "archived"
+        }
+
+        if set(goal_ids) != current_set:
+            raise GoalPrioritySetStaleError()
+
+        for index, goal_id in enumerate(goal_ids, start=1):
+            goals_by_id[goal_id].priority_rank = index
+
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
+
+    return get_goals(db_session=db_session, user_id=user_id)
 
 
 # Returns whether a stored goal transaction was created from exactly this
@@ -598,11 +721,20 @@ def create_or_replay_goal_transaction(
     elif requested_date is not None and requested_date > today:
         raise GoalTransactionEffectiveDateInFutureError()
 
-    goal_model = goal_repository.get_goal_by_id_for_update(
-        db_session=db_session,
-        goal_id=goal_id,
-        user_id=user_id,
-    )
+    # New-write transaction (VF-020D3): L0 FIRST (the lookup transaction was
+    # ended above, so no goal_transactions lock is held while waiting), then
+    # the Goal row, then the Account where required.
+    goal_user_lock.acquire_goal_user_lock(db_session, user_id)
+
+    try:
+        goal_model = goal_repository.get_goal_by_id_for_update(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        )
+    except GoalNotFoundError:
+        db_session.rollback()
+        raise
 
     account_model = None
 

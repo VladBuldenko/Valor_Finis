@@ -768,19 +768,34 @@ def test_goal_and_account_currency_must_both_match_the_row(c1_database: Engine) 
     assert _row_count(c1_database) == 1
 
 
-# Tests that, since VF-020C2 maps account_id, Alembic's own comparison of the
-# ORM metadata against a database at the C1 revision reports NO difference at
-# all (the ORM and the C1 schema are in sync; CHECK constraints are not
-# compared by Alembic and are covered by the mapping test above).
+# Tests that Alembic's own comparison of the ORM metadata against a database at
+# the C1 revision reports ONLY the later D2 objects (VF-020D3 maps
+# goals.priority_rank and its unique constraint, which a C1 database does not
+# have yet): nothing about the C1 objects (account_id, its index and foreign
+# key) differs. The full "no difference at all" check against the D2 schema is
+# in test_goal_priority_rank_schema_migration.py. CHECK constraints are not
+# compared by Alembic and are covered by the mapping test above.
 # Parameters:
 # - c1_database: throwaway database at the C1 revision.
 # Returns:
-# - None. The test passes if the difference set is empty.
-def test_orm_metadata_matches_c1_database_exactly(c1_database: Engine) -> None:
+# - None. The test passes if the difference set is exactly the D2 objects.
+def test_orm_metadata_differs_from_c1_database_only_by_the_d2_objects(c1_database: Engine) -> None:
     import_database_models()
 
     with c1_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    flat = []
+    for difference in differences:
+        flat.extend(difference if isinstance(difference, list) else [difference])
+    summary = set()
+    for difference in flat:
+        kind = difference[0]
+        target = difference[3] if kind == "add_column" else difference[1]
+        summary.add((kind, getattr(target, "name", None)))
+
+    assert summary == {
+        ("add_column", "priority_rank"),
+        ("add_constraint", "uq_goals_user_id_priority_rank"),
+    }

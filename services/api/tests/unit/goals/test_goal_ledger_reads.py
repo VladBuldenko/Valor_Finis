@@ -230,13 +230,14 @@ def test_get_goals_zero_transaction_goal_remains_visible(clean_database: None) -
         db_session.close()
 
 
-# Tests that get_goals ordering remains created_at DESC, unaffected by the
-# ledger-balance lookup.
+# Tests that get_goals follows the canonical order since VF-020D3 (not
+# created_at DESC): non-archived rank-NULL Goals come back oldest first,
+# unaffected by the ledger-balance lookup.
 # Parameters:
 # - clean_database: Fixture that cleans database tables before and after the test.
 # Returns:
-# - None. The test passes if goals are returned newest-first.
-def test_get_goals_ordering_remains_created_at_desc(clean_database: None) -> None:
+# - None. The test passes if goals are returned by priority rank.
+def test_get_goals_orders_rank_null_stragglers_oldest_first(clean_database: None) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
@@ -248,10 +249,14 @@ def test_get_goals_ordering_remains_created_at_desc(clean_database: None) -> Non
         goals = goal_service.get_goals(db_session=db_session, user_id=user_id)
 
         assert [goal.id for goal in goals] == [
-            third_goal.id,
-            second_goal.id,
             first_goal.id,
+            second_goal.id,
+            third_goal.id,
         ]
+        # These rows were inserted through the repository without a rank
+        # (like Goals created between the D2 migration and the D3 runtime), so
+        # they are non-archived rank-NULL stragglers ordered by created_at ASC.
+        assert [goal.priority_rank for goal in goals] == [None, None, None]
     finally:
         db_session.close()
 
