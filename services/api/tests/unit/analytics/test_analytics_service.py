@@ -9,6 +9,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 from pytest import MonkeyPatch
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal, engine
 from app.modules.analytics import analytics_service
 from app.modules.budgets import budget_service, budget_version_repository
@@ -3210,7 +3211,7 @@ def test_get_goal_progress_does_not_n_plus_1_query_ledger_balances(
 
     try:
         for index in range(5):
-            goal = goal_repository.create_goal(
+            goal = create_repository_goal(
                 db_session=db_session,
                 goal_data=GoalCreate(
                     name=f"Goal {index}",

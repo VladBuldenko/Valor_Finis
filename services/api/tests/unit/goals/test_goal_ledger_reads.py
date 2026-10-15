@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import event, text
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal, engine
 from app.modules.goals import goal_repository, goal_service, goal_transaction_repository
 from app.modules.goals.goal_models import GoalModel
@@ -11,7 +12,7 @@ from app.modules.goals.goal_transaction_schemas import GoalTransactionCreate
 
 
 def _create_goal(db_session, user_id, target_amount=Decimal("2000")) -> GoalModel:
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Vacation",
@@ -243,9 +244,17 @@ def test_get_goals_orders_rank_null_stragglers_oldest_first(pre_d5_goals_schema:
     user_id = uuid4()
 
     try:
-        first_goal = _create_goal(db_session, user_id)
-        second_goal = _create_goal(db_session, user_id)
-        third_goal = _create_goal(db_session, user_id)
+        # Rank-NULL rows are created through the repository EXPLICITLY (the
+        # pre-D5 state), not through the rank-assigning test helper.
+        first_goal, second_goal, third_goal = (
+            goal_repository.create_goal(
+                db_session=db_session,
+                goal_data=GoalCreate(name="Vacation", target_amount=Decimal("2000"), currency="EUR"),
+                user_id=user_id,
+                priority_rank=None,
+            )
+            for _ in range(3)
+        )
 
         goals = goal_service.get_goals(db_session=db_session, user_id=user_id)
 

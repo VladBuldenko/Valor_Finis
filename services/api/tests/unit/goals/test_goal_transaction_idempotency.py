@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import text
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_service
 from app.modules.goals.goal_errors import (
@@ -30,7 +31,7 @@ LAST_WEEK = date(2026, 9, 28)
 
 
 def _create_goal(db_session, user_id, currency="EUR") -> GoalModel:
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(name="Vacation", target_amount=Decimal("2000"), currency=currency),
         user_id=user_id,
