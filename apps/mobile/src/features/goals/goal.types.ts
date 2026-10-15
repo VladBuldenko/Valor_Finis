@@ -30,6 +30,12 @@ export type Goal = {
   tracked_amount: string;
   linked_amount: string;
   allocations: GoalAllocation[];
+  // VF-020D priority, 1 = highest. Read-only: it changes only through
+  // PUT /goals/priorities. null for archived Goals and for non-archived
+  // "rollout stragglers" that the backend has not ranked yet (a supported
+  // state until VF-020D5), so never assume a non-archived Goal has a rank and
+  // never use it as financial data. The backend list order is authoritative.
+  priority_rank: number | null;
   currency: string;
   target_date: string | null;
   status: GoalStatus;

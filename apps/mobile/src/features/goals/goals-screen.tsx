@@ -166,6 +166,16 @@ export function GoalsScreen() {
           </Pressable>
         </Link>
 
+        <Link href="/goals/priorities" asChild>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Choose which goals are more important"
+            style={styles.editButton}
+          >
+            <Text style={styles.editButtonText}>Priorities</Text>
+          </Pressable>
+        </Link>
+
         <View style={styles.typeToggleRow}>
           <Pressable
             accessibilityRole="button"
