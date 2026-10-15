@@ -14,6 +14,7 @@ from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.financial_settings.financial_settings_models import (
     UserFinancialSettingsModel,
 )
+from app.modules.goals import goal_repository
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from app.modules.income.income_models import IncomeModel
@@ -43,6 +44,74 @@ def pytest_configure(config: pytest.Config) -> None:
         validate_test_database_url(engine.url)
     except UnsafeTestDatabaseError as error:
         raise pytest.UsageError(str(error)) from None
+
+
+# Ranks Goals that tests create directly through the repository, exactly the
+# way the service does (VF-020D5).
+# Since D5 the database rejects a non-archived Goal without a priority_rank
+# (CHECK ck_goals_priority_rank_lifecycle). The production service always
+# passes a rank computed under the user lock, but many unit tests build their
+# fixtures with goal_repository.create_goal directly and never cared about
+# ranks. This fixture gives such a call the next rank (COALESCE(MAX,0)+1) when
+# the test did not pass one and the Goal is not archived; an explicit rank,
+# an archived Goal and every service call (which passes a rank itself) are
+# untouched. Tests that need a rank-NULL non-archived row (a pre-D5 state) use
+# the pre_d5_goals_schema fixture instead.
+@pytest.fixture(autouse=True)
+def rank_goals_created_through_the_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    # A test that opted into the pre-D5 schema wants rank-NULL rows from the
+    # repository exactly as the old runtime wrote them.
+    if "pre_d5_goals_schema" in request.fixturenames:
+        return
+
+    original_create_goal = goal_repository.create_goal
+
+    def create_goal_with_rank(
+        db_session, goal_data, user_id, priority_rank=None, commit=True,
+    ):
+        if priority_rank is None and goal_data.status != "archived":
+            priority_rank = (
+                goal_repository.get_max_priority_rank(db_session, user_id) + 1
+            )
+
+        return original_create_goal(
+            db_session=db_session,
+            goal_data=goal_data,
+            user_id=user_id,
+            priority_rank=priority_rank,
+            commit=commit,
+        )
+
+    monkeypatch.setattr(goal_repository, "create_goal", create_goal_with_rank)
+
+
+# Lets a test create non-archived Goals with a NULL priority_rank, the state
+# the pre-D5 runtime could leave behind. It drops the D5 lifecycle CHECK for
+# the test and, on teardown, deletes every Goal and Goal transaction and
+# re-adds the CHECK, so the shared test database is left exactly at the
+# current head schema. Use together with clean_database.
+@pytest.fixture
+def pre_d5_goals_schema(clean_database: None) -> Generator[None, None, None]:
+    validate_test_database_url(engine.url)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE goals DROP CONSTRAINT IF EXISTS ck_goals_priority_rank_lifecycle"
+        )
+
+    try:
+        yield
+    finally:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM goal_transactions")
+            connection.exec_driver_sql("DELETE FROM goals")
+            connection.exec_driver_sql(
+                "ALTER TABLE goals ADD CONSTRAINT ck_goals_priority_rank_lifecycle "
+                "CHECK ((status = 'archived') = (priority_rank IS NULL))"
+            )
 
 
 # Creates a reusable FastAPI test client.

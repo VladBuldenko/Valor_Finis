@@ -137,7 +137,9 @@ def test_non_status_edit_preserves_rank_and_delete_leaves_a_gap(client: TestClie
     assert fourth["priority_rank"] == 4
 
 
-def test_unrelated_edit_does_not_rank_a_rollout_straggler(client: TestClient, clean_database: None) -> None:
+def test_unrelated_edit_does_not_rank_a_rollout_straggler(
+    client: TestClient, pre_d5_goals_schema: None,
+) -> None:
     user_id = str(uuid4())
     ranked = _create(client, user_id, "Ranked")["id"]
     straggler = _create(client, user_id, "Straggler")["id"]
@@ -185,7 +187,9 @@ def test_response_paths_expose_priority_rank(client: TestClient, clean_database:
 # Tests the exact canonical GET order: ranked by rank ASC, then non-archived
 # rank-NULL stragglers by created_at ASC / id ASC, then archived by
 # created_at DESC / id ASC, with equal timestamps resolved by id.
-def test_canonical_order_mixes_ranked_stragglers_and_archived(client: TestClient, clean_database: None) -> None:
+def test_canonical_order_mixes_ranked_stragglers_and_archived(
+    client: TestClient, pre_d5_goals_schema: None,
+) -> None:
     user_id = str(uuid4())
     same = datetime(2026, 3, 1, tzinfo=timezone.utc)
     low, high = UUID(int=2), UUID(int=9)
@@ -332,7 +336,7 @@ def test_empty_list_is_200_only_without_non_archived_goals(client: TestClient, c
 
 
 def test_rollout_straggler_is_part_of_the_required_set_and_becomes_ranked(
-    client: TestClient, clean_database: None,
+    client: TestClient, pre_d5_goals_schema: None,
 ) -> None:
     user_id = str(uuid4())
     ranked = _create(client, user_id, "R")["id"]

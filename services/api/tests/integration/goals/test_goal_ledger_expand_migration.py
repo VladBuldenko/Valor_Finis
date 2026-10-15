@@ -41,8 +41,13 @@ def _insert_goal(
     goal_id = uuid4()
     session.execute(
         text(
-            "INSERT INTO goals (id, user_id, name, target_amount, currency, status) "
-            "VALUES (:id, :user_id, 'Goal', 100, :currency, :status)"
+            # priority_rank is set the way the service does (VF-020D5): the
+            # next rank for a non-archived Goal, NULL for an archived one, so
+            # these checks still exercise only the constraint under test.
+            "INSERT INTO goals (id, user_id, name, target_amount, currency, status, priority_rank) "
+            "VALUES (:id, :user_id, 'Goal', 100, :currency, :status, "
+            "CASE WHEN CAST(:status AS TEXT) = 'archived' THEN NULL ELSE "
+            "COALESCE((SELECT MAX(priority_rank) FROM goals WHERE user_id = :user_id), 0) + 1 END)"
         ),
         {
             "id": str(goal_id),

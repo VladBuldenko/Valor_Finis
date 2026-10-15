@@ -232,12 +232,13 @@ def test_get_goals_zero_transaction_goal_remains_visible(clean_database: None) -
 
 # Tests that get_goals follows the canonical order since VF-020D3 (not
 # created_at DESC): non-archived rank-NULL Goals come back oldest first,
-# unaffected by the ledger-balance lookup.
+# unaffected by the ledger-balance lookup. Runs under pre_d5_goals_schema,
+# because the D5 database forbids rank-NULL non-archived Goals.
 # Parameters:
-# - clean_database: Fixture that cleans database tables before and after the test.
+# - pre_d5_goals_schema: Fixture that drops the lifecycle CHECK for the test.
 # Returns:
 # - None. The test passes if goals are returned by priority rank.
-def test_get_goals_orders_rank_null_stragglers_oldest_first(clean_database: None) -> None:
+def test_get_goals_orders_rank_null_stragglers_oldest_first(pre_d5_goals_schema: None) -> None:
     db_session = SessionLocal()
     user_id = uuid4()
 
