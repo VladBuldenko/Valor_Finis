@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import uuid4
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals import goal_service
@@ -35,7 +36,7 @@ def test_concurrent_withdrawals_cannot_overdraw_goal(clean_database: None) -> No
     user_id = uuid4()
 
     try:
-        goal = goal_repository.create_goal(
+        goal = create_repository_goal(
             db_session=setup_session,
             goal_data=GoalCreate(
                 name="Emergency fund",

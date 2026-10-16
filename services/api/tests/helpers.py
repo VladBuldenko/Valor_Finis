@@ -2,6 +2,11 @@ from typing import Any, Optional, Union
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.modules.goals import goal_repository
+from app.modules.goals.goal_models import GoalModel
+from app.modules.goals.goal_schemas import GoalCreate
 
 
 # Builds authentication headers for test requests.
@@ -375,3 +380,45 @@ def create_account_transfer(
     assert response.status_code == expected_status, response.text
 
     return response.json()
+
+
+# Creates a Goal row for TEST SETUP through the repository with an EXPLICIT
+# priority_rank that is valid under the D5 schema (VF-020D5).
+# This helper exists for tests whose purpose is not rank allocation but which
+# need a database-valid Goal fixture: since D5 the database rejects a
+# non-archived Goal without a rank, and goal_repository.create_goal itself
+# deliberately never invents one (the production service allocates it under
+# the user lock). It is plain, explicit setup - not a monkeypatch, not
+# autouse, never used by app code, and it never touches goal_service.
+# Tests of Goal create / rank allocation must go through goal_service or
+# POST /api/v1/goals instead.
+# Parameters:
+# - db_session: SQLAlchemy session used for the setup.
+# - goal_data: validated Goal creation data.
+# - user_id: owner of the Goal.
+# - priority_rank: explicit rank; when omitted, a non-archived Goal gets the
+#   user's current max rank + 1 and an archived Goal gets None.
+# - commit: forwarded to the repository.
+# Returns:
+# - The created GoalModel.
+def create_repository_goal(
+    db_session: Session,
+    goal_data: GoalCreate,
+    user_id: Any,
+    priority_rank: Optional[int] = None,
+    commit: bool = True,
+) -> GoalModel:
+    if goal_data.status == "archived":
+        rank = None
+    elif priority_rank is not None:
+        rank = priority_rank
+    else:
+        rank = goal_repository.get_max_priority_rank(db_session, user_id) + 1
+
+    return goal_repository.create_goal(
+        db_session=db_session,
+        goal_data=goal_data,
+        user_id=user_id,
+        priority_rank=rank,
+        commit=commit,
+    )

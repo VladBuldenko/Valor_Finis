@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.accounts import account_service
 from app.modules.accounts.account_errors import (
@@ -38,7 +39,7 @@ AS_OF = date.today()
 def _create_goal(user_id: UUID) -> UUID:
     db_session = SessionLocal()
     try:
-        return goal_repository.create_goal(
+        return create_repository_goal(
             db_session=db_session,
             goal_data=GoalCreate(name="Vacation", target_amount=Decimal("2000"), currency="EUR"),
             user_id=user_id,

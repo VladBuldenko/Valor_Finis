@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository
 from app.modules.goals.goal_errors import GoalNotFoundError
@@ -34,7 +35,7 @@ def test_create_goal_creates_new_goal(clean_database: None) -> None:
 
     try:
         # Act
-        created_goal = goal_repository.create_goal(
+        created_goal = create_repository_goal(
             db_session=db_session,
             goal_data=goal_data,
             user_id=user_id,
@@ -84,12 +85,12 @@ def test_get_goals_returns_goals_for_user(clean_database: None) -> None:
     )
 
     try:
-        goal_repository.create_goal(
+        create_repository_goal(
             db_session=db_session,
             goal_data=user_goal_data,
             user_id=user_id,
         )
-        goal_repository.create_goal(
+        create_repository_goal(
             db_session=db_session,
             goal_data=other_user_goal_data,
             user_id=other_user_id,
@@ -128,7 +129,7 @@ def test_get_goal_by_id_for_update_returns_owned_goal(clean_database: None) -> N
     user_id = uuid4()
 
     try:
-        created_goal = goal_repository.create_goal(
+        created_goal = create_repository_goal(
             db_session=db_session,
             goal_data=GoalCreate(
                 name="Vacation",
@@ -169,7 +170,7 @@ def test_get_goal_by_id_for_update_raises_not_found_for_other_user(
     other_user_id = uuid4()
 
     try:
-        created_goal = goal_repository.create_goal(
+        created_goal = create_repository_goal(
             db_session=db_session,
             goal_data=GoalCreate(
                 name="Vacation",
@@ -218,3 +219,65 @@ def test_get_goals_requires_user_id() -> None:
 
     assert user_id_parameter.default is inspect.Parameter.empty
     assert user_id_parameter.annotation is UUID
+
+
+# VF-020D5 boundary tests: the repository never invents a rank and nothing in
+# the test infrastructure repairs it, while the production service does assign
+# one. Together they would catch a service that stopped allocating ranks.
+
+# Tests that, under the D5 schema, creating a NON-ARCHIVED Goal through the
+# repository with priority_rank=None is rejected by the lifecycle CHECK: no
+# fixture or helper supplies a rank on the caller's behalf.
+def test_repository_does_not_invent_a_rank_for_a_non_archived_goal(clean_database: None) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        with pytest.raises(IntegrityError) as error:
+            goal_repository.create_goal(
+                db_session=db_session,
+                goal_data=GoalCreate(name="No rank", target_amount=Decimal("100"), currency="EUR", status="active"),
+                user_id=user_id,
+                priority_rank=None,
+            )
+
+        assert error.value.orig.diag.constraint_name == "ck_goals_priority_rank_lifecycle"
+        db_session.rollback()
+        assert goal_repository.get_goals(db_session=db_session, user_id=user_id) == []
+    finally:
+        db_session.close()
+
+
+# Tests the other half of the boundary: an archived Goal is created without a
+# rank by the repository, and the production service assigns a non-NULL rank
+# to a non-archived Goal (and none to an archived one).
+def test_service_assigns_rank_while_repository_default_is_null(clean_database: None) -> None:
+    from app.modules.goals import goal_service
+
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        archived = goal_repository.create_goal(
+            db_session=db_session,
+            goal_data=GoalCreate(name="Arch", target_amount=Decimal("100"), currency="EUR", status="archived"),
+            user_id=user_id,
+        )
+        assert archived.priority_rank is None
+
+        first = goal_service.create_goal(
+            db_session, GoalCreate(name="A", target_amount=Decimal("100"), currency="EUR"), user_id,
+        )
+        second = goal_service.create_goal(
+            db_session, GoalCreate(name="B", target_amount=Decimal("100"), currency="EUR", status="completed"), user_id,
+        )
+        archived_by_service = goal_service.create_goal(
+            db_session, GoalCreate(name="C", target_amount=Decimal("100"), currency="EUR", status="archived"), user_id,
+        )
+
+        assert (first.priority_rank, second.priority_rank) == (1, 2)
+        assert archived_by_service.priority_rank is None
+    finally:
+        db_session.close()

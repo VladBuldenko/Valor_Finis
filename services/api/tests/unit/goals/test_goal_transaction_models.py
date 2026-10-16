@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository
 from app.modules.goals.goal_models import GoalModel
@@ -12,7 +13,7 @@ from app.modules.goals.goal_transaction_models import GoalTransactionModel
 
 
 def _create_goal(db_session, user_id) -> GoalModel:
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Emergency fund",

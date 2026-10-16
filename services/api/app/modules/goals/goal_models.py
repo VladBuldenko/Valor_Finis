@@ -41,7 +41,8 @@ class GoalModel(Base):
         priority_rank: Goal priority, 1 = highest (VF-020D). Non-NULL for
             ranked (non-archived) Goals, NULL for archived Goals and for
             rows created between the D2 migration and the D3 runtime
-            (rollout stragglers, normalized by VF-020D5). Gaps are valid.
+            (rollout stragglers); VF-020D5 normalized those and made the
+            lifecycle invariant a database CHECK. Gaps are valid.
             Changed only through the reorder endpoint and lifecycle rules,
             under the user lock L0 - never from a client write payload.
         created_at: Record creation timestamp.
@@ -77,8 +78,8 @@ class GoalModel(Base):
         # Priority rank (VF-020D2 objects, mapped since VF-020D3). The
         # unique constraint is a deferrable backstop so a reorder can
         # rewrite ranks inside one transaction; NULL ranks are distinct.
-        # The lifecycle check (status = 'archived') = (priority_rank IS NULL)
-        # is deliberately NOT here (VF-020D5).
+        # The lifecycle CHECK (VF-020D5): archived Goals have no rank and every
+        # active or completed Goal has one.
         CheckConstraint(
             "priority_rank IS NULL OR priority_rank >= 1",
             name="ck_goals_priority_rank_positive",
@@ -89,6 +90,10 @@ class GoalModel(Base):
             name="uq_goals_user_id_priority_rank",
             deferrable=True,
             initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "(status = 'archived') = (priority_rank IS NULL)",
+            name="ck_goals_priority_rank_lifecycle",
         ),
         # Composite-unique FK target (VF-020B4): lets goal_transactions bind
         # (goal_id, user_id, currency) to the goal's own identity, owner and

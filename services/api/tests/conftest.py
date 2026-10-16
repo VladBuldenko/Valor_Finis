@@ -45,6 +45,33 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError(str(error)) from None
 
 
+# Lets a test create non-archived Goals with a NULL priority_rank, the state
+# the pre-D5 runtime could leave behind. It is OPT-IN (never autouse) and only
+# relaxes the D5 lifecycle CHECK; nothing in it ranks Goals on anyone's behalf. It drops the D5 lifecycle CHECK for
+# the test and, on teardown, deletes every Goal and Goal transaction and
+# re-adds the CHECK, so the shared test database is left exactly at the
+# current head schema.
+@pytest.fixture
+def pre_d5_goals_schema(clean_database: None) -> Generator[None, None, None]:
+    validate_test_database_url(engine.url)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE goals DROP CONSTRAINT IF EXISTS ck_goals_priority_rank_lifecycle"
+        )
+
+    try:
+        yield
+    finally:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM goal_transactions")
+            connection.exec_driver_sql("DELETE FROM goals")
+            connection.exec_driver_sql(
+                "ALTER TABLE goals ADD CONSTRAINT ck_goals_priority_rank_lifecycle "
+                "CHECK ((status = 'archived') = (priority_rank IS NULL))"
+            )
+
+
 # Creates a reusable FastAPI test client.
 # This fixture exists to avoid creating TestClient separately in every integration test file.
 # Parameters:

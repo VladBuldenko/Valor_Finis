@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import inspect, text
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal, engine
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals.goal_schemas import GoalCreate
@@ -33,7 +34,7 @@ _RECONSTRUCTION_SQL = """
 
 
 def _create_goal(db_session, user_id, target_amount=Decimal("1000")):
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Vacation",

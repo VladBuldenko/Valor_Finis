@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals import goal_service
@@ -20,7 +21,7 @@ from app.modules.goals.goal_transaction_schemas import (
 
 
 def _create_goal(db_session, user_id, target_amount=Decimal("2000")):
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(
             name="Vacation",
@@ -604,7 +605,7 @@ def test_create_goal_transaction_goal_created_archived_rejects_contribution(
     user_id = uuid4()
 
     try:
-        goal = goal_repository.create_goal(
+        goal = create_repository_goal(
             db_session=db_session,
             goal_data=GoalCreate(
                 name="Old plan",

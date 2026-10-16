@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import text
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_transaction_repository
 from app.modules.goals import goal_service
@@ -48,7 +49,7 @@ def test_concurrent_currency_change_vs_first_contribution(clean_database: None) 
     user_id = uuid4()
 
     try:
-        goal = goal_repository.create_goal(
+        goal = create_repository_goal(
             db_session=setup_session,
             goal_data=GoalCreate(
                 name="Vacation", target_amount=Decimal("1000"), currency="EUR",
@@ -167,7 +168,7 @@ def test_concurrent_delete_vs_first_contribution(clean_database: None) -> None:
     user_id = uuid4()
 
     try:
-        goal = goal_repository.create_goal(
+        goal = create_repository_goal(
             db_session=setup_session,
             goal_data=GoalCreate(
                 name="Vacation", target_amount=Decimal("1000"), currency="EUR",
@@ -308,7 +309,7 @@ def _wait_for_lock_waiter(timeout_seconds: float = 10.0) -> bool:
 def _create_goal_with_contribution(user_id: UUID) -> UUID:
     session = SessionLocal()
     try:
-        goal = goal_repository.create_goal(
+        goal = create_repository_goal(
             db_session=session,
             goal_data=GoalCreate(
                 name="Vacation", target_amount=Decimal("1000"), currency="EUR",

@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
+from tests.helpers import create_repository_goal
 from app.db.database_session import SessionLocal
 from app.modules.goals import goal_repository, goal_service, goal_transaction_repository
 from app.modules.goals.goal_errors import (
@@ -16,7 +17,7 @@ from app.modules.goals.goal_schemas import GoalCreate, GoalUpdate
 
 
 def _create_goal(db_session, user_id, currency="EUR", target_amount=Decimal("2000")) -> GoalModel:
-    return goal_repository.create_goal(
+    return create_repository_goal(
         db_session=db_session,
         goal_data=GoalCreate(name="Vacation", target_amount=target_amount, currency=currency),
         user_id=user_id,
