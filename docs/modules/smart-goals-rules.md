@@ -691,24 +691,38 @@ when `projected_reservable < minimum_unallocated_floor`. Active holds do **not**
 take part in this condition: a manual operation never receives a "floor
 breached" warning merely because soft CONFIRM holds reduce `rule_capacity`.
 
-The `POST /api/v1/goals/{id}/transactions` response gains an additive field:
+The `POST /api/v1/goals/{id}/transactions` response gains an additive field.
+**E5 shape (exact):** an empty list, or one object with exactly these keys; E5 does
+**not** expose `projected_rule_capacity`, because E5 must not query
+`rule_executions`, `rule_execution_items` or active holds (they do not exist until
+E6 / E7):
 
 ```
 "warnings": []
 "warnings": [{"code": "minimum_unallocated_floor",
               "minimum_unallocated_floor": "1000.00",
-              "projected_reservable_amount": "700.00",
-              "projected_rule_capacity": "700.00"}]
+              "projected_reservable_amount": "700.00"}]
 ```
 
-`projected_rule_capacity` may include the current active holds as informational
-state; it never activates the warning. The warning is advisory, **not
+`projected_reservable_amount = reservable_amount − contribution amount`, and the
+warning is activated **only** by `projected_reservable_amount < minimum_unallocated_floor`.
+
+**E7 additive field.** Once the E6 schema is in production and the E7 runtime
+computes holds, the same warning object may gain an advisory
+`projected_rule_capacity = projected_reservable_amount − minimum_unallocated_floor − active_rule_holds`
+(the §8.1 `rule_capacity` formula applied to the projected state; it can be
+negative, for example 700.00 − 1000.00 − 0.00 = −300.00). This is additive API
+evolution. The warning is **still** activated only by
+`projected_reservable_amount < minimum_unallocated_floor`, never by
+`projected_rule_capacity < 0`; soft holds alone never cause the manual warning.
+The warning is advisory, **not
 persisted**, not part of the idempotency payload, never creates a money row and
 never blocks the reservation. The historical `GET` GoalTransaction schema is not
 changed; the warning is carried by an additive POST response model (subtype).
 On an occupied-key replay the original stored GoalTransaction is returned and
 `warnings` is **recomputed from the current** Account and floor state, so the
-financial effect of the replay is identical even when the warning content differs.
+financial effect of the replay is identical even when the warning content differs
+(in E5 it has the E5 shape; from E7 it may also carry `projected_rule_capacity`).
 
 ### 10.7 Examples (each names its policy)
 
@@ -908,8 +922,17 @@ execution uniqueness (§13), not from delivery.
    execution row), then a short follow-up transaction sets `failed_retryable` with
    `next_attempt_at` per the constants below, or `dead` after the sixth failed
    attempt; `deadlock_detected` and serialization failures are retryable.
-4. **Crash** after the claim: the lease expires; the event becomes claimable again,
-   a reclaim starts a new attempt and increments `attempts` again.
+4. **Crash** after the claim: the lease expires; if `attempts < max_attempts` the
+   event becomes claimable again, a reclaim starts a new attempt and increments
+   `attempts` again. **Max-attempt recovery:** if the user's selected FIFO head is
+   `processing` with `lease_expires_at <= now()` and `attempts >= max_attempts`
+   (6), it is **never** reclaimed and no seventh attempt exists. In the short
+   claim / recovery transaction it becomes terminal `dead`:
+   `status = 'dead'`, `last_error_code = 'lease_expired_max_attempts'`,
+   `lease_expires_at = NULL`, `next_attempt_at = NULL`. This is recovery of an
+   abandoned max-attempt lease, **not** a business execution result. A `dead`
+   event no longer blocks that user's newer events, so the head never wedges the
+   FIFO queue (the `attempts BETWEEN 0 AND 6` CHECK is never violated).
 5. **Business outcomes** (`executed`, `skipped`, `blocked`, a proposal, "not
    eligible") are committed outcomes and are **never** technical retries.
 
@@ -943,8 +966,21 @@ older blocking one.
 
 **Constants (APPROVED P82):** lease 5 minutes; `max_attempts = 6`; delays after
 failed attempts 1–5: 1 minute, 5 minutes, 30 minutes, 2 hours, 12 hours; the sixth
-failed attempt → `dead`; **no jitter** in v1. `dead` events stay visible to the
-user and operations; a manual re-queue is allowed.
+failed attempt → `dead` (and an expired lease at `attempts = 6` → `dead` with
+`lease_expired_max_attempts`, step 4); **no jitter** in v1. `dead` events stay
+visible to the user and operations.
+
+**Manual re-queue (operational action).** `dead → pending`, resetting the retry
+cycle: `attempts = 0`, `next_attempt_at = NULL`, `lease_expires_at = NULL`,
+`claim_token = NULL`, `last_error_code = NULL`, `processed_at = NULL`. It preserves
+the event `id`, `user_id`, `event_type`, aggregate / source identity, source
+snapshot, provenance, `occurred_at` and `not_before`; it never creates a new
+`financial_events` identity. The event is again subject to normal FIFO ordering
+by its original `(occurred_at, id)`, and if `not_before` is still in the future the
+normal business-date deferral applies. A re-queue never creates or reopens a
+committed `rule_execution`; execution uniqueness (§13.4) stays authoritative, so a
+re-processed event finds its stored execution (eligibility predicate E10, §15.1) and replays it. A re-queue is
+auditable through logs / operations; E1 adds **no** new event-audit table.
 
 ### 12.5 Consumption and guarantees
 
@@ -983,7 +1019,7 @@ events per user.
 |---|---|
 | Income rolled back | no event |
 | Crash after commit, before dispatch | event stays `pending` → (b) or (c) |
-| Crash during processing | rollback; lease expires; retried |
+| Crash during processing | rollback; lease expires; retried while `attempts < 6`, otherwise `dead` (`lease_expired_max_attempts`) |
 | Business rule outcome | terminal execution (`blocked`/`skipped`); event `processed` |
 | Technical error | `failed_retryable` → retries → `dead` |
 | Source changed after the event | detected via snapshot vs `aggregate_updated_at` (§15) |
@@ -1383,7 +1419,7 @@ change.
 | Rule | create / edit | under L0; validation; a material edit (§10.3) increments `version` and cancels open proposals (`superseded`); `name`, `description`, `execution_order` are non-material |
 | Rule | enable | `active_since = now()` on every transition into `enabled`; preview required for `AUTO` (P88) |
 | Rule | pause / disable | events processed without it; proposals → `cancelled (rule_inactive)` |
-| Rule | delete | only when the rule has **no** `rule_executions`; otherwise 409 and the user must disable it; dependent target rows cascade with the rule; informational notification rows never redefine this rule (APPROVED P57) |
+| Rule | delete | final rule: only when the rule has **no** `rule_executions`; otherwise controlled 409 and the user must disable it; dependent target rows cascade with the rule; informational notification rows never redefine this rule (APPROVED P57). **Stage ownership:** E5 DELETE has no execution-history pre-check, because no `rule_executions` schema or runtime exists at E5; E6 adds the RESTRICT FK as a backstop but no execution-creating runtime; **E7 ships the `rule_executions` pre-check in the same release that first lets AUTO create executions** (under L0, controlled 409, never relying on the FK failure); E8 inherits it |
 | Budget | delete | controlled 409 when referenced by a `BUDGET_ALERT` rule, before the ownership FK can fail (P57, P84) |
 | Income | create / update / delete | unchanged behavior + one outbox event in the same transaction |
 | Transfer | planned / post / delete | unchanged; affects capacity per §8 (P49) |
@@ -1811,11 +1847,12 @@ are independent literals, never copies of production formulas.
 | Priority - mobile (VF-020D) | draft move up/down and boundaries; unchanged draft keeps Save disabled; Save pending state; lifecycle filtering (active and completed only); stale-set 409 resets and refetches; cache replacement from the response; no new test framework |
 | Income CRUD | every row of §15.3 |
 | Event atomicity (E3) | no-account create, linked create, update, delete each write the event in the same transaction; a forced failure rolls back both; `commit=False` callers keep both uncommitted; no event for a failed write |
-| Floor and holds (E5/E8) | one floor rule per Account; disabled floor = 0; manual warning only when `projected_reservable < floor` and never because of holds; replay recomputes `warnings`; `hold_sequence` immutable and retained after terminalization; S44 |
+| Rule DELETE (E5 / E7) | **E5:** deleting a draft / non-executed rule succeeds when otherwise allowed; no query of `rule_executions`. **E7:** a rule with an `executed`, `executed_partial`, `skipped` or `blocked` execution (and, when it exists, a proposal / `awaiting_confirmation` execution) → DELETE 409; foreign or nonexistent rule → indistinguishable 404; no raw FK `IntegrityError` / 500; a regression proves the pre-check runs before the FK backstop |
+| Floor and holds (E5/E8) | one floor rule per Account; disabled floor = 0; manual warning only when `projected_reservable < floor` and never because of holds; E5 warning shape has no `projected_rule_capacity`, from E7 it is the additive `projected_reservable − floor − active_rule_holds`; replay recomputes `warnings`; `hold_sequence` immutable and retained after terminalization; S44 |
 | Rule-generated rows (E6/E7) | the three new CHECKs; item → GoalTransaction link UNIQUE; no `client_request_id` on rule rows; legacy rows valid |
 | Provenance | S23, S32, S33, S37, S42; reclassification; Income without a creation event |
 | Proposals | expiry (S41), stale (S26/S35/S39), superseded, source_changed; holds: `rule_capacity` for AUTO and new proposals, `confirm_capacity` excluding the own hold (S38), later holds never defeating an earlier proposal (S44); hold order deterministic for the chosen mechanism |
-| Dispatcher FIFO (P52) | head selected before the claimable predicate; a newer event is never selected while the head is `processing` with a live lease or `failed_retryable` waiting; `claim_token` verified; expired lease reclaim increments `attempts`; sixth failure → `dead`; delays 1 m / 5 m / 30 m / 2 h / 12 h; an older `failed_retryable` event waiting for backoff blocks newer events of the same user; an event deferred by a future `not_before` does not; after `dead`, newer events proceed |
+| Dispatcher FIFO (P52) | head selected before the claimable predicate; a newer event is never selected while the head is `processing` with a live lease or `failed_retryable` waiting; `claim_token` verified; expired lease reclaim increments `attempts` while `attempts < 6`; a `processing` head with an expired lease and `attempts = 6` becomes `dead` (`lease_expired_max_attempts`, lease and `next_attempt_at` cleared, no seventh claim, CHECK never violated) and then no longer blocks newer events; sixth failure → `dead`; delays 1 m / 5 m / 30 m / 2 h / 12 h; manual re-queue `dead → pending` resets `attempts`, `next_attempt_at`, `lease_expires_at`, `claim_token`, `last_error_code`, `processed_at`, keeps identity / snapshot / provenance / `occurred_at` / `not_before`, and creates no execution; an older `failed_retryable` event waiting for backoff blocks newer events of the same user; an event deferred by a future `not_before` does not; after `dead`, newer events proceed |
 | Capacity | future credits/debits (S7/S8); planned Transfers (S36) incl. no double subtraction after posting; date rollover; exact boundary `amount = reservable_amount` OK, `reservable_amount ≤ 0` → 409; negative `reservable_amount` returned signed; `allocation_status` / `negative_balance` (S9/S10); floor strict for rules, warning for manual (S18/S40: VF-020E, P60) |
 | Linked dates and keys (P58) | linked contribution and withdrawal: key mandatory (422, plus the database CHECK); omitted date = today; explicit past/future → 422; tracked semantics unchanged; occupied-key replay on a later day → 200 (S45/S46) |
 | Partitions (P63/P64) | withdrawal without `account_id` against tracked only (S48); linked withdrawal from the named partition; multiple Accounts; `allocations[]` shows only non-zero current partitions (S50); `current_amount = tracked_amount + linked_amount`; legacy Goals unchanged |
@@ -1922,10 +1959,10 @@ matching the implemented state, the user performs the merge.
 | P76 | Reorder idempotency and boundary | no key, no table; never writes money rows; ordering and lock foundation only | **APPROVED** (2026-10-13) |
 | P77 | Rollout and production gates | D1 → D2 → gates → D3 → D4 → D5 | **APPROVED** (2026-10-13) |
 | P78 | Floor as a rule | the floor is a `financial_rules` row of type `MINIMUM_UNALLOCATED_FLOOR`, exactly one per `(user, source Account)` (partial UNIQUE), `floor_amount NUMERIC(12,2) >= 0`, only `enabled` contributes, no mode / order / targets / executions; **not** an Account column | **APPROVED** (2026-10-16) |
-| P79 | Manual floor warning | P04 unchanged; additive `warnings[]` on the POST response only when `projected_reservable < floor`; holds never activate it; advisory, not persisted, outside the idempotency payload; replay recomputes it | **APPROVED** (2026-10-16) |
+| P79 | Manual floor warning | P04 unchanged; additive `warnings[]` on the POST response only when `projected_reservable < floor` (E5 shape: code, floor, `projected_reservable_amount`; `projected_rule_capacity` is additive from E7); holds never activate it; advisory, not persisted, outside the idempotency payload; replay recomputes it | **APPROVED** (2026-10-16) |
 | P80 | Hold order | `hold_sequence BIGINT` from a PostgreSQL sequence, assigned once at proposal creation under L0, immutable; `prior_holds` uses `hold_sequence < X`; populated forever after terminalization; `created_at`/`id` are not the mechanism; S44 proof (§11.3) | **APPROVED** (2026-10-16) |
 | P81 | Rule-generated GoalTransactions | `rule_execution_id` + composite FK; `client_request_id = NULL`; broadened linked-origin CHECK, mutual exclusivity, rule-row shape (§19.2); no fake client key; item → GoalTransaction link | **APPROVED** (2026-10-16) |
-| P82 | Retry and claim constants | lease 5 min; `max_attempts = 6`; delays 1 m, 5 m, 30 m, 2 h, 12 h; no jitter; claim increments `attempts` and sets `claim_token`; business results never retried; no committed `failed` execution | **APPROVED** (2026-10-16) |
+| P82 | Retry and claim constants | lease 5 min; `max_attempts = 6`; delays 1 m, 5 m, 30 m, 2 h, 12 h; no jitter; claim increments `attempts` and sets `claim_token`; an expired lease at `attempts >= 6` → `dead` (`lease_expired_max_attempts`), never a seventh attempt; manual re-queue `dead → pending` resets the retry cycle (§12.4); business results never retried; no committed `failed` execution | **APPROVED** (2026-10-16) |
 | P83 | Typed outbox snapshot | `financial_events` keeps explicit typed provenance and snapshot columns; `aggregate_id` soft; Income gets no provenance column; atomic event write in the same transaction (§12.2) | **APPROVED** (2026-10-16) |
 | P84 | Rule types and alert ownership | v1 types: `INCOME_ALLOCATION`, `MINIMUM_UNALLOCATED_FLOOR`, `OVERCOMMITMENT_ALERT`, `BUDGET_ALERT`; only allocation executes; `GOAL_DEADLINE_ALERT` deferred; `budgets UNIQUE (id, user_id)` + ownership FK; per-subject alert-rule uniqueness; one budget formula | **APPROVED** (2026-10-16) |
 | P85 | Alert storage deferred | the physical `rule_alerts` schema is finalized in E9A, not E4 (dedup / transition semantics) | **APPROVED** (2026-10-16) |
@@ -1958,9 +1995,9 @@ Production migrations are manual while the backend auto-deploys on merge, so a r
 | **E2** | `financial_events` schema expand; strict migration review | yes | yes | old runtime ignores the new table; E3 requires E2 in production |
 | **E3** | Income outbox / provenance runtime: atomic create / update / delete event writes (§12.2); **no** allocation execution | no | no | requires E2 in production |
 | **E4** | `financial_rules` + `financial_rule_goal_targets` expand, `budgets UNIQUE (id, user_id)`, all four v1 rule types in the `rule_type` CHECK; **no** `rule_alerts` | yes | yes | old runtime ignores new tables and the added unique; E5 requires E4 |
-| **E5** | rules CRUD, versioning, status, floor runtime, `minimum_unallocated_floor` on `AccountResponse`, manual floor warning, Goal / Account / Budget reference pre-checks; allocation rules stay non-executable drafts | no | no | requires E4; **must not query `rule_executions`** |
-| **E6** | execution schema expand: `rule_executions`, `rule_execution_items`, `rule_execution_audit`, hold sequence, `goal_transactions.rule_execution_id`, evolved linked-origin CHECKs, item → GoalTransaction linkage | yes | yes | the replaced CHECK accepts every old row and write; E7 requires E6 |
-| **E7** | outbox claim / process, P52 FIFO, AUTO executor, rule-generated GoalTransactions, best-effort drain, authenticated user drain, `active_rule_holds` + `rule_capacity` on `AccountResponse`; no unattended claim | no | no | requires E6; concurrency tests CT |
+| **E5** | rules CRUD, versioning, status, floor runtime, `minimum_unallocated_floor` on `AccountResponse`, manual floor warning, Goal / Account / Budget reference pre-checks; allocation rules stay non-executable drafts; rule DELETE without an execution-history pre-check (no executions can exist yet); the manual warning has the E5 shape (no `projected_rule_capacity`) | no | no | requires E4; **must not query `rule_executions` / `rule_execution_items` / holds** |
+| **E6** | execution schema expand: `rule_executions`, `rule_execution_items`, `rule_execution_audit`, hold sequence, `goal_transactions.rule_execution_id`, evolved linked-origin CHECKs, item → GoalTransaction linkage | yes | yes | the replaced CHECK accepts every old row and write; the new RESTRICT FK `(rule_id, user_id)` → `financial_rules` is safe because the E5 runtime creates no executions; E7 requires E6 |
+| **E7** | outbox claim / process, P52 FIFO, AUTO executor, rule-generated GoalTransactions, best-effort drain, authenticated user drain, `active_rule_holds` + `rule_capacity` on `AccountResponse`; additive `projected_rule_capacity` in the manual warning; **rule DELETE `rule_executions` pre-check (controlled 409) in the same release that first creates executions**; no unattended claim | no | no | requires E6; concurrency tests CT |
 | **E8** | CONFIRM: proposals, holds, 7-day expiry, confirm / reject, `prior_holds`, S44, `superseded` / `source_changed` / `source_deleted` / `rule_inactive` / `stale` | no | no | requires E7 |
 | **E9A** | `rule_alerts` physical schema (floor, overcommitment, Budget transition / dedup) | yes (if required) | yes | old runtime ignores the table |
 | **E9B** | alerts and the composed backend Inbox (no Inbox table); BUDGET_ALERT reuses the authoritative budget-status logic | no | no | requires E9A |
