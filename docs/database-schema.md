@@ -902,6 +902,21 @@ uq_goals_id_user_id_currency (VF-020B4)
 UNIQUE (id, user_id, currency) - target of the final goal_transactions
 foreign key (see 6.1). uq_goals_id_user_id stays.
 
+priority_rank (VF-020D2/D5; INTEGER, nullable)
+
+Goal priority: 1 = highest. Non-archived Goals (active and completed) have a
+rank, archived Goals have NULL; gaps are allowed (no automatic compaction;
+reorder rewrites 1..n). Constraints: ck_goals_priority_rank_positive
+(priority_rank IS NULL OR priority_rank >= 1);
+uq_goals_user_id_priority_rank UNIQUE (user_id, priority_rank) DEFERRABLE
+INITIALLY DEFERRED (NULLs allowed; deferred so a swap inside one transaction
+succeeds); ck_goals_priority_rank_lifecycle (VF-020D5)
+(status = 'archived') = (priority_rank IS NULL). Migration 4d2f7b91a6c3 (D2)
+added the column, the first two constraints and a deterministic backfill
+(created_at DESC, id ASC per user over non-archived Goals); migration
+7c1e5a9b3d28 (D5, current head) normalized stragglers and added the lifecycle
+CHECK. Both are applied to production (revision 7c1e5a9b3d28).
+
 Indexes
 
 user_id
@@ -1198,6 +1213,16 @@ Goal transaction service under the Goal -> Account lock order. Mobile does not
 use account_id until VF-020C3. Downgrading 98acdc7016d2 is a schema reversal only: it drops the
 column and with it every stored account_id value (rows survive but lose their
 Account association).
+
+Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
+v0.6 sections 19.2-19.3): tables financial_events (E2), financial_rules,
+financial_rule_goal_targets and UNIQUE (id, user_id) on budgets (E4),
+rule_executions, rule_execution_items and rule_execution_audit plus
+goal_transactions.rule_execution_id with a replaced linked-origin CHECK (E6),
+and rule_alerts (E9A). The Account safety floor is a financial_rules row, never
+an accounts column. None of these exist in the schema yet; the current
+ck_goal_transactions_linked_requires_client_request_id above stays in force
+until E6.
 
 7. Accounts
 

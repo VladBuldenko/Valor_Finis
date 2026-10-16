@@ -649,6 +649,12 @@ GET
 
 200
 
+PUT
+
+/api/v1/goals/priorities
+
+200
+
 Funding model (VF-016):
 
 current_amount is READ-ONLY on every Goal endpoint. It is not accepted by
@@ -798,6 +804,35 @@ transaction history is the audit trail; each transaction exposes a nullable
 account_id. These fields appear on every Goal response (list, create,
 PATCH). GET /api/v1/analytics/goal-progress is unchanged and keeps using
 current_amount.
+
+Priorities (VF-020D, implemented): every Goal response carries a read-only
+priority_rank (integer >= 1, or null). Non-archived Goals (active and
+completed) are ranked, 1 = highest; archived Goals have priority_rank null.
+POST and PATCH never accept priority_rank (extra fields are forbidden); it is
+controlled by the lifecycle (a new non-archived Goal is appended last,
+archiving clears it without compaction, reactivating appends it last) and by
+PUT /api/v1/goals/priorities. GET /api/v1/goals returns non-archived Goals by
+priority_rank ascending, then archived Goals by created_at descending, id
+ascending.
+
+PUT /api/v1/goals/priorities
+
+Request: { "goal_ids": [uuid, ...] } - the complete ordered set of the
+user's non-archived Goals (extra fields forbidden). Response: 200 with the
+complete canonical Goal list (including archived Goals) in the normal Goal
+response shape. 422 for a malformed or duplicate id; 404 "Goal not found."
+for an unknown Goal or a Goal owned by another user (indistinguishable); 409
+when an archived Goal is supplied, when a ranked Goal is missing (stale set -
+reload and retry), or for an empty list while the user has ranked Goals; the
+exact current order again is an idempotent 200. The call takes the user
+advisory lock L0, never writes a money row and needs no client_request_id.
+
+Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
+v0.6): /api/v1/financial-rules, /api/v1/rule-proposals,
+/api/v1/rule-executions and /api/v1/rule-alerts; an additive warnings list on
+the POST goal-transaction response, and additive Account fields
+(minimum_unallocated_floor, active_rule_holds, rule_capacity). None of them
+exists in the API yet.
 
 Delete Goal
 
