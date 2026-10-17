@@ -178,6 +178,8 @@ Every Goal read and write is scoped to the authenticated user; the goals reposit
 
 VF-020C2 adds Account-linked reservations in the same service: goal_transactions.account_id (NULL = tracked) selects the partition; a linked request requires the key and today's date, locks Goal -> Account (a linked contribution locks the Account row, a linked withdrawal only reads it) and enforces the Account's capacity (balance as of today minus existing reservations, scheduled debits and planned outgoing transfers) from SQL aggregates computed under that lock, so concurrent reservations can never exceed it. account_id is part of the idempotency payload. The goals module reads accounts through the accounts repositories/service; the accounts module reads linked-Goal aggregates through goal_transaction_repository (no foreign repository writes). Account delete / currency change is blocked by any linked history (409), with the composite foreign key as the backstop.
 
+VF-020D adds Goal priorities and the user advisory lock L0: goals.priority_rank (INTEGER NULL; non-archived Goals ranked 1..n with gaps allowed, archived NULL; CHECK >= 1, deferrable UNIQUE (user_id, priority_rank), lifecycle CHECK (status = 'archived') = (priority_rank IS NULL)), a priority-aware canonical GET /api/v1/goals order and PUT /api/v1/goals/priorities. Every Goal write (create, PATCH, DELETE, tracked and linked contribution/withdrawal, reorder) first takes L0, a transaction-scoped pg_advisory_xact_lock keyed from SHA-256 of a namespaced user id (goals/goal_user_lock.py), then locks Goals in ascending id and then the Account. Reads, occupied-key idempotent replays, Account delete and Account currency change take no L0. The VF-020E rules engine (outbox, rules, executions, holds, dispatcher) is contract-finalized in docs/modules/smart-goals-rules.md (v0.6) but not implemented.
+
 Accounts
 
 Owns Accounts (checking, savings, cash) and the AccountTransaction ledger: opening balance, manual adjustments, and the Income/Expense/Transfer projections. An Account's balance is derived from its ledger and may be negative.
@@ -761,7 +763,9 @@ Production backend deployment         ✅
 Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
 Financial overview (Income/Expenses/Net) ✅ backend + mobile; device refresh acceptance pending (first suitable real transaction)
-Goal ↔ Account reservations (VF-020C) ✅ backend (C2); mobile (C3) pending
+Goal ↔ Account reservations (VF-020C) ✅ backend (C2) + mobile (C3)
+Goal priorities and user lock L0 (VF-020D) ✅ backend + mobile (production revision 7c1e5a9b3d28)
+Rules engine (VF-020E) contract finalized; not implemented (VF-020F mobile later)
 Web client                            later
 
 Production operational and security hardening is ongoing.
@@ -770,7 +774,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-Goal ↔ Account semantics discovery
+VF-020E rules engine (backend; E2 outbox schema expand next), then VF-020F mobile
       ↓
 Evolution based on real usage
 

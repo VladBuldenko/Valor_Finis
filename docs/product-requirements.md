@@ -63,7 +63,7 @@ The product has grown beyond the original MVP scope (accounts, income,
 transfers, analytics and the Financial Overview are implemented). Two future
 milestones change the original "Out of Scope" items. Neither is implemented yet.
 
-### VF-020 Smart Goals & Rules (approved contract, not implemented)
+### VF-020 Smart Goals & Rules (VF-020B–D implemented; VF-020E contract finalized, not implemented)
 
 - The VF-020A contract is approved for documentation and implementation
   planning: `docs/modules/smart-goals-rules.md`. Implementation is authorized
@@ -71,15 +71,20 @@ milestones change the original "Out of Scope" items. Neither is implemented yet.
 - Goals will be able to reserve (earmark) money that stays in an Account,
   alongside the existing tracked-only Goal progress. A reservation never moves
   money.
-- Goals hardening (VF-020B) is implemented. The VF-020C contract (account-linked
-  reservations) is finalized but not implemented: a reservation is a Goal
+- Goals hardening (VF-020B) and the Account-linked reservations (VF-020C, backend
+  and mobile) are implemented, and so are Goal priorities with the user lock
+  (VF-020D, production schema revision `7c1e5a9b3d28`). A reservation is a Goal
   transaction linked to one Account, limited by that Account's reservable
   capacity (balance as of today minus existing reservations, scheduled
   outflows and planned outgoing Transfers); it never blocks real expenses or
   transfers, and an Account can then show as overcommitted. A withdrawal always
   names the partition (tracked, or one Account) it reduces. Rollout order:
-  schema (C1) → production migration → backend (C2) → mobile (C3). The Account
-  safety floor arrives later with the rules engine.
+  schema (C1) → production migration → backend (C2) → mobile (C3) (done). Goals
+  are ordered by an explicit user-set priority (VF-020D). The Account safety
+  floor, rules and alerts arrive with VF-020E (a `MINIMUM_UNALLOCATED_FLOOR` rule;
+  warning-only for manual reservations, strict for rule allocations); VF-020E is
+  backend only, the mobile rules UX is VF-020F. The VF-020E contract (v0.6) is
+  finalized in `docs/modules/smart-goals-rules.md`; nothing of it is implemented.
 - "Automation" is now in planned scope only as internal allocation rules: each
   rule runs in `AUTO` or `CONFIRM` mode, and both modes create or propose
   internal Goal reservations only.
