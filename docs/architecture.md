@@ -774,7 +774,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-VF-020E rules engine (backend; E2 outbox schema expand next), then VF-020F mobile
+VF-020E rules engine (backend; E2 outbox schema migration implemented in the repository, not yet applied to production; E3 Income outbox runtime next), then VF-020F mobile
       ↓
 Evolution based on real usage
 

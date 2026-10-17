@@ -413,7 +413,7 @@ The backend is implemented and deployed in production, and the mobile client imp
 
 Current priorities (docs/roadmap.md is the authoritative direction):
 
-VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — next: E2 outbox schema expand; VF-020F mobile later)
+VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — E2 outbox schema migration implemented in the repository, not yet applied to production; next: E3 Income outbox runtime; VF-020F mobile later)
     ↓
 Improve the API and the mobile app based on real usage
 💡 Final Rule

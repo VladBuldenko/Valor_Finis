@@ -175,7 +175,7 @@ The contract is approved for documentation and implementation planning only. Eac
 
 4. VF-020D — Goal priorities (COMPLETE; contract v0.5 in docs/modules/smart-goals-rules.md): `priority_rank` for all non-archived Goals (active and completed), a priority-aware Goal order, `PUT /api/v1/goals/priorities`, the mobile Priorities screen, and the user advisory lock L0 on every Goal write. Stages: D1 contract, D2 expand migration (4d2f7b91a6c3, applied to production), D3 backend runtime (PR #81), D4 mobile (PR #82), D5 lifecycle contract migration (7c1e5a9b3d28, PR #83, applied to production). Production revision: 7c1e5a9b3d28. Each production migration (D2 and D5) follows the same ordered gates: explicit authorization, read-only preflight, backup, backup verification, short lock timeout, migration, post-migration verification. No rules, AUTO/CONFIRM, safety floor or holds (VF-020E).
 
-5. VF-020E — Rules engine (backend, schema and dispatcher only; contract finalized in docs/modules/smart-goals-rules.md v0.6, NOT implemented): durable outbox, AUTO and CONFIRM internal allocation rules, the Account safety floor as a rule, soft holds, alerts and a backend Inbox read model; unattended AUTO requires a durable periodic dispatcher. Stages: E1 contract (documentation), E2 outbox schema expand, E3 Income outbox runtime, E4 rules schema expand, E5 rules CRUD and floor runtime, E6 execution schema expand, E7 dispatcher and AUTO, E8 CONFIRM, E9A alert schema, E9B alerts and Inbox read model, E10 periodic dispatcher operationalization (P50 technical verification still required). Each schema stage (E2, E4, E6, E9A) has its own production migration gate.
+5. VF-020E — Rules engine (backend, schema and dispatcher only; contract finalized in docs/modules/smart-goals-rules.md v0.6, NOT implemented): durable outbox, AUTO and CONFIRM internal allocation rules, the Account safety floor as a rule, soft holds, alerts and a backend Inbox read model; unattended AUTO requires a durable periodic dispatcher. Stages: E1 contract (documentation), E2 outbox schema expand (migration 115998e2e795 implemented in the repository; NOT applied to production, which stays at 7c1e5a9b3d28), E3 Income outbox runtime, E4 rules schema expand, E5 rules CRUD and floor runtime, E6 execution schema expand, E7 dispatcher and AUTO, E8 CONFIRM, E9A alert schema, E9B alerts and Inbox read model, E10 periodic dispatcher operationalization (P50 technical verification still required). Each schema stage (E2, E4, E6, E9A) has its own production migration gate.
 
 6. VF-020F — Mobile completion and acceptance (all mobile rule management, proposal and Inbox UI, floor-warning UX, device acceptance; no mobile work belongs to VF-020E)
 
@@ -205,7 +205,7 @@ Current implemented finance foundation (including Account Transfers and the Fina
         ↓
 VF-020A Smart Goals & Rules contract (approved)
         ↓
-VF-020B Goals hardening (done) → VF-020C Goal Account allocations (done: C1 → production migration → C2 → C3) → VF-020D Goal priorities (done: D1–D5, production 7c1e5a9b3d28) → VF-020E Rules engine (backend; contract E1 finalized, E2 next) → VF-020F Mobile & acceptance
+VF-020B Goals hardening (done) → VF-020C Goal Account allocations (done: C1 → production migration → C2 → C3) → VF-020D Goal priorities (done: D1–D5, production 7c1e5a9b3d28) → VF-020E Rules engine (backend; contract E1 merged, E2 migration implemented but not applied to production, E3 next) → VF-020F Mobile & acceptance
         ↓
 later product capabilities
 
