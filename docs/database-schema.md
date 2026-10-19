@@ -1214,15 +1214,34 @@ use account_id until VF-020C3. Downgrading 98acdc7016d2 is a schema reversal onl
 column and with it every stored account_id value (rows survive but lose their
 Account association).
 
+VF-020E2 (financial_events, migration 115998e2e795, down_revision 7c1e5a9b3d28):
+IMPLEMENTED IN THE REPOSITORY, NOT APPLIED TO PRODUCTION (production stays at
+7c1e5a9b3d28 until a separately authorized production migration). Schema-only
+expand: the outbox table financial_events (id, user_id, event_type,
+aggregate_type, aggregate_id, origin, ingestion_mode, the typed Income snapshot
+snap_amount NUMERIC(12,2) / snap_currency / snap_received_at DATE /
+snap_account_id NULL / snap_income_source / snap_aggregate_updated_at, then
+occurred_at, status, not_before, attempts, next_attempt_at, lease_expires_at,
+claim_token, last_error_code, processed_at, outcome_summary JSONB) with CHECKs
+for event_type (income.created / income.updated / income.deleted), origin
+(manual / receipt / import / system), ingestion_mode (live / historical /
+correction), status (pending / processing / processed / failed_retryable / dead)
+and attempts (0..6); a partial UNIQUE index on aggregate_id WHERE event_type =
+'income.created'; a partial FIFO index on (user_id, occurred_at, id) WHERE status
+IN (pending, processing, failed_retryable); an index on (status, not_before,
+next_attempt_at); and REVOKE ALL on the Supabase Data API roles. aggregate_id is a
+SOFT reference: there is no foreign key to income. Nothing is backfilled, no Income
+row changes, and the application neither maps nor reads the table until E3 (the
+table is intentionally unmapped in the ORM metadata during this staged window).
+
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): tables financial_events (E2), financial_rules,
-financial_rule_goal_targets and UNIQUE (id, user_id) on budgets (E4),
-rule_executions, rule_execution_items and rule_execution_audit plus
-goal_transactions.rule_execution_id with a replaced linked-origin CHECK (E6),
-and rule_alerts (E9A). The Account safety floor is a financial_rules row, never
-an accounts column. None of these exist in the schema yet; the current
-ck_goal_transactions_linked_requires_client_request_id above stays in force
-until E6.
+v0.6 sections 19.2-19.3): financial_rules, financial_rule_goal_targets and UNIQUE
+(id, user_id) on budgets (E4), rule_executions, rule_execution_items and
+rule_execution_audit plus goal_transactions.rule_execution_id with a replaced
+linked-origin CHECK (E6), and rule_alerts (E9A). The Account safety floor is a
+financial_rules row, never an accounts column. None of these exist in the schema
+yet; the current ck_goal_transactions_linked_requires_client_request_id above
+stays in force until E6.
 
 7. Accounts
 
