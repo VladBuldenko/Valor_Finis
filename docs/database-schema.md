@@ -1233,8 +1233,7 @@ next_attempt_at); and REVOKE ALL on the Supabase Data API roles. aggregate_id is
 SOFT reference: there is no foreign key to income. Nothing was backfilled and no
 Income row changed.
 
-VF-020E3 (Income outbox runtime, no migration; implemented on the feature branch
-feat/VF-020E3-income-outbox-runtime, not pushed, merged or deployed): the
+VF-020E3 (Income outbox runtime, no migration; merged, PR #86): the
 financial_events table is now mapped by the ORM (FinancialEventModel) and the Income
 service writes one event row per successful manual Income create / update / delete
 in the same transaction: origin manual; ingestion_mode live or historical on create
@@ -1245,9 +1244,28 @@ event state. not_before is the UTC start of a future received_at day, otherwise 
 insert time. New events stay pending with attempts 0; nothing processes them yet.
 Income created before E3 has no creation event and is never backfilled.
 
+VF-020E4 (financial_rules, financial_rule_goal_targets and UNIQUE (id, user_id) on
+budgets; migration 861064d31463, down_revision 115998e2e795): IMPLEMENTED ON A LOCAL
+FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTION (production stays at
+115998e2e795). Schema-only expand; the application neither maps nor queries the new
+tables. financial_rules holds the four v1 rule types (INCOME_ALLOCATION,
+MINIMUM_UNALLOCATED_FLOOR, OVERCOMMITMENT_ALERT, BUDGET_ALERT; GOAL_DEADLINE_ALERT is
+not supported) with statuses draft / enabled / paused / disabled, a version, and
+type-specific columns whose cross-type combinations are blocked by per-type shape
+CHECKs; ownership foreign keys (source_account_id, user_id) -> accounts(id, user_id)
+and (budget_id, user_id) -> budgets(id, user_id), both ON DELETE RESTRICT; partial
+UNIQUE indexes for one floor rule and one overcommitment alert per (user, Account) and
+one budget alert per (user, Budget); no currency column; no unique on execution_order
+(duplicates and gaps are allowed); the safety floor is a rule row, never an accounts
+column. financial_rule_goal_targets holds (rule_id, user_id, goal_id, amount_or_cap
+NUMERIC(12,2) NULL, position), UNIQUE (rule_id, goal_id), (rule_id, user_id) ->
+financial_rules ON DELETE CASCADE and (goal_id, user_id) -> goals(id, user_id) ON
+DELETE RESTRICT; position is UI order only. budgets gains uq_budgets_id_user_id. Both
+new tables have REVOKE ALL for the Supabase Data API roles. The two rules tables are
+intentionally unmapped in the ORM until E5.
+
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): financial_rules, financial_rule_goal_targets and UNIQUE
-(id, user_id) on budgets (E4), rule_executions, rule_execution_items and
+v0.6 sections 19.2-19.3): rule_executions, rule_execution_items and
 rule_execution_audit plus goal_transactions.rule_execution_id with a replaced
 linked-origin CHECK (E6), and rule_alerts (E9A). The Account safety floor is a
 financial_rules row, never an accounts column. None of these exist in the schema

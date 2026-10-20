@@ -774,7 +774,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime implemented on its feature branch - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema next), then VF-020F mobile
+VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime merged - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema migration 861064d31463 implemented on a local feature branch, not applied to production; E5 rules runtime not started), then VF-020F mobile
       ↓
 Evolution based on real usage
 

@@ -25,6 +25,7 @@ from app.modules.income import income_service
 from app.modules.income.income_models import IncomeModel
 from app.modules.income.income_schemas import IncomeCreate
 from tests.helpers import auth_headers, create_account
+from tests.schema_drift import E4_UNMAPPED_OBJECTS, exclude_stages_after, split_unmapped_e4
 
 # VF-020E3 tests: every canonical Income mutation writes one financial_events
 # outbox row in the SAME transaction. E3 only writes pending events; nothing
@@ -129,8 +130,17 @@ def test_model_maps_exactly_the_e2_table_without_schema_drift() -> None:
     assert "financial_events" in Base.metadata.tables
 
     with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
+
+    # The database may be at a later stage than E2; only objects introduced by
+    # stages AFTER its own revision, and the E4 rules tables that stay
+    # unmapped until E5, are expected differences.
+    differences = exclude_stages_after(differences, revision)
+    if revision == "861064d31463":
+        expected_unmapped, differences = split_unmapped_e4(differences)
+        assert {d[1].name for d in expected_unmapped if d[0] == "remove_table"} == set(E4_UNMAPPED_OBJECTS)
 
     assert differences == []
 

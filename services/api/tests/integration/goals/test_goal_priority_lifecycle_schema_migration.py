@@ -18,6 +18,7 @@ from app.db.database_base import Base
 from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
+from tests.schema_drift import exclude_stages_after
 
 # VF-020D5 contract-migration tests (revision 7c1e5a9b3d28): rollout
 # stragglers (non-archived Goals with a NULL priority_rank) are appended after
@@ -384,12 +385,8 @@ def test_orm_matches_the_d5_database_and_declares_the_lifecycle_check(d5_databas
     with d5_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
-        # Later stages (VF-020E2/E3) added the financial_events table and its
-        # indexes after this revision; they are not part of this revision's contract.
-        differences = [
-            difference for difference in differences
-            if 'financial_events' not in repr(difference)
-        ]
+        # Objects added by later stages (revision-aware, named explicitly).
+        differences = exclude_stages_after(differences, "7c1e5a9b3d28")
 
     assert differences == []
     orm_checks = {
