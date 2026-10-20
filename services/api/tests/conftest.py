@@ -11,6 +11,7 @@ from app.modules.accounts.account_transfer_models import AccountTransferModel
 from app.modules.budgets.budgets_models import BudgetModel
 from app.modules.categories.category_models import CategoryModel
 from app.modules.expenses.expenses_models import ExpenseModel
+from app.modules.financial_events.financial_event_models import FinancialEventModel
 from app.modules.financial_settings.financial_settings_models import (
     UserFinancialSettingsModel,
 )
@@ -101,6 +102,7 @@ def clean_database() -> Generator[None, None, None]:
     try:
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
+        db_session.query(FinancialEventModel).delete()
         db_session.query(IncomeModel).delete()
         db_session.query(BudgetModel).delete()
         db_session.query(GoalTransactionModel).delete()
@@ -116,6 +118,7 @@ def clean_database() -> Generator[None, None, None]:
 
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
+        db_session.query(FinancialEventModel).delete()
         db_session.query(IncomeModel).delete()
         db_session.query(BudgetModel).delete()
         db_session.query(GoalTransactionModel).delete()
