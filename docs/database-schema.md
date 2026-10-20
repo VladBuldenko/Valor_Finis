@@ -914,8 +914,9 @@ succeeds); ck_goals_priority_rank_lifecycle (VF-020D5)
 (status = 'archived') = (priority_rank IS NULL). Migration 4d2f7b91a6c3 (D2)
 added the column, the first two constraints and a deterministic backfill
 (created_at DESC, id ASC per user over non-archived Goals); migration
-7c1e5a9b3d28 (D5, current head) normalized stragglers and added the lifecycle
-CHECK. Both are applied to production (revision 7c1e5a9b3d28).
+7c1e5a9b3d28 (D5) normalized stragglers and added the lifecycle CHECK. Both
+are applied to production (D5 on 2026-10-16); later revisions, currently
+115998e2e795 (VF-020E2), build on them.
 
 Indexes
 
@@ -1215,11 +1216,10 @@ column and with it every stored account_id value (rows survive but lose their
 Account association).
 
 VF-020E2 (financial_events, migration 115998e2e795, down_revision 7c1e5a9b3d28):
-IMPLEMENTED IN THE REPOSITORY, NOT APPLIED TO PRODUCTION (production stays at
-7c1e5a9b3d28 until a separately authorized production migration). Schema-only
-expand: the outbox table financial_events (id, user_id, event_type,
-aggregate_type, aggregate_id, origin, ingestion_mode, the typed Income snapshot
-snap_amount NUMERIC(12,2) / snap_currency / snap_received_at DATE /
+COMPLETE AND APPLIED TO PRODUCTION on 2026-10-19 (production schema revision
+115998e2e795). Schema-only expand: the outbox table financial_events (id, user_id,
+event_type, aggregate_type, aggregate_id, origin, ingestion_mode, the typed Income
+snapshot snap_amount NUMERIC(12,2) / snap_currency / snap_received_at DATE /
 snap_account_id NULL / snap_income_source / snap_aggregate_updated_at, then
 occurred_at, status, not_before, attempts, next_attempt_at, lease_expires_at,
 claim_token, last_error_code, processed_at, outcome_summary JSONB) with CHECKs
@@ -1230,9 +1230,20 @@ and attempts (0..6); a partial UNIQUE index on aggregate_id WHERE event_type =
 'income.created'; a partial FIFO index on (user_id, occurred_at, id) WHERE status
 IN (pending, processing, failed_retryable); an index on (status, not_before,
 next_attempt_at); and REVOKE ALL on the Supabase Data API roles. aggregate_id is a
-SOFT reference: there is no foreign key to income. Nothing is backfilled, no Income
-row changes, and the application neither maps nor reads the table until E3 (the
-table is intentionally unmapped in the ORM metadata during this staged window).
+SOFT reference: there is no foreign key to income. Nothing was backfilled and no
+Income row changed.
+
+VF-020E3 (Income outbox runtime, no migration; implemented on the feature branch
+feat/VF-020E3-income-outbox-runtime, not pushed, merged or deployed): the
+financial_events table is now mapped by the ORM (FinancialEventModel) and the Income
+service writes one event row per successful manual Income create / update / delete
+in the same transaction: origin manual; ingestion_mode live or historical on create
+(live when received_at >= the server creation date - 7 days, inclusive), correction
+on update and delete; the snapshot is the Income amount (never base_amount),
+currency, received_at, source, the persisted updated_at and the Account linked at the
+event state. not_before is the UTC start of a future received_at day, otherwise the
+insert time. New events stay pending with attempts 0; nothing processes them yet.
+Income created before E3 has no creation event and is never backfilled.
 
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
 v0.6 sections 19.2-19.3): financial_rules, financial_rule_goal_targets and UNIQUE

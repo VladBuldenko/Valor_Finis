@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.modules.accounts import account_repository, account_transaction_repository
 from app.modules.accounts.account_errors import AccountArchivedError
 from app.modules.accounts.account_models import AccountModel
+from app.modules.financial_events import financial_event_service
 from app.modules.financial_settings import financial_settings_service
 from app.modules.fx import fx_service
 from app.modules.fx.fx_errors import FxFutureDatedNotSupportedError
@@ -221,6 +222,10 @@ def create_income(
     )
 
     if income_data.account_id is None:
+        # VF-020E3: the Income and its income.created outbox event are one
+        # atomic unit. The repository never commits here; the single
+        # service-level commit (when requested) comes after the event
+        # insert, so a committed Income can never lack its event.
         income_model = income_repository.create_income(
             db_session=db_session,
             income_data=income_data,
@@ -230,8 +235,19 @@ def create_income(
             fx_rate=stored_fx_rate,
             fx_rate_date=fx_result.actual_rate_date,
             fx_source=fx_result.source,
-            commit=commit,
+            commit=False,
         )
+
+        financial_event_service.record_income_created(
+            db_session=db_session,
+            income_model=income_model,
+            account_id=None,
+        )
+
+        if commit:
+            db_session.commit()
+            db_session.refresh(income_model)
+
         return _build_income_response(income_model, account_id=None)
 
     # Linked create: FX resolution above already happened before any
@@ -264,6 +280,13 @@ def create_income(
         amount=income_model.amount,
         transaction_date=income_model.received_at,
         commit=False,
+    )
+
+    # VF-020E3: Income + projection + income.created event, one commit.
+    financial_event_service.record_income_created(
+        db_session=db_session,
+        income_model=income_model,
+        account_id=account_model.id,
     )
 
     if commit:
@@ -531,6 +554,15 @@ def update_income(
             commit=False,
         )
 
+    # VF-020E3: the income.updated event carries the FINAL canonical
+    # snapshot (after the accepted update and the projection sync, with the
+    # final Account link) and is inserted before the single commit.
+    financial_event_service.record_income_updated(
+        db_session=db_session,
+        income_model=income_model,
+        account_id=final_account_id,
+    )
+
     db_session.commit()
     db_session.refresh(income_model)
 
@@ -583,6 +615,16 @@ def delete_income(
             account_id=current_projection.account_id,
             user_id=user_id,
         )
+
+    # VF-020E3: capture the last canonical state (including the Account
+    # linked immediately before deletion) in the income.deleted event,
+    # inserted in the same transaction before the Income row is deleted.
+    # The event survives the deletion (aggregate_id is a soft reference).
+    financial_event_service.record_income_deleted(
+        db_session=db_session,
+        income_model=income_model,
+        account_id=current_projection.account_id if current_projection else None,
+    )
 
     income_repository.delete_income(
         db_session=db_session,

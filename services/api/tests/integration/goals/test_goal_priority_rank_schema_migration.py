@@ -468,5 +468,11 @@ def test_orm_metadata_matches_d2_database_exactly(d2_database: Engine) -> None:
     with d2_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
+        # Later stages (VF-020E2/E3) added the financial_events table and its
+        # indexes after this revision; they are not part of this revision's contract.
+        differences = [
+            difference for difference in differences
+            if 'financial_events' not in repr(difference)
+        ]
 
     assert differences == []

@@ -799,33 +799,34 @@ def test_income_table_is_unchanged_by_the_migration(d5_database: Engine) -> None
 
 
 # ------------------------------------------------------------------
-# Compatibility: the application does not depend on the new table (E3 owns it)
+# Runtime coupling and metadata (E3 maps the E2 table)
 # ------------------------------------------------------------------
 
 
-def test_application_code_does_not_reference_financial_events() -> None:
-    offenders = [
+def test_financial_events_references_are_confined_to_the_event_module_and_income_service() -> None:
+    # VF-020E3 maps the table and the Income service writes events; nothing
+    # else in the application may depend on it yet.
+    referencing = sorted(
         str(path.relative_to(API_DIR))
         for path in APP_DIR.rglob("*.py")
         if "financial_events" in path.read_text(encoding="utf-8")
+    )
+
+    assert referencing == [
+        "app/db/database_models.py",
+        "app/modules/financial_events/financial_event_models.py",
+        "app/modules/financial_events/financial_event_repository.py",
+        "app/modules/financial_events/financial_event_service.py",
+        "app/modules/income/income_service.py",
     ]
 
-    assert offenders == []
 
-
-def test_expand_table_is_intentionally_unmapped_in_orm_metadata(e2_database: Engine) -> None:
+def test_orm_metadata_matches_the_e2_schema_exactly(e2_database: Engine) -> None:
     import_database_models()
-    assert TABLE not in Base.metadata.tables
+    assert TABLE in Base.metadata.tables
 
     with e2_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    # The staged expand window: the only differences between the ORM metadata
-    # and the migrated schema are the not-yet-mapped financial_events table
-    # and its three non-primary-key indexes (E3 owns its model and repository).
-    operations = sorted(difference[0] for difference in differences)
-    assert operations == ["remove_index", "remove_index", "remove_index", "remove_table"]
-    for operation, subject in differences:
-        subject_table = subject.name if operation == "remove_table" else subject.table.name
-        assert subject_table == TABLE
+    assert differences == []

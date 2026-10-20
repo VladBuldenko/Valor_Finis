@@ -384,6 +384,12 @@ def test_orm_matches_the_d5_database_and_declares_the_lifecycle_check(d5_databas
     with d5_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
+        # Later stages (VF-020E2/E3) added the financial_events table and its
+        # indexes after this revision; they are not part of this revision's contract.
+        differences = [
+            difference for difference in differences
+            if 'financial_events' not in repr(difference)
+        ]
 
     assert differences == []
     orm_checks = {
