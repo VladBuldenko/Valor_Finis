@@ -52,6 +52,11 @@ class BudgetModel(Base):
             "start_date",
             name="uq_budgets_user_id_name_period_start_date",
         ),
+        # Composite-unique FK target (VF-020E4): lets financial_rules carry a
+        # (budget_id, user_id) -> budgets(id, user_id) ownership foreign key
+        # for BUDGET_ALERT rules. Declaration only - budget behavior is
+        # unchanged.
+        UniqueConstraint("id", "user_id", name="uq_budgets_id_user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

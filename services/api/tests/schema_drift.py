@@ -1,0 +1,76 @@
+"""
+Revision-aware ORM-vs-database drift helper for the migration tests.
+
+What:
+    Each migration test compares the ORM metadata with the schema of ITS OWN
+    revision. Objects introduced by LATER stages are already declared in the
+    ORM, so they show up as differences against an older revision. This helper
+    removes exactly the differences that belong to a stage introduced after the
+    tested revision - nothing else.
+
+Why:
+    A blanket "ignore unknown tables/indexes/constraints" filter would hide
+    real, unrelated drift. Here every excluded object is named explicitly and
+    tied to the revision that introduced it, so a difference that does not
+    belong to a later stage still fails the test.
+"""
+
+from typing import Any, List, Sequence
+
+# Ordered stage registry: (introducing revision, object names whose
+# differences are expected before that revision is applied).
+LATER_STAGES = (
+    # VF-020E2: financial_events (mapped by VF-020E3).
+    ("115998e2e795", ("financial_events",)),
+    # VF-020E4: the budgets composite unique declared on BudgetModel. The two
+    # rules tables are intentionally NOT mapped until E5 (see below).
+    ("861064d31463", ("uq_budgets_id_user_id",)),
+)
+
+# VF-020E4 objects that are deliberately not mapped in the ORM yet. They are
+# expected as "remove_*" differences against a database at E4 or later.
+E4_UNMAPPED_OBJECTS = ("financial_rules", "financial_rule_goal_targets")
+
+REVISION_ORDER = (
+    "98acdc7016d2",
+    "4d2f7b91a6c3",
+    "7c1e5a9b3d28",
+    "115998e2e795",
+    "861064d31463",
+)
+
+
+def _names_for_stages_after(revision: str) -> List[str]:
+    position = REVISION_ORDER.index(revision)
+    names: List[str] = []
+    for stage_revision, stage_names in LATER_STAGES:
+        if REVISION_ORDER.index(stage_revision) > position:
+            names.extend(stage_names)
+    return names
+
+
+def _matches(difference: Any, names: Sequence[str]) -> bool:
+    text = repr(difference)
+    # Constraints do not carry their name in their repr, so also compare the
+    # explicit name of the difference's subject.
+    subject_name = None
+    if isinstance(difference, tuple) and len(difference) > 1:
+        subject_name = getattr(difference[1], "name", None)
+    return any(name in text for name in names) or (
+        subject_name is not None and subject_name in names
+    )
+
+
+# Removes only the differences that belong to stages introduced AFTER
+# `revision`. For a database at the latest stage nothing is removed.
+def exclude_stages_after(differences: Sequence[Any], revision: str) -> List[Any]:
+    names = _names_for_stages_after(revision)
+    return [difference for difference in differences if not _matches(difference, names)]
+
+
+# Splits out the deliberately unmapped E4 tables (and their indexes) from a
+# database at E4 or later.
+def split_unmapped_e4(differences: Sequence[Any]) -> "tuple[List[Any], List[Any]]":
+    expected = [d for d in differences if _matches(d, E4_UNMAPPED_OBJECTS)]
+    rest = [d for d in differences if not _matches(d, E4_UNMAPPED_OBJECTS)]
+    return expected, rest

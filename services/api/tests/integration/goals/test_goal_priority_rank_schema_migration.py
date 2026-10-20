@@ -20,6 +20,7 @@ from app.db.database_base import Base
 from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
+from tests.schema_drift import exclude_stages_after
 
 # VF-020D2 schema-expand tests (revision 4d2f7b91a6c3): goals gains a
 # nullable priority_rank INTEGER, a positive CHECK, a DEFERRABLE INITIALLY
@@ -468,11 +469,7 @@ def test_orm_metadata_matches_d2_database_exactly(d2_database: Engine) -> None:
     with d2_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
-        # Later stages (VF-020E2/E3) added the financial_events table and its
-        # indexes after this revision; they are not part of this revision's contract.
-        differences = [
-            difference for difference in differences
-            if 'financial_events' not in repr(difference)
-        ]
+        # Objects added by later stages (revision-aware, named explicitly).
+        differences = exclude_stages_after(differences, "4d2f7b91a6c3")
 
     assert differences == []

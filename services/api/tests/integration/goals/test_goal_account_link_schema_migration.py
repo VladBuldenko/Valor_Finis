@@ -21,6 +21,7 @@ from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from tests.database_safety import validate_test_database_url
+from tests.schema_drift import exclude_stages_after
 
 # VF-020C1 schema-expand tests (revision 98acdc7016d2): goal_transactions
 # gains a nullable account_id with a composite Account foreign key, three
@@ -785,12 +786,8 @@ def test_orm_metadata_differs_from_c1_database_only_by_the_d2_objects(c1_databas
     with c1_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
-        # Later stages (VF-020E2/E3) added the financial_events table and its
-        # indexes after this revision; they are not part of this revision's contract.
-        differences = [
-            difference for difference in differences
-            if 'financial_events' not in repr(difference)
-        ]
+        # Objects added by later stages (revision-aware, named explicitly).
+        differences = exclude_stages_after(differences, "98acdc7016d2")
 
     flat = []
     for difference in differences:

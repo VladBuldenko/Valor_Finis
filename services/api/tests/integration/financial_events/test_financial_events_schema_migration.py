@@ -23,6 +23,7 @@ from app.db.database_base import Base
 from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
+from tests.schema_drift import exclude_stages_after
 
 # VF-020E2 schema-expand tests (revision 115998e2e795): the financial_events
 # outbox table, its approved CHECKs, the partial created-event UNIQUE index,
@@ -215,9 +216,12 @@ def _violated_constraint(error: IntegrityError) -> Optional[str]:
 def test_revision_chain_and_single_head() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [E2_REVISION]
+    heads = script.get_heads()
+    assert len(heads) == 1
     revision = script.get_revision(E2_REVISION)
     assert revision.down_revision == D5_REVISION
+    # E2 stays in the ancestry of the single head (later stages build on it).
+    assert E2_REVISION in {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
 
     migration_source = (API_DIR / "alembic" / "versions" / f"{E2_REVISION}_add_financial_events.py").read_text()
     assert "lock_timeout" not in migration_source.lower().replace("no lock_timeout", "")
@@ -829,4 +833,5 @@ def test_orm_metadata_matches_the_e2_schema_exactly(e2_database: Engine) -> None
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    # Objects added by later stages (E4) are not part of the E2 schema.
+    assert exclude_stages_after(differences, E2_REVISION) == []
