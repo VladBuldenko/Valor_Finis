@@ -108,3 +108,20 @@ class AccountReferencedByGoalAllocationError(Exception):
     """
 
     pass
+
+
+class AccountReferencedByRuleError(Exception):
+    """
+    Raised when an Account that a financial rule refers to is deleted or has
+    its currency actually changed (VF-020E5, P57).
+
+    What:
+        Represents the controlled 409 for Account lifecycle protection.
+
+    Why:
+        A rule's source Account is an ownership reference; the database
+        foreign key (ON DELETE RESTRICT) is only the backstop. Archiving an
+        Account is still allowed.
+    """
+
+    pass

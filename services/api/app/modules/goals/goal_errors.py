@@ -266,3 +266,19 @@ class GoalPrioritySetStaleError(Exception):
     """
 
     pass
+
+
+class GoalReferencedByRuleError(Exception):
+    """
+    Raised when a Goal that a rule target refers to is deleted or has its
+    currency actually changed (VF-020E5, P57).
+
+    What:
+        Represents the controlled 409 for Goal lifecycle protection.
+
+    Why:
+        The foreign key is only the backstop. Archiving the Goal is allowed:
+        the rule and its target stay, and a later stage blocks execution.
+    """
+
+    pass

@@ -22,14 +22,10 @@ from typing import Any, List, Sequence
 LATER_STAGES = (
     # VF-020E2: financial_events (mapped by VF-020E3).
     ("115998e2e795", ("financial_events",)),
-    # VF-020E4: the budgets composite unique declared on BudgetModel. The two
-    # rules tables are intentionally NOT mapped until E5 (see below).
-    ("861064d31463", ("uq_budgets_id_user_id",)),
+    # VF-020E4: the budgets composite unique and the two rules tables (mapped
+    # by VF-020E5).
+    ("861064d31463", ("uq_budgets_id_user_id", "financial_rules", "financial_rule_goal_targets")),
 )
-
-# VF-020E4 objects that are deliberately not mapped in the ORM yet. They are
-# expected as "remove_*" differences against a database at E4 or later.
-E4_UNMAPPED_OBJECTS = ("financial_rules", "financial_rule_goal_targets")
 
 REVISION_ORDER = (
     "98acdc7016d2",
@@ -66,11 +62,3 @@ def _matches(difference: Any, names: Sequence[str]) -> bool:
 def exclude_stages_after(differences: Sequence[Any], revision: str) -> List[Any]:
     names = _names_for_stages_after(revision)
     return [difference for difference in differences if not _matches(difference, names)]
-
-
-# Splits out the deliberately unmapped E4 tables (and their indexes) from a
-# database at E4 or later.
-def split_unmapped_e4(differences: Sequence[Any]) -> "tuple[List[Any], List[Any]]":
-    expected = [d for d in differences if _matches(d, E4_UNMAPPED_OBJECTS)]
-    rest = [d for d in differences if not _matches(d, E4_UNMAPPED_OBJECTS)]
-    return expected, rest

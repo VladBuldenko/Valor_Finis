@@ -32,6 +32,10 @@ def import_database_models() -> None:
     from app.modules.financial_events.financial_event_models import (
         FinancialEventModel,
     )
+    from app.modules.financial_rules.financial_rule_models import (
+        FinancialRuleGoalTargetModel,
+        FinancialRuleModel,
+    )
     from app.modules.financial_settings.financial_settings_models import (
         UserFinancialSettingsModel,
     )
@@ -49,6 +53,8 @@ def import_database_models() -> None:
         BudgetVersionModel,
         ExpenseModel,
         FinancialEventModel,
+        FinancialRuleGoalTargetModel,
+        FinancialRuleModel,
         UserFinancialSettingsModel,
         GoalModel,
         GoalTransactionModel,

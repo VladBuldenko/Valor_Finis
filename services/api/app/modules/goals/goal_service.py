@@ -1,12 +1,14 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.accounts import account_repository, account_service
+from app.modules.financial_rules import financial_rule_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
 from app.modules.goals import (
@@ -26,6 +28,7 @@ from app.modules.goals.goal_errors import (
     GoalPartitionInsufficientFundsError,
     GoalPriorityGoalArchivedError,
     GoalPrioritySetStaleError,
+    GoalReferencedByRuleError,
     GoalReservationCapacityError,
     GoalTransactionClientRequestIdTakenError,
     GoalTransactionEffectiveDateInFutureError,
@@ -41,6 +44,7 @@ from app.modules.goals.goal_schemas import (
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
 from app.modules.goals.goal_transaction_schemas import (
     GoalTransactionCreate,
+    GoalTransactionFloorWarning,
     GoalTransactionResponse,
 )
 
@@ -68,6 +72,7 @@ class GoalTransactionCreateResult:
 
     transaction: GoalTransactionResponse
     created: bool
+    warnings: list[GoalTransactionFloorWarning] = field(default_factory=list)
 
 
 # Builds a GoalResponse from a Goal model and its ledger-derived partition
@@ -293,6 +298,16 @@ def update_goal(
                 if has_history:
                     raise GoalCurrencyImmutableError()
 
+                # VF-020E5 (P57): a rule target references the Goal's
+                # currency; an actual change is a controlled 409. Archiving
+                # and same-currency updates are never blocked.
+                if financial_rule_repository.goal_is_referenced_by_rule_target(
+                    db_session=db_session,
+                    goal_id=goal_id,
+                    user_id=user_id,
+                ):
+                    raise GoalReferencedByRuleError()
+
         previous_status = goal_model.status
 
         if "status" in goal_data.model_fields_set and goal_data.status is not None:
@@ -377,6 +392,15 @@ def delete_goal(
         if has_history:
             raise GoalDeletionNotAllowedError()
 
+        # VF-020E5 (P57): a Goal targeted by a rule cannot be deleted; the
+        # check runs under L0 and the Goal lock, before the foreign key.
+        if financial_rule_repository.goal_is_referenced_by_rule_target(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        ):
+            raise GoalReferencedByRuleError()
+
         goal_repository.delete_locked_goal(
             db_session=db_session,
             goal_model=goal_model,
@@ -384,6 +408,15 @@ def delete_goal(
         )
 
         db_session.commit()
+    except IntegrityError as error:
+        db_session.rollback()
+
+        if getattr(getattr(error.orig, "diag", None), "constraint_name", None) == (
+            "fk_financial_rule_goal_targets_goal_id_user_id"
+        ):
+            raise GoalReferencedByRuleError() from error
+
+        raise
     except Exception:
         db_session.rollback()
         raise
@@ -513,6 +546,9 @@ def _resolve_existing_transaction(
     transaction_model: GoalTransactionModel,
     goal_id: UUID,
     transaction_data: GoalTransactionCreate,
+    db_session: Session,
+    user_id: UUID,
+    today: date,
 ) -> GoalTransactionCreateResult:
     if not _matches_original_transaction_request(transaction_model, goal_id, transaction_data):
         raise GoalTransactionIdempotencyConflictError()
@@ -520,7 +556,65 @@ def _resolve_existing_transaction(
     return GoalTransactionCreateResult(
         transaction=GoalTransactionResponse.model_validate(transaction_model),
         created=False,
+        warnings=_replay_floor_warnings(db_session, transaction_model, user_id, today),
     )
+
+
+# Builds the advisory floor warning list for a projected reservable amount
+# (VF-020E5, P79). The warning is activated ONLY by
+# projected_reservable < the Account's enabled floor (equality does not warn);
+# active holds do not exist in E5 and never take part. Nothing is persisted.
+def _floor_warnings(
+    db_session: Session,
+    user_id: UUID,
+    account_id: UUID,
+    projected_reservable_amount: Decimal,
+) -> list[GoalTransactionFloorWarning]:
+    floor = financial_rule_repository.get_enabled_floor_for_account(
+        db_session=db_session,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    cent = Decimal("0.01")
+    projected = projected_reservable_amount.quantize(cent)
+
+    if projected < floor:
+        return [
+            GoalTransactionFloorWarning(
+                minimum_unallocated_floor=floor.quantize(cent),
+                projected_reservable_amount=projected,
+            )
+        ]
+
+    return []
+
+
+# Recomputes the warnings of an idempotent replay from the CURRENT Account and
+# enabled-floor state. The stored linked contribution is already part of the
+# Account's reserved amount, so the projected reservable amount after it is
+# the Account's current reservable amount. Only a linked contribution can
+# carry a warning; the stored transaction itself is returned unchanged.
+def _replay_floor_warnings(
+    db_session: Session,
+    transaction_model: GoalTransactionModel,
+    user_id: UUID,
+    today: date,
+) -> list[GoalTransactionFloorWarning]:
+    if transaction_model.type != "contribution" or transaction_model.account_id is None:
+        return []
+
+    account_model = account_repository.get_account_by_id(
+        db_session=db_session,
+        account_id=transaction_model.account_id,
+        user_id=user_id,
+    )
+    current_reservable = account_service.get_reservable_amount(
+        db_session=db_session,
+        account_model=account_model,
+        as_of=today,
+    )
+
+    return _floor_warnings(db_session, user_id, account_model.id, current_reservable)
 
 
 # Applies the lifecycle, currency, balance and capacity rules for a NEW
@@ -546,7 +640,7 @@ def _validate_new_transaction(
     transaction_data: GoalTransactionCreate,
     user_id: UUID,
     today: date,
-) -> None:
+) -> Optional[Decimal]:
     is_contribution = transaction_data.type == "contribution"
 
     if account_model is None:
@@ -588,7 +682,9 @@ def _validate_new_transaction(
         if reservable_amount <= 0 or transaction_data.amount > reservable_amount:
             raise GoalReservationCapacityError()
 
-        return
+        # The pre-operation reservable amount, used for the advisory floor
+        # warning only; the hard capacity rule above is unchanged.
+        return reservable_amount
 
     linked_balance = goal_transaction_repository.calculate_partition_balance(
         db_session=db_session,
@@ -703,7 +799,9 @@ def create_or_replay_goal_transaction(
         )
 
         if existing_transaction is not None:
-            return _resolve_existing_transaction(existing_transaction, goal_id, transaction_data)
+            return _resolve_existing_transaction(
+                existing_transaction, goal_id, transaction_data, db_session, user_id, today,
+            )
 
         # End the read-only lookup transaction before locking the goal: the
         # lookup holds a table lock on goal_transactions until the
@@ -772,13 +870,16 @@ def create_or_replay_goal_transaction(
             try:
                 return _resolve_existing_transaction(
                     existing_transaction, goal_id, transaction_data,
+                    db_session, user_id, today,
                 )
             finally:
                 # Nothing was written; release the goal lock taken above.
                 db_session.rollback()
 
+    warnings: list[GoalTransactionFloorWarning] = []
+
     try:
-        _validate_new_transaction(
+        pre_operation_reservable = _validate_new_transaction(
             db_session=db_session,
             goal_model=goal_model,
             account_model=account_model,
@@ -786,6 +887,14 @@ def create_or_replay_goal_transaction(
             user_id=user_id,
             today=today,
         )
+
+        if pre_operation_reservable is not None and account_model is not None:
+            warnings = _floor_warnings(
+                db_session,
+                user_id,
+                account_model.id,
+                pre_operation_reservable - transaction_data.amount,
+            )
     except Exception:
         db_session.rollback()
         raise
@@ -828,7 +937,9 @@ def create_or_replay_goal_transaction(
             # fabricate a result; surface the original error.
             raise
 
-        return _resolve_existing_transaction(winning_transaction, goal_id, transaction_data)
+        return _resolve_existing_transaction(
+            winning_transaction, goal_id, transaction_data, db_session, user_id, today,
+        )
     except Exception:
         db_session.rollback()
         raise
@@ -838,6 +949,7 @@ def create_or_replay_goal_transaction(
     return GoalTransactionCreateResult(
         transaction=GoalTransactionResponse.model_validate(transaction_model),
         created=True,
+        warnings=warnings,
     )
 
 

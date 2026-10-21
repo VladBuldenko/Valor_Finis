@@ -1,10 +1,13 @@
 from datetime import date
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.budgets import budget_repository, budget_version_repository
+from app.modules.financial_rules import financial_rule_repository
 from app.modules.budgets.budget_errors import (
+    BudgetReferencedByRuleError,
     BudgetImmutableFieldError,
     BudgetRetroactiveDeactivationError,
 )
@@ -288,8 +291,35 @@ def delete_budget(
     budget_id: UUID,
     user_id: UUID,
 ) -> None:
-    budget_repository.delete_budget(
+    # VF-020E5 (P57, P84): a Budget referenced by a BUDGET_ALERT rule cannot
+    # be deleted. The row is locked first so a concurrent rule write (which
+    # also locks it) and this delete serialize; the foreign key violation is
+    # only the last-line-of-defense and is translated to the same 409.
+    budget_repository.get_budget_by_id_for_update(
         db_session=db_session,
         budget_id=budget_id,
         user_id=user_id,
     )
+
+    if financial_rule_repository.budget_is_referenced_by_rule(
+        db_session=db_session,
+        budget_id=budget_id,
+        user_id=user_id,
+    ):
+        db_session.rollback()
+        raise BudgetReferencedByRuleError()
+
+    try:
+        budget_repository.delete_budget(
+            db_session=db_session,
+            budget_id=budget_id,
+            user_id=user_id,
+        )
+    except IntegrityError as error:
+        db_session.rollback()
+        constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+
+        if constraint_name == "fk_financial_rules_budget_id_user_id":
+            raise BudgetReferencedByRuleError() from error
+
+        raise

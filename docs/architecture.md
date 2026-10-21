@@ -764,7 +764,7 @@ Mobile client                         ✅ core finance flows
 Account transfers (create/list/delete/post) ✅ backend + mobile
 Financial overview (Income/Expenses/Net) ✅ backend + mobile; device refresh acceptance pending (first suitable real transaction)
 Goal ↔ Account reservations (VF-020C) ✅ backend (C2) + mobile (C3)
-Goal priorities and user lock L0 (VF-020D) ✅ backend + mobile (D5 production revision 7c1e5a9b3d28, since superseded by 115998e2e795)
+Goal priorities and user lock L0 (VF-020D) ✅ backend + mobile (D5 production revision 7c1e5a9b3d28, since superseded by 861064d31463)
 Rules engine (VF-020E) contract finalized; not implemented (VF-020F mobile later)
 Web client                            later
 
@@ -774,7 +774,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime merged - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema migration 861064d31463 implemented on a local feature branch, not applied to production; E5 rules runtime not started), then VF-020F mobile
+VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime merged - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema applied to production at revision 861064d31463; E5 rules CRUD and safety-floor runtime implemented on a local feature branch - /api/v1/financial-rules, minimum_unallocated_floor on AccountResponse, manual floor warnings, lifecycle reference pre-checks; not merged or deployed; no AUTO/CONFIRM or dispatcher), then VF-020F mobile
       ↓
 Evolution based on real usage
 

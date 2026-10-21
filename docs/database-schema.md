@@ -1245,10 +1245,10 @@ insert time. New events stay pending with attempts 0; nothing processes them yet
 Income created before E3 has no creation event and is never backfilled.
 
 VF-020E4 (financial_rules, financial_rule_goal_targets and UNIQUE (id, user_id) on
-budgets; migration 861064d31463, down_revision 115998e2e795): IMPLEMENTED ON A LOCAL
-FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTION (production stays at
-115998e2e795). Schema-only expand; the application neither maps nor queries the new
-tables. financial_rules holds the four v1 rule types (INCOME_ALLOCATION,
+budgets; migration 861064d31463, down_revision 115998e2e795): COMPLETE AND APPLIED TO
+PRODUCTION on 2026-10-21 (production schema revision 861064d31463). Schema-only expand;
+VF-020E5 (local feature branch, not merged or deployed) maps the two new tables in the ORM
+and is the first runtime to use them. financial_rules holds the four v1 rule types (INCOME_ALLOCATION,
 MINIMUM_UNALLOCATED_FLOOR, OVERCOMMITMENT_ALERT, BUDGET_ALERT; GOAL_DEADLINE_ALERT is
 not supported) with statuses draft / enabled / paused / disabled, a version, and
 type-specific columns whose cross-type combinations are blocked by per-type shape
@@ -1262,7 +1262,13 @@ NUMERIC(12,2) NULL, position), UNIQUE (rule_id, goal_id), (rule_id, user_id) ->
 financial_rules ON DELETE CASCADE and (goal_id, user_id) -> goals(id, user_id) ON
 DELETE RESTRICT; position is UI order only. budgets gains uq_budgets_id_user_id. Both
 new tables have REVOKE ALL for the Supabase Data API roles. The two rules tables are
-intentionally unmapped in the ORM until E5.
+mapped by VF-020E5 (no schema change).
+
+VF-020E5 (rules CRUD and floor runtime, no migration; local feature branch, NOT pushed,
+merged or deployed): the ORM maps financial_rules and financial_rule_goal_targets exactly
+as created by 861064d31463. The Account safety floor is read from the enabled
+MINIMUM_UNALLOCATED_FLOOR rule (no accounts column). Nothing reads rule executions, holds or
+alerts.
 
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
 v0.6 sections 19.2-19.3): rule_executions, rule_execution_items and

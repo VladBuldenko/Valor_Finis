@@ -58,3 +58,15 @@ class BudgetRetroactiveDeactivationError(Exception):
     """
 
     pass
+
+
+class BudgetReferencedByRuleError(Exception):
+    """
+    Raised when a Budget that a BUDGET_ALERT rule refers to is deleted
+    (VF-020E5, P57, P84).
+
+    What:
+        Represents the controlled 409 for Budget lifecycle protection.
+    """
+
+    pass

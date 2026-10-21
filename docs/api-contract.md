@@ -827,12 +827,45 @@ reload and retry), or for an empty list while the user has ranked Goals; the
 exact current order again is an idempotent 200. The call takes the user
 advisory lock L0, never writes a money row and needs no client_request_id.
 
-Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6): /api/v1/financial-rules, /api/v1/rule-proposals,
-/api/v1/rule-executions and /api/v1/rule-alerts; an additive warnings list on
-the POST goal-transaction response, and additive Account fields
-(minimum_unallocated_floor, active_rule_holds, rule_capacity). None of them
-exists in the API yet.
+Manual floor warning (VF-020E5, implemented on the local feature branch
+feat/VF-020E5-rules-crud-floor-runtime; not merged or deployed): the POST
+/api/v1/goals/{goal_id}/transactions response (201 and the 200 replay) gains an
+additive warnings list; GET /api/v1/goals/{goal_id}/transactions is unchanged. The list
+is empty, or has one object { "code": "minimum_unallocated_floor",
+"minimum_unallocated_floor": "1000.00", "projected_reservable_amount": "700.00" },
+and only for a successful linked contribution: projected_reservable_amount is
+reservable_amount minus the contribution, and the warning appears only when it is
+strictly below the Account's enabled floor. It is advisory: not persisted, not part of
+the idempotency payload, never blocks (the reservable-capacity 409 is unchanged).
+On a replay the warnings are recomputed from the current Account and floor state
+(for the stored contribution, already reserved, the projected amount is the current
+reservable_amount). Tracked contributions, withdrawals and releases always return [].
+There is no projected_rule_capacity in this stage.
+
+Account additive field (VF-020E5, same branch): every Account response carries
+minimum_unallocated_floor - the floor_amount of the user's ENABLED
+MINIMUM_UNALLOCATED_FLOOR rule for that Account, otherwise "0.00". It does not change
+reservable_amount, unallocated_amount or any balance. Archived Accounts still return
+their configured enabled floor.
+
+Financial rules (VF-020E5, same branch): /api/v1/financial-rules
+  POST (201), GET, GET /{id}, PATCH /{id}, DELETE /{id} (204), and
+  POST /{id}/enable | /pause | /disable.
+Rule types (discriminated by rule_type): INCOME_ALLOCATION, MINIMUM_UNALLOCATED_FLOOR,
+OVERCOMMITMENT_ALERT, BUDGET_ALERT. A rule is created as draft, version 1; clients never
+send user_id, status, version, active_since or timestamps (422). Status changes use the
+action endpoints only. Only a MINIMUM_UNALLOCATED_FLOOR rule can be enabled / paused /
+disabled; INCOME_ALLOCATION and alert rules stay drafts (enable returns 409). A material
+edit increments version (execution_mode, source_account_id, income_sources, policy,
+percent, cap_at_target, allow_partial, effective_from, targets, floor_amount, the alert
+subject); name, description, execution_order and target positions do not. A missing or
+foreign rule / Account / Goal / Budget is 404; a lifecycle conflict (duplicate floor or
+alert subject, archived Account / Goal, invalid transition, delete of an enabled or
+paused rule) is 409; a currency mismatch or inconsistent fields is 422. Deleting a Goal
+or Budget, or deleting / changing the currency of an Account, that a rule references is a
+controlled 409 (archiving is allowed). Planned, NOT implemented: /preview, /evaluate,
+/api/v1/rule-proposals, /api/v1/rule-executions, /api/v1/rule-alerts, and the Account
+fields active_rule_holds and rule_capacity.
 
 Delete Goal
 
