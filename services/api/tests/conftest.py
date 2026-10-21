@@ -16,6 +16,11 @@ from app.modules.financial_rules.financial_rule_models import (
     FinancialRuleGoalTargetModel,
     FinancialRuleModel,
 )
+from app.modules.financial_rules.rule_execution_models import (
+    RuleExecutionAuditModel,
+    RuleExecutionItemModel,
+    RuleExecutionModel,
+)
 from app.modules.financial_settings.financial_settings_models import (
     UserFinancialSettingsModel,
 )
@@ -107,6 +112,10 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
         db_session.query(FinancialEventModel).delete()
+        db_session.query(RuleExecutionAuditModel).delete()
+        db_session.query(RuleExecutionItemModel).delete()
+        db_session.query(GoalTransactionModel).delete()
+        db_session.query(RuleExecutionModel).delete()
         db_session.query(FinancialRuleGoalTargetModel).delete()
         db_session.query(FinancialRuleModel).delete()
         db_session.query(IncomeModel).delete()
@@ -125,6 +134,10 @@ def clean_database() -> Generator[None, None, None]:
         db_session.query(ReceiptModel).delete()
         db_session.query(ExpenseModel).delete()
         db_session.query(FinancialEventModel).delete()
+        db_session.query(RuleExecutionAuditModel).delete()
+        db_session.query(RuleExecutionItemModel).delete()
+        db_session.query(GoalTransactionModel).delete()
+        db_session.query(RuleExecutionModel).delete()
         db_session.query(FinancialRuleGoalTargetModel).delete()
         db_session.query(FinancialRuleModel).delete()
         db_session.query(IncomeModel).delete()
