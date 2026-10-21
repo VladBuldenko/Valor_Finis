@@ -22,7 +22,6 @@ from app.db.database_base import Base
 from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
-from tests.schema_drift import E4_UNMAPPED_OBJECTS, split_unmapped_e4
 
 # VF-020E4 schema-expand tests (revision 861064d31463): financial_rules,
 # financial_rule_goal_targets and UNIQUE (budgets.id, budgets.user_id).
@@ -1132,33 +1131,14 @@ def test_upgrade_downgrade_upgrade_cycle(e2_database: Engine) -> None:
 # ------------------------------------------------------------------
 
 
-def test_application_code_does_not_reference_the_new_tables() -> None:
-    offenders = [
-        str(path.relative_to(API_DIR))
-        for path in APP_DIR.rglob("*.py")
-        if any(
-            ("financial_rules" in line or "financial_rule_goal_targets" in line)
-            and not line.strip().startswith("#")
-            for line in path.read_text(encoding="utf-8").splitlines()
-        )
-    ]
-
-    assert offenders == []
-
-
-def test_orm_metadata_matches_the_e4_schema_except_the_deliberately_unmapped_tables(e4_database: Engine) -> None:
+def test_orm_metadata_matches_the_e4_schema_exactly(e4_database: Engine) -> None:
+    # VF-020E5 maps the two E4 tables; the ORM metadata must equal the E4
+    # database with no remaining difference.
     import_database_models()
-    assert RULES not in Base.metadata.tables and TARGETS not in Base.metadata.tables
+    assert RULES in Base.metadata.tables and TARGETS in Base.metadata.tables
 
     with e4_database.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    expected, remaining = split_unmapped_e4(differences)
-    assert remaining == []
-    assert sorted(d[1].name for d in expected if d[0] == "remove_table") == sorted(E4_UNMAPPED_OBJECTS)
-    # Only removals of the two unmapped tables and their own indexes - nothing else.
-    assert {d[0] for d in expected} <= {"remove_table", "remove_index"}
-    for operation, subject in expected:
-        owner = subject.name if operation == "remove_table" else subject.table.name
-        assert owner in E4_UNMAPPED_OBJECTS
+    assert differences == []

@@ -11,6 +11,7 @@ from app.modules.accounts import (
     account_transfer_repository,
 )
 from app.modules.accounts.account_errors import (
+    AccountReferencedByRuleError,
     AccountArchivedError,
     AccountCurrencyImmutableError,
     AccountDeletionNotAllowedError,
@@ -28,6 +29,7 @@ from app.modules.accounts.account_transaction_schemas import (
     AccountTransactionCreate,
     AccountTransactionResponse,
 )
+from app.modules.financial_rules import financial_rule_repository
 from app.modules.goals import goal_transaction_repository
 
 
@@ -97,6 +99,14 @@ def _build_account_responses(
         user_id=user_id,
         account_ids=account_ids,
     )
+    # One grouped query for every Account's enabled floor (no per-Account
+    # query). The floor is an extra read field only: it never changes the
+    # balance or capacity figures above.
+    floors = financial_rule_repository.get_enabled_floors_for_accounts(
+        db_session=db_session,
+        user_id=user_id,
+        account_ids=account_ids,
+    )
 
     responses = []
 
@@ -142,6 +152,7 @@ def _build_account_responses(
                     else "normal"
                 ),
                 negative_balance=balance_as_of_today < 0,
+                minimum_unallocated_floor=floors.get(account_model.id, zero).quantize(cent),
                 created_at=account_model.created_at,
                 updated_at=account_model.updated_at,
             )
@@ -348,6 +359,14 @@ def update_account(
                 db_session.rollback()
                 raise AccountReferencedByPlannedTransferError()
 
+            if financial_rule_repository.account_is_referenced_by_rule(
+                db_session=db_session,
+                account_id=account_id,
+                user_id=user_id,
+            ):
+                db_session.rollback()
+                raise AccountReferencedByRuleError()
+
     account_model = account_repository.apply_account_update(
         db_session=db_session,
         account_model=account_model,
@@ -443,6 +462,14 @@ def delete_account(
     if has_planned_transfers:
         db_session.rollback()
         raise AccountReferencedByPlannedTransferError()
+
+    if financial_rule_repository.account_is_referenced_by_rule(
+        db_session=db_session,
+        account_id=account_id,
+        user_id=user_id,
+    ):
+        db_session.rollback()
+        raise AccountReferencedByRuleError()
 
     account_repository.delete_locked_account(
         db_session=db_session,

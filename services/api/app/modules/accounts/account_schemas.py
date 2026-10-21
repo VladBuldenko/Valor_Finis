@@ -362,5 +362,15 @@ class AccountResponse(AccountBase):
         description="True when balance_as_of_today is below zero.",
     )
 
+    minimum_unallocated_floor: Decimal = Field(
+        description=(
+            "floor_amount of the user's ENABLED MINIMUM_UNALLOCATED_FLOOR rule "
+            "for this Account, otherwise 0.00 (a draft, paused or disabled "
+            "floor contributes 0.00). Read-only. It does not reduce "
+            "reservable_amount, unallocated_amount or any balance."
+        ),
+        examples=["1000.00"],
+    )
+
     created_at: datetime
     updated_at: datetime

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.modules.accounts.account_errors import (
     AccountNotFoundError,
     AccountReferencedByGoalAllocationError,
+    AccountReferencedByRuleError,
 )
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_schemas import AccountCreate, AccountUpdate
@@ -17,6 +18,10 @@ from app.modules.accounts.account_schemas import AccountCreate, AccountUpdate
 # constraint is a race/last-line-of-defense case and becomes a controlled 409
 # instead of a 500.
 GOAL_ACCOUNT_LINK_FK_CONSTRAINT = "fk_goal_transactions_account_id_user_id_currency"
+
+# The financial rule source-Account foreign key (VF-020E4/E5): the same
+# last-line-of-defense translation for a rule that references the Account.
+RULE_ACCOUNT_FK_CONSTRAINT = "fk_financial_rules_source_account_id_user_id"
 
 
 def _commit_translating_goal_link_violation(db_session: Session) -> None:
@@ -32,6 +37,9 @@ def _commit_translating_goal_link_violation(db_session: Session) -> None:
 
         if constraint_name == GOAL_ACCOUNT_LINK_FK_CONSTRAINT:
             raise AccountReferencedByGoalAllocationError() from error
+
+        if constraint_name == RULE_ACCOUNT_FK_CONSTRAINT:
+            raise AccountReferencedByRuleError() from error
 
         raise
 

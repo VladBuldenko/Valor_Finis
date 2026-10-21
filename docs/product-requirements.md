@@ -73,7 +73,7 @@ milestones change the original "Out of Scope" items. Neither is implemented yet.
   money.
 - Goals hardening (VF-020B) and the Account-linked reservations (VF-020C, backend
   and mobile) are implemented, and so are Goal priorities with the user lock
-  (VF-020D, D5 revision `7c1e5a9b3d28`; production schema revision is now `115998e2e795`). A reservation is a Goal
+  (VF-020D, D5 revision `7c1e5a9b3d28`; production schema revision is now `861064d31463`). A reservation is a Goal
   transaction linked to one Account, limited by that Account's reservable
   capacity (balance as of today minus existing reservations, scheduled
   outflows and planned outgoing Transfers); it never blocks real expenses or
@@ -84,7 +84,7 @@ milestones change the original "Out of Scope" items. Neither is implemented yet.
   floor, rules and alerts arrive with VF-020E (a `MINIMUM_UNALLOCATED_FLOOR` rule;
   warning-only for manual reservations, strict for rule allocations); VF-020E is
   backend only, the mobile rules UX is VF-020F. The VF-020E contract (v0.6) is
-  finalized in `docs/modules/smart-goals-rules.md`; nothing of it is implemented.
+  finalized in `docs/modules/smart-goals-rules.md`. Implemented so far: the Income outbox, the rules schema (applied to production) and, on a local branch not yet merged or deployed, rules CRUD with the safety floor and its manual-reservation warning; rule execution (AUTO / CONFIRM) is not implemented.
 - "Automation" is now in planned scope only as internal allocation rules: each
   rule runs in `AUTO` or `CONFIRM` mode, and both modes create or propose
   internal Goal reservations only.

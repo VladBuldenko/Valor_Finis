@@ -10,6 +10,7 @@ from app.modules.accounts.account_errors import (
     AccountNotFoundError,
     AccountReferencedByGoalAllocationError,
     AccountReferencedByPlannedTransferError,
+    AccountReferencedByRuleError,
 )
 from app.modules.accounts.account_transfer_errors import (
     AccountTransferAlreadyPostedError,
@@ -22,6 +23,7 @@ from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
     BudgetImmutableFieldError,
     BudgetNotFoundError,
+    BudgetReferencedByRuleError,
     BudgetRetroactiveDeactivationError,
 )
 from app.modules.categories.errors import (
@@ -40,6 +42,16 @@ from app.modules.fx.fx_errors import (
     FxProviderUnavailableError,
     FxRateUnavailableError,
 )
+from app.modules.financial_rules.financial_rule_errors import (
+    FinancialRuleActivationNotAvailableError,
+    FinancialRuleAlreadyExistsError,
+    FinancialRuleCurrencyMismatchError,
+    FinancialRuleDeletionNotAllowedError,
+    FinancialRuleInvalidFieldsError,
+    FinancialRuleInvalidTransitionError,
+    FinancialRuleNotFoundError,
+    FinancialRuleSubjectArchivedError,
+)
 from app.modules.goals.goal_errors import (
     GoalAccountCurrencyMismatchError,
     GoalArchivedError,
@@ -51,6 +63,7 @@ from app.modules.goals.goal_errors import (
     GoalPartitionInsufficientFundsError,
     GoalPriorityGoalArchivedError,
     GoalPrioritySetStaleError,
+    GoalReferencedByRuleError,
     GoalReservationCapacityError,
     GoalTransactionEffectiveDateInFutureError,
     GoalTransactionIdempotencyConflictError,
@@ -106,6 +119,46 @@ DOMAIN_ERROR_RESPONSES: Dict[
     AccountReferencedByGoalAllocationError: (
         status.HTTP_409_CONFLICT,
         "Account is referenced by Goal reservations and cannot be deleted or have its currency changed.",
+    ),
+    FinancialRuleNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Financial rule not found.",
+    ),
+    FinancialRuleAlreadyExistsError: (
+        status.HTTP_409_CONFLICT,
+        "A rule of this type already exists for this subject.",
+    ),
+    FinancialRuleInvalidTransitionError: (
+        status.HTTP_409_CONFLICT,
+        "This status change is not allowed from the rule's current status.",
+    ),
+    FinancialRuleActivationNotAvailableError: (
+        status.HTTP_409_CONFLICT,
+        "This rule type cannot be enabled yet.",
+    ),
+    FinancialRuleDeletionNotAllowedError: (
+        status.HTTP_409_CONFLICT,
+        "Only draft or disabled rules can be deleted.",
+    ),
+    FinancialRuleSubjectArchivedError: (
+        status.HTTP_409_CONFLICT,
+        "The rule's Account or Goal is archived.",
+    ),
+    FinancialRuleCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "The source Account and every target Goal must use the same currency.",
+    ),
+    AccountReferencedByRuleError: (
+        status.HTTP_409_CONFLICT,
+        "Account is referenced by a financial rule and cannot be deleted or have its currency changed.",
+    ),
+    GoalReferencedByRuleError: (
+        status.HTTP_409_CONFLICT,
+        "Goal is referenced by a financial rule and cannot be deleted or have its currency changed.",
+    ),
+    BudgetReferencedByRuleError: (
+        status.HTTP_409_CONFLICT,
+        "Budget is referenced by a financial rule and cannot be deleted.",
     ),
     AccountTransferNotFoundError: (
         status.HTTP_404_NOT_FOUND,
@@ -327,6 +380,23 @@ async def handle_domain_error(
     )
 
 
+# Returns a 422 for an invalid financial-rule request. The message is built by
+# the rules service from validation text only - never from database
+# constraint names or SQL.
+async def handle_financial_rule_invalid_fields(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    del request
+
+    message = getattr(error, "message", "Invalid financial rule.")
+
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": message},
+    )
+
+
 # Registers all domain exception handlers on the FastAPI application.
 # This function exists to configure centralized HTTP error handling
 # during application startup.
@@ -342,3 +412,7 @@ def register_exception_handlers(
             error_type,
             handle_domain_error,
         )
+    app.add_exception_handler(
+        FinancialRuleInvalidFieldsError,
+        handle_financial_rule_invalid_fields,
+    )

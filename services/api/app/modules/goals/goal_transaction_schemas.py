@@ -213,3 +213,37 @@ class GoalTransactionResponse(BaseModel):
             "reservations existed."
         ),
     )
+
+
+class GoalTransactionFloorWarning(BaseModel):
+    """
+    Advisory floor warning on a successful manual linked contribution
+    (VF-020E5, P79).
+
+    What:
+        Exactly the E5 keys: the warning code, the Account's enabled floor and
+        the projected reservable amount after the contribution.
+
+    Why:
+        The warning is advisory only: it is computed at response time, never
+        persisted, never part of the idempotency payload, and never blocks
+        the reservation. It is activated only by
+        projected_reservable_amount < minimum_unallocated_floor. There is no
+        projected_rule_capacity in E5 (holds do not exist yet).
+    """
+
+    code: Literal["minimum_unallocated_floor"] = "minimum_unallocated_floor"
+    minimum_unallocated_floor: Decimal
+    projected_reservable_amount: Decimal
+
+
+class GoalTransactionCreatedResponse(GoalTransactionResponse):
+    """
+    The POST /goals/{id}/transactions response: the unchanged transaction
+    shape plus the additive, non-persisted warnings list.
+
+    Why:
+        The historical GET transaction schema is deliberately not changed.
+    """
+
+    warnings: list[GoalTransactionFloorWarning] = Field(default_factory=list)

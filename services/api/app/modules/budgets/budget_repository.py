@@ -119,6 +119,40 @@ def get_budget_by_id(
     return budget_model
 
 
+# Returns one user-owned Budget row locked FOR UPDATE.
+# This function exists so a rule referencing the Budget (VF-020E5) and a
+# Budget delete serialize on the same row: the rule write takes the lock
+# before inserting its foreign key reference, and the delete takes it before
+# checking for references.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - budget_id: Budget identifier.
+# - user_id: authenticated user identifier.
+# Returns:
+# - The locked BudgetModel.
+# Raises:
+# - BudgetNotFoundError: missing or owned by another user.
+def get_budget_by_id_for_update(
+    db_session: Session,
+    budget_id: UUID,
+    user_id: UUID,
+) -> BudgetModel:
+    budget_model = (
+        db_session.query(BudgetModel)
+        .filter(
+            BudgetModel.id == budget_id,
+            BudgetModel.user_id == user_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if budget_model is None:
+        raise BudgetNotFoundError()
+
+    return budget_model
+
+
 # Updates an existing budget owned by the authenticated user.
 # This function exists to isolate PostgreSQL update operations
 # from business logic and HTTP handling.

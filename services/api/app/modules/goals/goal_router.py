@@ -15,6 +15,7 @@ from app.modules.goals.goal_schemas import (
 )
 from app.modules.goals.goal_transaction_schemas import (
     GoalTransactionCreate,
+    GoalTransactionCreatedResponse,
     GoalTransactionResponse,
 )
 
@@ -176,14 +177,14 @@ def delete_goal(
 # - Domain exceptions propagated to the global exception handlers.
 @router.post(
     "/{goal_id}/transactions",
-    response_model=GoalTransactionResponse,
+    response_model=GoalTransactionCreatedResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
         status.HTTP_201_CREATED: {
             "description": "A new goal transaction was created.",
         },
         status.HTTP_200_OK: {
-            "model": GoalTransactionResponse,
+            "model": GoalTransactionCreatedResponse,
             "description": (
                 "Idempotent replay: client_request_id already identifies a "
                 "goal transaction created from the same payload; it is "
@@ -198,7 +199,7 @@ def create_goal_transaction(
     response: Response,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
-) -> GoalTransactionResponse:
+) -> GoalTransactionCreatedResponse:
     result = goal_service.create_or_replay_goal_transaction(
         db_session=db_session,
         goal_id=goal_id,
@@ -209,7 +210,12 @@ def create_goal_transaction(
     if not result.created:
         response.status_code = status.HTTP_200_OK
 
-    return result.transaction
+    # The warnings list is advisory: it is computed for this response only and
+    # never stored (on a replay it is recomputed from the current state).
+    return GoalTransactionCreatedResponse(
+        **result.transaction.model_dump(),
+        warnings=result.warnings,
+    )
 
 
 # Returns a goal's full transaction history through the API.

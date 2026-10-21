@@ -152,6 +152,7 @@ def test_account_response_allows_negative_current_balance() -> None:
         reservable_amount=Decimal("-25.00"),
         allocation_status="normal",
         negative_balance=True,
+        minimum_unallocated_floor=Decimal("0.00"),
         created_at=datetime(2026, 9, 23),
         updated_at=datetime(2026, 9, 23),
     )
