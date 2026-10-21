@@ -1484,7 +1484,7 @@ exactly-once / audit proof.
 
 ### 19.3 New tables (each with the Supabase Data API REVOKE) — final E contract (APPROVED P78–P88)
 
-Money columns use `NUMERIC(12,2)` like the existing money columns. Every user-owned table
+Money columns use `NUMERIC(12,2)` like the existing money columns. **Documented exception (VF-020E6):** the three capacity-snapshot columns of `rule_executions` (`capacity_reservable`, `capacity_floor`, `capacity_holds`) are `NUMERIC(18,2)`: they are signed aggregates (sums over arbitrarily many ledger rows, like `AccountResponse.current_balance`, which has no `max_digits` for the same reason), so they can exceed the range of one canonical money row, and a `NUMERIC(12,2)` column would make the E7 insert fail with a numeric overflow. Every canonical amount column (`source_amount`, `planned_amount`, `applied_amount`, `floor_amount`, `amount_or_cap`) stays `NUMERIC(12,2)`. Every user-owned table
 has `user_id`, `UNIQUE (id, user_id)` where it is an FK target, and the Data API REVOKE
 pattern of `1edb74dc96d8` / `edcfdf3f7114`. **Rejected:** `accounts.minimum_unallocated_floor`
 (the floor is a rule row, §10.6).

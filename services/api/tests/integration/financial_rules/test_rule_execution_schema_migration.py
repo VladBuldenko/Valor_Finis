@@ -377,6 +377,31 @@ def test_execution_idempotency_key_excludes_the_rule_version(e6_database: Engine
     _exec_ok(world, source_id=uuid4())  # another source: fine
 
 
+def test_capacity_snapshots_are_wider_than_a_canonical_money_row_by_design(e6_database: Engine) -> None:
+    # Explicit, documented exception to NUMERIC(12,2) (contract section 19.3):
+    # reservable / floor / holds are AGGREGATES (sums over arbitrarily many ledger
+    # rows, like AccountResponse.current_balance, which has no max_digits for the
+    # same reason), so they can exceed the range of one canonical money row. Every
+    # canonical amount column stays NUMERIC(12,2).
+    world = World(e6_database)
+    wide = Decimal("12345678901.23")  # 11 integer digits: out of range for NUMERIC(12,2)
+    execution_id = _exec_ok(world, capacity_reservable=wide, capacity_floor=Decimal("1000.00"), capacity_holds=-wide)
+
+    assert _count(e6_database, "SELECT capacity_reservable FROM rule_executions WHERE id = :i", i=execution_id) == wide
+    assert _count(e6_database, "SELECT capacity_holds FROM rule_executions WHERE id = :i", i=execution_id) == -wide
+
+    with pytest.raises(Exception) as error:  # numeric field overflow (DataError), not a silent truncation
+        _exec_ok(world, source_amount=wide)
+    assert "numeric field overflow" in str(error.value)
+    for override in ({"planned_amount": wide}, {"applied_amount": wide}):
+        with pytest.raises(Exception) as error:
+            _insert_item(e6_database, execution_id, world.user_id, world.goal_id, world.account_id, **override)
+        assert "numeric field overflow" in str(error.value)
+    actual, _ = _columns(e6_database, EXECUTIONS)
+    assert [actual[c][3:] for c in ("capacity_reservable", "capacity_floor", "capacity_holds")] == [(18, 2)] * 3
+    assert actual["source_amount"][3:] == (12, 2)
+
+
 def test_sources_are_soft_references(e6_database: Engine) -> None:
     with e6_database.connect() as connection:
         fks = connection.execute(text(

@@ -1277,7 +1277,7 @@ IMPLEMENTED ON A LOCAL FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTI
   triggering_event_id (SOFT references, no FK), the typed source snapshot (source_amount
   NUMERIC(12,2), source_currency, source_received_at, source_account_id NULL,
   source_income_source), the capacity snapshot (capacity_reservable / capacity_floor /
-  capacity_holds NUMERIC(18,2) NULL), status (awaiting_confirmation, executed,
+  capacity_holds NUMERIC(18,2) NULL - a documented exception to NUMERIC(12,2): they are aggregates that can exceed one money row; every canonical amount column is NUMERIC(12,2)), status (awaiting_confirmation, executed,
   executed_partial, skipped, blocked, rejected, expired, cancelled), reason_code,
   hold_sequence BIGINT NULL, expires_at, decided_at, timestamps; UNIQUE (user_id, rule_id,
   source_type, source_id) (the rule version is not part of it), UNIQUE (id, user_id), a
@@ -1302,6 +1302,14 @@ IMPLEMENTED ON A LOCAL FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTI
   any execution or rule-generated GoalTransaction exists. The migration locks goals,
   accounts, financial_rules (SHARE ROW EXCLUSIVE) and goal_transactions (ACCESS EXCLUSIVE)
   in that order; the application does not use any of the new objects yet.
+E7 requirements recorded by the E6 schema review: map goal_transactions.rule_execution_id, its FK,
+the three CHECKs (replacing the C1 key CHECK in the model), the partial index and
+uq_goal_transactions_id_user_id on GoalTransactionModel and drop the E7-deferred names from the
+drift helper; write an execution, its items, the GoalTransactions and the audit rows in one
+transaction under L0 with the item's goal, account, amount and execution agreeing with the
+transaction (the schema binds only (goal_transaction_id, user_id)); and add controlled-409
+pre-checks for deleting a Rule, deleting a Goal or Account, and changing an Account currency
+while execution history references them (every new FK is RESTRICT).
 
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
 v0.6 sections 19.2-19.3): rule_alerts (E9A) and the runtime use of the E6 objects (E7). The Account safety floor is a

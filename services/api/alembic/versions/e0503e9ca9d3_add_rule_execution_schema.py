@@ -172,8 +172,15 @@ def upgrade() -> None:
         sa.Column("source_received_at", sa.Date(), nullable=False),
         sa.Column("source_account_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("source_income_source", sa.String(length=20), nullable=False),
-        # Capacity snapshot at decision time (signed; wider than a money row
-        # because an Account balance is a sum of arbitrarily many rows).
+        # Capacity snapshot at decision time. DOCUMENTED EXCEPTION to the
+        # NUMERIC(12,2) money convention (contract section 19.3): these three
+        # values are AGGREGATES (sums over arbitrarily many ledger rows, exactly
+        # like AccountResponse.current_balance, which deliberately has no
+        # max_digits), so they can exceed the range of one canonical money row.
+        # A NUMERIC(12,2) column would make the E7 insert of an execution fail
+        # with a numeric overflow for such an Account. Every canonical amount
+        # column in this migration (source_amount, planned_amount,
+        # applied_amount) is NUMERIC(12,2).
         sa.Column("capacity_reservable", sa.Numeric(18, 2), nullable=True),
         sa.Column("capacity_floor", sa.Numeric(18, 2), nullable=True),
         sa.Column("capacity_holds", sa.Numeric(18, 2), nullable=True),
