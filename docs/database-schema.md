@@ -1264,16 +1264,55 @@ DELETE RESTRICT; position is UI order only. budgets gains uq_budgets_id_user_id.
 new tables have REVOKE ALL for the Supabase Data API roles. The two rules tables are
 mapped by VF-020E5 (no schema change).
 
-VF-020E5 (rules CRUD and floor runtime, no migration; local feature branch, NOT pushed,
-merged or deployed): the ORM maps financial_rules and financial_rule_goal_targets exactly
+VF-020E5 (rules CRUD and floor runtime, no migration; merged, PR #88): the ORM maps financial_rules and financial_rule_goal_targets exactly
 as created by 861064d31463. The Account safety floor is read from the enabled
 MINIMUM_UNALLOCATED_FLOOR rule (no accounts column). Nothing reads rule executions, holds or
 alerts.
 
+VF-020E6 (execution schema; migration e0503e9ca9d3, down_revision 861064d31463):
+IMPLEMENTED ON A LOCAL FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTION
+(production stays at 861064d31463). Schema-only expand:
+- rule_executions: id, user_id, rule_id (FK (rule_id, user_id) -> financial_rules RESTRICT),
+  rule_version, params_snapshot JSONB, source_type ('income'), source_id and
+  triggering_event_id (SOFT references, no FK), the typed source snapshot (source_amount
+  NUMERIC(12,2), source_currency, source_received_at, source_account_id NULL,
+  source_income_source), the capacity snapshot (capacity_reservable / capacity_floor /
+  capacity_holds NUMERIC(18,2) NULL - a documented exception to NUMERIC(12,2): they are aggregates that can exceed one money row; every canonical amount column is NUMERIC(12,2)), status (awaiting_confirmation, executed,
+  executed_partial, skipped, blocked, rejected, expired, cancelled), reason_code,
+  hold_sequence BIGINT NULL, expires_at, decided_at, timestamps; UNIQUE (user_id, rule_id,
+  source_type, source_id) (the rule version is not part of it), UNIQUE (id, user_id), a
+  partial UNIQUE index on hold_sequence, and CHECK (hold_sequence IS NULL) = (expires_at IS
+  NULL) - never tied to the current status, so a terminal proposal keeps its hold_sequence.
+- The sequence rule_execution_hold_sequence (owned by the column, no column default): only a
+  CONFIRM proposal takes nextval, once.
+- rule_execution_items: id, user_id, execution_id, goal_id, account_id, position,
+  planned_amount, applied_amount NULL, goal_transaction_id NULL UNIQUE; composite ownership
+  FKs to the execution, the Goal, the Account and goal_transactions (all RESTRICT);
+  UNIQUE (execution_id, goal_id).
+- rule_execution_audit: append-only; approved code, actor (system / user), related_event_id
+  (soft), details JSONB; composite FK to the execution (RESTRICT).
+- goal_transactions: rule_execution_id UUID NULL with the composite FK (rule_execution_id,
+  user_id) -> rule_executions RESTRICT; the C1 CHECK
+  ck_goal_transactions_linked_requires_client_request_id is REPLACED by
+  ck_goal_transactions_linked_requires_origin (client key OR rule execution), plus
+  ck_goal_transactions_origin_exclusive and ck_goal_transactions_rule_execution_shape;
+  UNIQUE (id, user_id). Every legacy row stays valid; client_request_id remains UUID NULL and
+  no fake key exists for rule-generated rows.
+- Data API: REVOKE ALL on the three tables and the sequence. The downgrade refuses to run if
+  any execution or rule-generated GoalTransaction exists. The migration locks goals,
+  accounts, financial_rules (SHARE ROW EXCLUSIVE) and goal_transactions (ACCESS EXCLUSIVE)
+  in that order; the application does not use any of the new objects yet.
+E7 requirements recorded by the E6 schema review: map goal_transactions.rule_execution_id, its FK,
+the three CHECKs (replacing the C1 key CHECK in the model), the partial index and
+uq_goal_transactions_id_user_id on GoalTransactionModel and drop the E7-deferred names from the
+drift helper; write an execution, its items, the GoalTransactions and the audit rows in one
+transaction under L0 with the item's goal, account, amount and execution agreeing with the
+transaction (the schema binds only (goal_transaction_id, user_id)); and add controlled-409
+pre-checks for deleting a Rule, deleting a Goal or Account, and changing an Account currency
+while execution history references them (every new FK is RESTRICT).
+
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): rule_executions, rule_execution_items and
-rule_execution_audit plus goal_transactions.rule_execution_id with a replaced
-linked-origin CHECK (E6), and rule_alerts (E9A). The Account safety floor is a
+v0.6 sections 19.2-19.3): rule_alerts (E9A) and the runtime use of the E6 objects (E7). The Account safety floor is a
 financial_rules row, never an accounts column. None of these exist in the schema
 yet; the current ck_goal_transactions_linked_requires_client_request_id above
 stays in force until E6.

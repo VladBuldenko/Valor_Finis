@@ -84,7 +84,7 @@ milestones change the original "Out of Scope" items. Neither is implemented yet.
   floor, rules and alerts arrive with VF-020E (a `MINIMUM_UNALLOCATED_FLOOR` rule;
   warning-only for manual reservations, strict for rule allocations); VF-020E is
   backend only, the mobile rules UX is VF-020F. The VF-020E contract (v0.6) is
-  finalized in `docs/modules/smart-goals-rules.md`. Implemented so far: the Income outbox, the rules schema (applied to production) and, on a local branch not yet merged or deployed, rules CRUD with the safety floor and its manual-reservation warning; rule execution (AUTO / CONFIRM) is not implemented.
+  finalized in `docs/modules/smart-goals-rules.md`. Implemented so far: the Income outbox, the rules schema (applied to production) rules CRUD with the safety floor and its manual-reservation warning (merged), and, as a local migration not yet applied to production, the execution schema; rule execution (AUTO / CONFIRM) is not implemented.
 - "Automation" is now in planned scope only as internal allocation rules: each
   rule runs in `AUTO` or `CONFIRM` mode, and both modes create or propose
   internal Goal reservations only.

@@ -774,7 +774,7 @@ Production operational and security hardening is ongoing.
 
 The next architecture steps are:
 
-VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime merged - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema applied to production at revision 861064d31463; E5 rules CRUD and safety-floor runtime implemented on a local feature branch - /api/v1/financial-rules, minimum_unallocated_floor on AccountResponse, manual floor warnings, lifecycle reference pre-checks; not merged or deployed; no AUTO/CONFIRM or dispatcher), then VF-020F mobile
+VF-020E rules engine (backend; E2 financial_events schema applied to production at revision 115998e2e795; E3 Income outbox runtime merged - Income create/update/delete write pending financial_events rows in the same transaction, no processing yet; E4 rules schema applied to production at revision 861064d31463; E5 rules CRUD and safety-floor runtime merged (PR #88) - /api/v1/financial-rules, minimum_unallocated_floor on AccountResponse, manual floor warnings, lifecycle reference pre-checks; E6 execution schema (rule_executions, items, audit, hold sequence, goal_transactions.rule_execution_id) implemented as migration e0503e9ca9d3 on a local feature branch, not applied to production; no AUTO/CONFIRM or dispatcher), then VF-020F mobile
       ↓
 Evolution based on real usage
 

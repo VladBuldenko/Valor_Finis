@@ -2,6 +2,8 @@ from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
+from sqlalchemy.orm import Session
 
 from app.db.database_session import SessionLocal, engine
 from app.main import app
@@ -15,6 +17,11 @@ from app.modules.financial_events.financial_event_models import FinancialEventMo
 from app.modules.financial_rules.financial_rule_models import (
     FinancialRuleGoalTargetModel,
     FinancialRuleModel,
+)
+from app.modules.financial_rules.rule_execution_models import (
+    RuleExecutionAuditModel,
+    RuleExecutionItemModel,
+    RuleExecutionModel,
 )
 from app.modules.financial_settings.financial_settings_models import (
     UserFinancialSettingsModel,
@@ -88,6 +95,52 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+# Rule-execution tables created by migration e0503e9ca9d3 (VF-020E6). They are
+# OPTIONAL for the cleanup so the same fixture runs against both the E4 and the
+# E6 schema (the previous runtime must keep working while the production
+# migration is pending). Only these explicitly named tables may be absent; a
+# missing core table, or any other SQL error, still fails the test.
+OPTIONAL_E6_TABLES = frozenset({
+    "rule_execution_audit", "rule_execution_items", "rule_executions",
+})
+
+# Deletion order that satisfies every foreign key (children first).
+_CLEANUP_MODELS = (
+    ReceiptModel,
+    ExpenseModel,
+    FinancialEventModel,
+    RuleExecutionAuditModel,
+    RuleExecutionItemModel,
+    GoalTransactionModel,
+    RuleExecutionModel,
+    FinancialRuleGoalTargetModel,
+    FinancialRuleModel,
+    IncomeModel,
+    BudgetModel,
+    GoalModel,
+    AccountTransactionModel,
+    AccountTransferModel,
+    AccountModel,
+    CategoryModel,
+    UserFinancialSettingsModel,
+)
+
+
+# Deletes every application row, child tables first. The set of tables that
+# exist is read from the (already safety-validated) database once per call; only
+# the explicitly optional E6 tables are skipped when absent.
+def _delete_application_rows(db_session: Session) -> None:
+    existing_tables = set(inspect(engine).get_table_names())
+
+    for model in _CLEANUP_MODELS:
+        table_name = model.__tablename__
+
+        if table_name in OPTIONAL_E6_TABLES and table_name not in existing_tables:
+            continue
+
+        db_session.query(model).delete()
+
+
 # Cleans database tables before and after each test that uses this fixture.
 # This fixture exists to keep database-backed tests independent from each other.
 # Parameters:
@@ -104,38 +157,12 @@ def clean_database() -> Generator[None, None, None]:
     db_session = SessionLocal()
 
     try:
-        db_session.query(ReceiptModel).delete()
-        db_session.query(ExpenseModel).delete()
-        db_session.query(FinancialEventModel).delete()
-        db_session.query(FinancialRuleGoalTargetModel).delete()
-        db_session.query(FinancialRuleModel).delete()
-        db_session.query(IncomeModel).delete()
-        db_session.query(BudgetModel).delete()
-        db_session.query(GoalTransactionModel).delete()
-        db_session.query(GoalModel).delete()
-        db_session.query(AccountTransactionModel).delete()
-        db_session.query(AccountTransferModel).delete()
-        db_session.query(AccountModel).delete()
-        db_session.query(CategoryModel).delete()
-        db_session.query(UserFinancialSettingsModel).delete()
+        _delete_application_rows(db_session)
         db_session.commit()
 
         yield
 
-        db_session.query(ReceiptModel).delete()
-        db_session.query(ExpenseModel).delete()
-        db_session.query(FinancialEventModel).delete()
-        db_session.query(FinancialRuleGoalTargetModel).delete()
-        db_session.query(FinancialRuleModel).delete()
-        db_session.query(IncomeModel).delete()
-        db_session.query(BudgetModel).delete()
-        db_session.query(GoalTransactionModel).delete()
-        db_session.query(GoalModel).delete()
-        db_session.query(AccountTransactionModel).delete()
-        db_session.query(AccountTransferModel).delete()
-        db_session.query(AccountModel).delete()
-        db_session.query(CategoryModel).delete()
-        db_session.query(UserFinancialSettingsModel).delete()
+        _delete_application_rows(db_session)
         db_session.commit()
     finally:
         db_session.close()

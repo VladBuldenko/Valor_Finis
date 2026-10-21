@@ -22,6 +22,7 @@ from app.db.database_base import Base
 from app.db.database_models import import_database_models
 from app.db.database_session import engine as application_engine
 from tests.database_safety import validate_test_database_url
+from tests.schema_drift import exclude_stages_after
 
 # VF-020E4 schema-expand tests (revision 861064d31463): financial_rules,
 # financial_rule_goal_targets and UNIQUE (budgets.id, budgets.user_id).
@@ -250,8 +251,11 @@ def _count(database_engine: Engine, sql: str, **params: Any) -> int:
 def test_revision_chain_and_single_head() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [E4_REVISION]
+    heads = script.get_heads()
+    assert len(heads) == 1
     assert script.get_revision(E4_REVISION).down_revision == E2_REVISION
+    # E4 stays in the ancestry of the single head (later stages build on it).
+    assert E4_REVISION in {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
 
 
 def test_migration_source_has_no_lock_timeout_and_no_data_changes() -> None:
@@ -1141,4 +1145,4 @@ def test_orm_metadata_matches_the_e4_schema_exactly(e4_database: Engine) -> None
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    assert exclude_stages_after(differences, E4_REVISION) == []
