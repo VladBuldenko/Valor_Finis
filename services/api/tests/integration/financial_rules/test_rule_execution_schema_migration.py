@@ -57,6 +57,7 @@ EXECUTIONS = "rule_executions"
 ITEMS = "rule_execution_items"
 AUDIT = "rule_execution_audit"
 SEQUENCE = "rule_execution_hold_sequence"
+RESTRICT_SQLSTATES = ("23001", "23503")
 NEW_TABLES = (EXECUTIONS, ITEMS, AUDIT)
 
 OLD_CHECK = "ck_goal_transactions_linked_requires_client_request_id"
@@ -475,7 +476,10 @@ def test_execution_history_is_restricted_against_deletes(e6_database: Engine) ->
         with pytest.raises(IntegrityError) as error:
             with e6_database.begin() as connection:
                 connection.execute(text(sql), params)
-        assert error.value.orig.pgcode == "23001"  # restrict_violation
+        # A violated ON DELETE RESTRICT is reported as 23001 (restrict_violation) or
+        # 23503 (foreign_key_violation) depending on the PostgreSQL version
+        # (observed: 18 -> 23001, 16 -> 23503); both mean the FK held.
+        assert error.value.orig.pgcode in RESTRICT_SQLSTATES, error.value.orig.pgcode
         assert constraint is None or _constraint(error.value) in accepted
 
     blocked("DELETE FROM financial_rules WHERE id = :i", "fk_rule_executions_rule_id_user_id", i=world.rule_id)
