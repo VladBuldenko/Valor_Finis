@@ -372,5 +372,24 @@ class AccountResponse(AccountBase):
         examples=["1000.00"],
     )
 
+    active_rule_holds: Decimal = Field(
+        description=(
+            "Sum of the planned amounts of this Account's active CONFIRM "
+            "proposal holds (awaiting_confirmation, not expired), otherwise "
+            "0.00. Read-only, derived, never stored. A hold is not reserved "
+            "money: it changes no balance and never blocks a manual operation."
+        ),
+        examples=["0.00"],
+    )
+
+    rule_capacity: Decimal = Field(
+        description=(
+            "reservable_amount - minimum_unallocated_floor - active_rule_holds. "
+            "Signed, may be negative. The capacity AUTO executions and new "
+            "CONFIRM proposals may use. Read-only, derived, never stored."
+        ),
+        examples=["3500.00"],
+    )
+
     created_at: datetime
     updated_at: datetime

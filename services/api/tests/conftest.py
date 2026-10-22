@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
+from app.core.app_config import settings
 from app.db.database_session import SessionLocal, engine
 from app.main import app
 from app.modules.accounts.account_models import AccountModel
@@ -166,3 +167,10 @@ def clean_database() -> Generator[None, None, None]:
         db_session.commit()
     finally:
         db_session.close()
+
+# The best-effort post-response event drain is off for the whole suite so that
+# tests observe the durable outbox states deterministically; the tests of the
+# trigger itself switch it on explicitly.
+@pytest.fixture(autouse=True)
+def disable_background_event_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "rule_event_background_dispatch", False)

@@ -827,12 +827,12 @@ reload and retry), or for an empty list while the user has ranked Goals; the
 exact current order again is an idempotent 200. The call takes the user
 advisory lock L0, never writes a money row and needs no client_request_id.
 
-Manual floor warning (VF-020E5, implemented on the local feature branch
-feat/VF-020E5-rules-crud-floor-runtime; not merged or deployed): the POST
+Manual floor warning (VF-020E5, merged; extended additively by VF-020E7): the POST
 /api/v1/goals/{goal_id}/transactions response (201 and the 200 replay) gains an
 additive warnings list; GET /api/v1/goals/{goal_id}/transactions is unchanged. The list
 is empty, or has one object { "code": "minimum_unallocated_floor",
-"minimum_unallocated_floor": "1000.00", "projected_reservable_amount": "700.00" },
+"minimum_unallocated_floor": "1000.00", "projected_reservable_amount": "700.00",
+"projected_rule_capacity": "-300.00" },
 and only for a successful linked contribution: projected_reservable_amount is
 reservable_amount minus the contribution, and the warning appears only when it is
 strictly below the Account's enabled floor. It is advisory: not persisted, not part of
@@ -840,32 +840,63 @@ the idempotency payload, never blocks (the reservable-capacity 409 is unchanged)
 On a replay the warnings are recomputed from the current Account and floor state
 (for the stored contribution, already reserved, the projected amount is the current
 reservable_amount). Tracked contributions, withdrawals and releases always return [].
-There is no projected_rule_capacity in this stage.
+projected_rule_capacity (VF-020E7, additive, only inside a triggered warning) is
+projected_reservable_amount - minimum_unallocated_floor - active_rule_holds; active holds
+alone never trigger the warning, and an occupied-key replay does not subtract the stored
+contribution a second time.
 
-Account additive field (VF-020E5, same branch): every Account response carries
+Account additive fields (VF-020E5, merged; VF-020E7 adds two): every Account response carries
 minimum_unallocated_floor - the floor_amount of the user's ENABLED
 MINIMUM_UNALLOCATED_FLOOR rule for that Account, otherwise "0.00". It does not change
 reservable_amount, unallocated_amount or any balance. Archived Accounts still return
-their configured enabled floor.
+their configured enabled floor. VF-020E7 adds active_rule_holds (sum of the planned
+amounts of unexpired awaiting_confirmation proposals on the Account, "0.00" until CONFIRM
+exists) and rule_capacity = reservable_amount - minimum_unallocated_floor -
+active_rule_holds (signed, may be negative). Both are derived, read-only and never change
+a balance or block a manual operation.
 
-Financial rules (VF-020E5, same branch): /api/v1/financial-rules
+Financial rules (VF-020E5 CRUD, VF-020E7 execution): /api/v1/financial-rules
   POST (201), GET, GET /{id}, PATCH /{id}, DELETE /{id} (204), and
   POST /{id}/enable | /pause | /disable.
 Rule types (discriminated by rule_type): INCOME_ALLOCATION, MINIMUM_UNALLOCATED_FLOOR,
 OVERCOMMITMENT_ALERT, BUDGET_ALERT. A rule is created as draft, version 1; clients never
 send user_id, status, version, active_since or timestamps (422). Status changes use the
-action endpoints only. Only a MINIMUM_UNALLOCATED_FLOOR rule can be enabled / paused /
-disabled; INCOME_ALLOCATION and alert rules stay drafts (enable returns 409). A material
+action endpoints only. A MINIMUM_UNALLOCATED_FLOOR rule and (since VF-020E7) an
+INCOME_ALLOCATION rule with execution_mode AUTO can be enabled / paused / disabled;
+enabling re-validates the source Account and target Goals (archived 409, currency 422)
+and sets effective_from to the server date of the first activation when it was absent.
+CONFIRM allocation rules and alert rules stay drafts (enable returns 409). A material
 edit increments version (execution_mode, source_account_id, income_sources, policy,
 percent, cap_at_target, allow_partial, effective_from, targets, floor_amount, the alert
 subject); name, description, execution_order and target positions do not. A missing or
 foreign rule / Account / Goal / Budget is 404; a lifecycle conflict (duplicate floor or
 alert subject, archived Account / Goal, invalid transition, delete of an enabled or
-paused rule) is 409; a currency mismatch or inconsistent fields is 422. Deleting a Goal
-or Budget, or deleting / changing the currency of an Account, that a rule references is a
-controlled 409 (archiving is allowed). Planned, NOT implemented: /preview, /evaluate,
-/api/v1/rule-proposals, /api/v1/rule-executions, /api/v1/rule-alerts, and the Account
-fields active_rule_holds and rule_capacity.
+paused rule, delete of a rule that has any execution) is 409; a currency mismatch or
+inconsistent fields is 422. Deleting a Goal or Budget, or deleting / changing the currency
+of an Account, that a rule or an execution item references is a controlled 409 (archiving
+is allowed).
+
+POST /api/v1/financial-rules/evaluate (VF-020E7, authenticated): drains at most `limit`
+(query, 1-100, default 20) DUE income events of the CALLER ONLY, in strict per-user FIFO
+order, and runs their AUTO rules. It is idempotent, creates no new identities and never
+scans Income. Response 200: { processed, deferred, failed_retryable, dead, blocked,
+outcomes } where blocked means the user's queue head is leased or waiting for a retry and
+outcomes counts committed execution statuses. There is no cross-user endpoint. A best-effort
+drain also runs after an Income create / update / delete response; it is NOT an unattended
+guarantee (that needs the periodic dispatcher of VF-020E10).
+
+GET /api/v1/rule-executions (VF-020E7, authenticated): { items, total, limit, offset },
+newest first, filters rule_id and status, limit 1-100 (default 20), offset >= 0. Each item
+has id, rule_id, rule_version, status (executed | executed_partial | skipped | blocked;
+the CONFIRM states exist from VF-020E8), reason_code, source_* snapshot, capacity_*
+snapshot, items (goal_id, account_id, position, planned_amount, applied_amount,
+goal_transaction_id) and audit (code, actor, related_event_id, details, created_at).
+Amounts are decimal strings. A rule-generated allocation is a contribution GoalTransaction
+linked to the source Account with no client_request_id; nothing else is created (no
+AccountTransaction, Income or Expense).
+
+Planned, NOT implemented: /preview, /api/v1/rule-proposals, /api/v1/rule-alerts and the
+CONFIRM runtime (VF-020E8), alerts (VF-020E9), the periodic dispatcher (VF-020E10).
 
 Delete Goal
 

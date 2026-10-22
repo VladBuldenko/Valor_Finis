@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.accounts import account_repository, account_service
-from app.modules.financial_rules import financial_rule_repository
+from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
 from app.modules.goals import (
@@ -305,6 +305,10 @@ def update_goal(
                     db_session=db_session,
                     goal_id=goal_id,
                     user_id=user_id,
+                ) or rule_execution_repository.goal_has_execution_items(
+                    db_session=db_session,
+                    goal_id=goal_id,
+                    user_id=user_id,
                 ):
                     raise GoalReferencedByRuleError()
 
@@ -395,6 +399,10 @@ def delete_goal(
         # VF-020E5 (P57): a Goal targeted by a rule cannot be deleted; the
         # check runs under L0 and the Goal lock, before the foreign key.
         if financial_rule_repository.goal_is_referenced_by_rule_target(
+            db_session=db_session,
+            goal_id=goal_id,
+            user_id=user_id,
+        ) or rule_execution_repository.goal_has_execution_items(
             db_session=db_session,
             goal_id=goal_id,
             user_id=user_id,
@@ -563,7 +571,8 @@ def _resolve_existing_transaction(
 # Builds the advisory floor warning list for a projected reservable amount
 # (VF-020E5, P79). The warning is activated ONLY by
 # projected_reservable < the Account's enabled floor (equality does not warn);
-# active holds do not exist in E5 and never take part. Nothing is persisted.
+# active holds never trigger it, but once it triggers they are reported in the
+# additive projected_rule_capacity (VF-020E7). Nothing is persisted.
 def _floor_warnings(
     db_session: Session,
     user_id: UUID,
@@ -579,10 +588,17 @@ def _floor_warnings(
     projected = projected_reservable_amount.quantize(cent)
 
     if projected < floor:
+        holds = rule_execution_repository.get_active_holds_for_accounts(
+            db_session=db_session,
+            user_id=user_id,
+            account_ids=[account_id],
+        ).get(account_id, Decimal("0.00"))
+
         return [
             GoalTransactionFloorWarning(
                 minimum_unallocated_floor=floor.quantize(cent),
                 projected_reservable_amount=projected,
+                projected_rule_capacity=projected - floor.quantize(cent) - holds.quantize(cent),
             )
         ]
 

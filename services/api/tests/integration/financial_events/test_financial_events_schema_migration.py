@@ -808,8 +808,9 @@ def test_income_table_is_unchanged_by_the_migration(d5_database: Engine) -> None
 
 
 def test_financial_events_references_are_confined_to_the_event_module_and_income_service() -> None:
-    # VF-020E3 maps the table and the Income service writes events; nothing
-    # else in the application may depend on it yet.
+    # VF-020E3 maps the table and the Income service writes events; VF-020E7
+    # adds the queue repository / processor and the rule execution service.
+    # Nothing else in the application may depend on it.
     referencing = sorted(
         str(path.relative_to(API_DIR))
         for path in APP_DIR.rglob("*.py")
@@ -819,8 +820,13 @@ def test_financial_events_references_are_confined_to_the_event_module_and_income
     assert referencing == [
         "app/db/database_models.py",
         "app/modules/financial_events/financial_event_models.py",
+        "app/modules/financial_events/financial_event_processor.py",
+        "app/modules/financial_events/financial_event_queue_repository.py",
         "app/modules/financial_events/financial_event_repository.py",
         "app/modules/financial_events/financial_event_service.py",
+        "app/modules/financial_rules/financial_rule_router.py",
+        "app/modules/financial_rules/rule_execution_service.py",
+        "app/modules/income/income_router.py",
         "app/modules/income/income_service.py",
     ]
 

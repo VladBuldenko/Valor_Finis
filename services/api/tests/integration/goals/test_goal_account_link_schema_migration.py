@@ -622,10 +622,16 @@ def test_orm_maps_account_id_and_c1_objects_as_in_the_migration() -> None:
 
     for name, sql in (
         (OPENING_CHECK, module.OPENING_BALANCE_CHECK_SQL),
-        (KEY_CHECK, module.KEY_CHECK_SQL),
         (DATE_CHECK, module.DATE_CHECK_SQL),
     ):
         assert str(constraints[name].sqltext) == sql
+
+    # The C1 key CHECK was replaced by the origin CHECK in the E6 migration
+    # (mapped by the E7 runtime): a linked row needs a key OR a rule execution.
+    assert KEY_CHECK not in constraints
+    assert "rule_execution_id IS NOT NULL" in str(
+        constraints["ck_goal_transactions_linked_requires_origin"].sqltext
+    )
 
     index = next(index for index in table.indexes if index.name == LINKED_INDEX)
     assert [column.name for column in index.columns] == ["account_id"]

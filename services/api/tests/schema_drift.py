@@ -34,15 +34,6 @@ LATER_STAGES = (
     )),
 )
 
-# VF-020E6 objects on goal_transactions that the ORM deliberately does NOT map
-# until the E7 runtime (the first code that uses them): mapping the new column
-# while the production migration is still pending would break every GoalTransaction
-# query. They appear as differences against a database at E6 or later.
-E7_DEFERRED_GOAL_TRANSACTION_OBJECTS = (
-    "rule_execution_id",
-    "uq_goal_transactions_id_user_id",
-)
-
 REVISION_ORDER = (
     "98acdc7016d2",
     "4d2f7b91a6c3",
@@ -59,10 +50,6 @@ def _names_for_stages_after(revision: str) -> List[str]:
     for stage_revision, stage_names in LATER_STAGES:
         if REVISION_ORDER.index(stage_revision) > position:
             names.extend(stage_names)
-    # At E6 or later the E7-deferred goal_transactions objects exist in the
-    # database but are intentionally unmapped in the ORM.
-    if position >= REVISION_ORDER.index("e0503e9ca9d3"):
-        names.extend(E7_DEFERRED_GOAL_TRANSACTION_OBJECTS)
     return names
 
 

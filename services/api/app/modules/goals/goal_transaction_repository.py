@@ -94,6 +94,8 @@ def calculate_ledger_balance(
 # - commit: whether the repository should commit the transaction
 #   immediately. Pass False when composing this write with other changes
 #   the caller will commit together.
+# - rule_execution_id: set only by the rule executor (VF-020E7) for a
+#   rule-generated contribution; mutually exclusive with client_request_id.
 # Returns:
 # - GoalTransactionModel instance saved/flushed in the current transaction.
 # Raises:
@@ -114,6 +116,7 @@ def create_transaction(
     client_request_id: Optional[UUID] = None,
     account_id: Optional[UUID] = None,
     commit: bool = True,
+    rule_execution_id: Optional[UUID] = None,
 ) -> GoalTransactionModel:
     transaction_model = GoalTransactionModel(
         goal_id=goal_id,
@@ -125,6 +128,7 @@ def create_transaction(
         effective_date=effective_date,
         client_request_id=client_request_id,
         account_id=account_id,
+        rule_execution_id=rule_execution_id,
     )
 
     db_session.add(transaction_model)

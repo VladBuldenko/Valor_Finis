@@ -221,20 +221,24 @@ class GoalTransactionFloorWarning(BaseModel):
     (VF-020E5, P79).
 
     What:
-        Exactly the E5 keys: the warning code, the Account's enabled floor and
-        the projected reservable amount after the contribution.
+        The E5 keys (the warning code, the Account's enabled floor and the
+        projected reservable amount after the contribution) plus, since
+        VF-020E7, the additive projected_rule_capacity.
 
     Why:
         The warning is advisory only: it is computed at response time, never
         persisted, never part of the idempotency payload, and never blocks
         the reservation. It is activated only by
-        projected_reservable_amount < minimum_unallocated_floor. There is no
-        projected_rule_capacity in E5 (holds do not exist yet).
+        projected_reservable_amount < minimum_unallocated_floor; active
+        holds alone never trigger it. projected_rule_capacity =
+        projected_reservable_amount - minimum_unallocated_floor -
+        active_rule_holds, present only inside a triggered warning.
     """
 
     code: Literal["minimum_unallocated_floor"] = "minimum_unallocated_floor"
     minimum_unallocated_floor: Decimal
     projected_reservable_amount: Decimal
+    projected_rule_capacity: Decimal
 
 
 class GoalTransactionCreatedResponse(GoalTransactionResponse):

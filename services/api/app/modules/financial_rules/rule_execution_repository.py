@@ -1,0 +1,285 @@
+from decimal import Decimal
+from typing import Any, Iterable, Optional, Sequence
+from uuid import UUID
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.modules.goals.goal_models import GoalModel
+from app.modules.financial_rules.financial_rule_models import FinancialRuleModel
+from app.modules.financial_rules.financial_rule_schemas import RULE_TYPE_INCOME_ALLOCATION
+from app.modules.financial_rules.rule_execution_models import (
+    RuleExecutionAuditModel,
+    RuleExecutionItemModel,
+    RuleExecutionModel,
+)
+
+SOURCE_TYPE_INCOME = "income"
+
+STATUS_AWAITING_CONFIRMATION = "awaiting_confirmation"
+
+
+# Enabled INCOME_ALLOCATION rules of the user in the approved evaluation
+# order (APPROVED P28): execution_order, created_at, id. Draft, paused and
+# disabled rules are never evaluated.
+def get_enabled_allocation_rules(
+    db_session: Session, user_id: UUID,
+) -> list[FinancialRuleModel]:
+    return (
+        db_session.query(FinancialRuleModel)
+        .filter(
+            FinancialRuleModel.user_id == user_id,
+            FinancialRuleModel.rule_type == RULE_TYPE_INCOME_ALLOCATION,
+            FinancialRuleModel.status == "enabled",
+        )
+        .order_by(
+            FinancialRuleModel.execution_order.asc(),
+            FinancialRuleModel.created_at.asc(),
+            FinancialRuleModel.id.asc(),
+        )
+        .all()
+    )
+
+
+# Locks and returns the committed executions of one source, keyed by rule id.
+# This is the exactly-once lookup (E10): a committed row means the decision is
+# final and the event is a replay for that rule.
+def get_executions_for_source_for_update(
+    db_session: Session, user_id: UUID, source_id: UUID,
+) -> dict[UUID, RuleExecutionModel]:
+    rows = (
+        db_session.query(RuleExecutionModel)
+        .filter(
+            RuleExecutionModel.user_id == user_id,
+            RuleExecutionModel.source_type == SOURCE_TYPE_INCOME,
+            RuleExecutionModel.source_id == source_id,
+        )
+        .order_by(RuleExecutionModel.id)
+        .with_for_update()
+        .all()
+    )
+
+    return {row.rule_id: row for row in rows}
+
+
+def add_execution(
+    db_session: Session, execution_model: RuleExecutionModel,
+) -> RuleExecutionModel:
+    db_session.add(execution_model)
+    db_session.flush()
+
+    return execution_model
+
+
+def add_item(db_session: Session, item_model: RuleExecutionItemModel) -> RuleExecutionItemModel:
+    db_session.add(item_model)
+    db_session.flush()
+
+    return item_model
+
+
+def add_audit(
+    db_session: Session,
+    user_id: UUID,
+    execution_id: UUID,
+    code: str,
+    related_event_id: Optional[UUID],
+    details: Optional[dict[str, Any]] = None,
+    actor: str = "system",
+) -> RuleExecutionAuditModel:
+    audit_model = RuleExecutionAuditModel(
+        user_id=user_id,
+        execution_id=execution_id,
+        code=code,
+        actor=actor,
+        related_event_id=related_event_id,
+        details=details,
+    )
+    db_session.add(audit_model)
+    db_session.flush()
+
+    return audit_model
+
+
+# Whether an audit annotation of this code already exists for the event, so a
+# re-delivered event never appends a duplicate annotation.
+def audit_exists(
+    db_session: Session,
+    user_id: UUID,
+    execution_id: UUID,
+    code: str,
+    related_event_id: UUID,
+) -> bool:
+    return (
+        db_session.query(RuleExecutionAuditModel.id)
+        .filter(
+            RuleExecutionAuditModel.user_id == user_id,
+            RuleExecutionAuditModel.execution_id == execution_id,
+            RuleExecutionAuditModel.code == code,
+            RuleExecutionAuditModel.related_event_id == related_event_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def get_items_for_executions(
+    db_session: Session, user_id: UUID, execution_ids: Sequence[UUID],
+) -> dict[UUID, list[RuleExecutionItemModel]]:
+    grouped: dict[UUID, list[RuleExecutionItemModel]] = {}
+
+    if not execution_ids:
+        return grouped
+
+    rows = (
+        db_session.query(RuleExecutionItemModel)
+        .filter(
+            RuleExecutionItemModel.user_id == user_id,
+            RuleExecutionItemModel.execution_id.in_(list(execution_ids)),
+        )
+        .order_by(RuleExecutionItemModel.position.asc(), RuleExecutionItemModel.id.asc())
+        .all()
+    )
+
+    for row in rows:
+        grouped.setdefault(row.execution_id, []).append(row)
+
+    return grouped
+
+
+def get_audit_for_executions(
+    db_session: Session, user_id: UUID, execution_ids: Sequence[UUID],
+) -> dict[UUID, list[RuleExecutionAuditModel]]:
+    grouped: dict[UUID, list[RuleExecutionAuditModel]] = {}
+
+    if not execution_ids:
+        return grouped
+
+    rows = (
+        db_session.query(RuleExecutionAuditModel)
+        .filter(
+            RuleExecutionAuditModel.user_id == user_id,
+            RuleExecutionAuditModel.execution_id.in_(list(execution_ids)),
+        )
+        .order_by(RuleExecutionAuditModel.created_at.asc(), RuleExecutionAuditModel.id.asc())
+        .all()
+    )
+
+    for row in rows:
+        grouped.setdefault(row.execution_id, []).append(row)
+
+    return grouped
+
+
+def list_executions(
+    db_session: Session,
+    user_id: UUID,
+    limit: int,
+    offset: int,
+    rule_id: Optional[UUID] = None,
+    status: Optional[str] = None,
+) -> tuple[list[RuleExecutionModel], int]:
+    query = db_session.query(RuleExecutionModel).filter(RuleExecutionModel.user_id == user_id)
+
+    if rule_id is not None:
+        query = query.filter(RuleExecutionModel.rule_id == rule_id)
+
+    if status is not None:
+        query = query.filter(RuleExecutionModel.status == status)
+
+    total = query.count()
+    rows = (
+        query.order_by(RuleExecutionModel.created_at.desc(), RuleExecutionModel.id.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    return rows, total
+
+
+# Active soft holds per Account (APPROVED P55): planned amounts of
+# awaiting_confirmation proposals that have not expired. An expired proposal
+# is excluded even before its state is normalized. Proposals only exist from
+# VF-020E8; until then this is always zero.
+def get_active_holds_for_accounts(
+    db_session: Session, user_id: UUID, account_ids: Iterable[UUID],
+) -> dict[UUID, Decimal]:
+    ids = list(account_ids)
+
+    if not ids:
+        return {}
+
+    rows = (
+        db_session.query(
+            RuleExecutionItemModel.account_id,
+            func.coalesce(func.sum(RuleExecutionItemModel.planned_amount), 0),
+        )
+        .join(
+            RuleExecutionModel,
+            (RuleExecutionModel.id == RuleExecutionItemModel.execution_id)
+            & (RuleExecutionModel.user_id == RuleExecutionItemModel.user_id),
+        )
+        .filter(
+            RuleExecutionItemModel.user_id == user_id,
+            RuleExecutionItemModel.account_id.in_(ids),
+            RuleExecutionModel.status == STATUS_AWAITING_CONFIRMATION,
+            RuleExecutionModel.expires_at > func.now(),
+        )
+        .group_by(RuleExecutionItemModel.account_id)
+        .all()
+    )
+
+    return {account_id: Decimal(total) for account_id, total in rows}
+
+
+def rule_has_executions(db_session: Session, rule_id: UUID, user_id: UUID) -> bool:
+    return (
+        db_session.query(RuleExecutionModel.id)
+        .filter(RuleExecutionModel.user_id == user_id, RuleExecutionModel.rule_id == rule_id)
+        .first()
+        is not None
+    )
+
+
+def goal_has_execution_items(db_session: Session, goal_id: UUID, user_id: UUID) -> bool:
+    return (
+        db_session.query(RuleExecutionItemModel.id)
+        .filter(RuleExecutionItemModel.user_id == user_id, RuleExecutionItemModel.goal_id == goal_id)
+        .first()
+        is not None
+    )
+
+
+def account_has_execution_items(db_session: Session, account_id: UUID, user_id: UUID) -> bool:
+    return (
+        db_session.query(RuleExecutionItemModel.id)
+        .filter(
+            RuleExecutionItemModel.user_id == user_id,
+            RuleExecutionItemModel.account_id == account_id,
+        )
+        .first()
+        is not None
+    )
+
+
+# Locks the given Goals FOR UPDATE in ascending id order (global lock level
+# L2). Only the user's own Goals are returned, so a foreign id can never be
+# locked or read.
+def get_goals_for_update(
+    db_session: Session, user_id: UUID, goal_ids: Iterable[UUID],
+) -> dict[UUID, GoalModel]:
+    ids = sorted(set(goal_ids))
+
+    if not ids:
+        return {}
+
+    rows = (
+        db_session.query(GoalModel)
+        .filter(GoalModel.user_id == user_id, GoalModel.id.in_(ids))
+        .order_by(GoalModel.id)
+        .with_for_update()
+        .all()
+    )
+
+    return {row.id: row for row in rows}

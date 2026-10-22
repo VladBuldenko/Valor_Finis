@@ -142,9 +142,38 @@ class GoalTransactionModel(Base):
             "type <> 'opening_balance' OR account_id IS NULL",
             name="ck_goal_transactions_opening_balance_unlinked",
         ),
+        # VF-020E6 constraints, mapped since VF-020E7. A linked row carries
+        # exactly one origin: a client idempotency key (manual) or a rule
+        # execution (rule-generated), never both.
         CheckConstraint(
-            "account_id IS NULL OR client_request_id IS NOT NULL",
-            name="ck_goal_transactions_linked_requires_client_request_id",
+            "account_id IS NULL OR client_request_id IS NOT NULL "
+            "OR rule_execution_id IS NOT NULL",
+            name="ck_goal_transactions_linked_requires_origin",
+        ),
+        CheckConstraint(
+            "client_request_id IS NULL OR rule_execution_id IS NULL",
+            name="ck_goal_transactions_origin_exclusive",
+        ),
+        CheckConstraint(
+            "rule_execution_id IS NULL "
+            "OR (account_id IS NOT NULL AND type = 'contribution')",
+            name="ck_goal_transactions_rule_execution_shape",
+        ),
+        ForeignKeyConstraint(
+            ["rule_execution_id", "user_id"],
+            ["rule_executions.id", "rule_executions.user_id"],
+            name="fk_goal_transactions_rule_execution_id_user_id",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_goal_transactions_rule_execution_id",
+            "rule_execution_id",
+            postgresql_where=text("rule_execution_id IS NOT NULL"),
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_goal_transactions_id_user_id",
         ),
         CheckConstraint(
             "account_id IS NULL OR effective_date IS NOT NULL",
@@ -220,6 +249,13 @@ class GoalTransactionModel(Base):
     )
 
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    # Set only on rule-generated contributions (VF-020E7): the execution that
+    # produced the row. Mutually exclusive with client_request_id.
+    rule_execution_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         nullable=True,
     )
