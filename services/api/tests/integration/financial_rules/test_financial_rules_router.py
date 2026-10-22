@@ -511,11 +511,13 @@ def test_paused_floor_can_be_disabled(client: TestClient, clean_database: None) 
     assert action(client, user_id, rule["id"], "disable").json()["status"] == "disabled"
 
 
-def test_allocation_and_alert_rules_cannot_be_enabled_in_e5(client: TestClient, clean_database: None) -> None:
+def test_confirm_allocation_and_alert_rules_cannot_be_enabled_before_their_stages(
+    client: TestClient, clean_database: None,
+) -> None:
     user_id, account, goal = _setup(client)
     budget = create_budget(client, user_id)
     rules = [
-        create_rule(client, user_id, allocation_payload(account["id"], [goal["id"]])),
+        create_rule(client, user_id, allocation_payload(account["id"], [goal["id"]], execution_mode="CONFIRM")),
         create_rule(client, user_id, overcommitment_payload(account["id"])),
         create_rule(client, user_id, budget_alert_payload(budget["id"])),
     ]
@@ -572,8 +574,8 @@ def test_rules_never_create_money_rows_or_events(client: TestClient, clean_datab
 def test_future_stage_endpoints_do_not_exist(client: TestClient, clean_database: None) -> None:
     user_id = str(uuid4())
     for method, path in (
-        ("post", f"{RULES_URL}/evaluate"), ("post", f"{RULES_URL}/{uuid4()}/preview"),
-        ("get", "/api/v1/rule-proposals"), ("get", "/api/v1/rule-executions"), ("get", "/api/v1/rule-alerts"),
+        ("post", f"{RULES_URL}/{uuid4()}/preview"),
+        ("get", "/api/v1/rule-proposals"), ("get", "/api/v1/rule-alerts"),
     ):
         response = getattr(client, method)(path, headers=auth_headers(user_id))
         assert response.status_code in (404, 405, 422), (method, path, response.status_code)

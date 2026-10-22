@@ -1302,20 +1302,23 @@ IMPLEMENTED ON A LOCAL FEATURE BRANCH, NOT PUSHED, MERGED OR APPLIED TO PRODUCTI
   any execution or rule-generated GoalTransaction exists. The migration locks goals,
   accounts, financial_rules (SHARE ROW EXCLUSIVE) and goal_transactions (ACCESS EXCLUSIVE)
   in that order; the application does not use any of the new objects yet.
-E7 requirements recorded by the E6 schema review: map goal_transactions.rule_execution_id, its FK,
-the three CHECKs (replacing the C1 key CHECK in the model), the partial index and
-uq_goal_transactions_id_user_id on GoalTransactionModel and drop the E7-deferred names from the
-drift helper; write an execution, its items, the GoalTransactions and the audit rows in one
-transaction under L0 with the item's goal, account, amount and execution agreeing with the
-transaction (the schema binds only (goal_transaction_id, user_id)); and add controlled-409
-pre-checks for deleting a Rule, deleting a Goal or Account, and changing an Account currency
-while execution history references them (every new FK is RESTRICT).
+VF-020E7 (runtime only, NO migration) maps these objects on GoalTransactionModel
+(rule_execution_id, fk_goal_transactions_rule_execution_id_user_id, the three CHECKs
+replacing the C1 key CHECK in the model, ix_goal_transactions_rule_execution_id and
+uq_goal_transactions_id_user_id) and uses the three execution tables. A rule-generated row is
+type=contribution, account_id=the source Account, rule_execution_id=the execution,
+client_request_id=NULL, effective_date=the server date. The runtime writes an execution, its
+items, the GoalTransactions and the audit rows in one transaction under L0 and asserts that
+each item agrees with its GoalTransaction on user, execution, Goal, Account and applied amount
+(the schema binds only (goal_transaction_id, user_id)). Controlled-409 pre-checks cover deleting
+a Rule that has any execution, and deleting a Goal / deleting or re-currencying an Account that
+rule_execution_items reference (every new FK is RESTRICT).
 
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): rule_alerts (E9A) and the runtime use of the E6 objects (E7). The Account safety floor is a
-financial_rules row, never an accounts column. None of these exist in the schema
-yet; the current ck_goal_transactions_linked_requires_client_request_id above
-stays in force until E6.
+v0.6 sections 19.2-19.3): rule_alerts (E9A) and the CONFIRM runtime (E8). The Account safety floor is a
+financial_rules row, never an accounts column. The C1 check
+ck_goal_transactions_linked_requires_client_request_id was replaced by
+ck_goal_transactions_linked_requires_origin in revision e0503e9ca9d3 (applied to production).
 
 7. Accounts
 

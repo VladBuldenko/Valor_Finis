@@ -31,7 +31,9 @@ from tests.integration.financial_rules.rule_helpers import (
 # pre-checks. The floor never changes a balance or capacity figure; the warning
 # never blocks, persists or changes a transaction.
 
-WARNING_KEYS = {"code", "minimum_unallocated_floor", "projected_reservable_amount"}
+WARNING_KEYS = {
+    "code", "minimum_unallocated_floor", "projected_reservable_amount", "projected_rule_capacity",
+}
 
 
 def _count(sql: str, **params: Any) -> int:
@@ -100,7 +102,10 @@ def test_floor_does_not_change_any_balance_or_capacity_figure(client: TestClient
                  "reserved_amount", "unallocated_amount", "reservable_amount", "allocation_status", "negative_balance")
     assert {k: after[k] for k in unchanged} == {k: before[k] for k in unchanged}
     assert after["minimum_unallocated_floor"] == "900.00"
-    assert "active_rule_holds" not in after and "rule_capacity" not in after and "confirm_capacity" not in after
+    # VF-020E7: derived capacity fields; confirm_capacity never appears on an Account.
+    assert after["active_rule_holds"] == "0.00" and "confirm_capacity" not in after
+    assert before["rule_capacity"] == before["reservable_amount"]
+    assert after["rule_capacity"] == "400.00"  # reservable 1300 - floor 900 - holds 0
     goal_after = client.get("/api/v1/goals", headers=auth_headers(user_id)).json()[0]
     assert goal_after["current_amount"] == "200.00"
 
@@ -154,7 +159,10 @@ def test_floor_query_count_does_not_grow_with_the_number_of_accounts(client: Tes
     six = [s for s in six_statements if "financial_rules" in s]
 
     assert len(one) == len(six) == 1  # one grouped query regardless of the Account count
-    assert not [s for s in six_statements if "rule_execution" in s or "rule_alerts" in s]
+    # The active-holds read is one grouped query too, and nothing writes.
+    holds = [s for s in six_statements if "rule_execution_items" in s]
+    assert len(holds) == 1
+    assert not [s for s in six_statements if "rule_alerts" in s]
 
 
 # ------------------------------------------------------------------
@@ -175,8 +183,10 @@ def test_warning_when_projected_reservable_is_below_the_floor(client: TestClient
         "code": "minimum_unallocated_floor",
         "minimum_unallocated_floor": "1000.00",
         "projected_reservable_amount": "700.00",
+        # 700 - floor 1000 - active holds 0 (VF-020E7, additive).
+        "projected_rule_capacity": "-300.00",
     }]
-    assert set(body["warnings"][0]) == WARNING_KEYS and "projected_rule_capacity" not in body["warnings"][0]
+    assert set(body["warnings"][0]) == WARNING_KEYS
 
 
 def test_no_warning_when_projected_equals_the_floor_or_is_above(client: TestClient, clean_database: None) -> None:
@@ -277,13 +287,14 @@ def test_replay_recomputes_warnings_from_current_state(client: TestClient, clean
     assert raised.status_code == 200
     assert raised.json()["warnings"] == [{
         "code": "minimum_unallocated_floor", "minimum_unallocated_floor": "2000.00",
-        "projected_reservable_amount": "700.00",
+        "projected_reservable_amount": "700.00", "projected_rule_capacity": "-1300.00",
     }]
 
     create_account_transaction(client, user_id, account["id"], amount="300.00", direction="debit")  # capacity changes
     later = _linked(client, user_id, goal["id"], account["id"], "800.00", key)
     assert later.status_code == 200
     assert later.json()["warnings"][0]["projected_reservable_amount"] == "400.00"
+    assert later.json()["warnings"][0]["projected_rule_capacity"] == "-1600.00"
     assert later.json()["id"] == first.json()["id"] and later.json()["amount"] == "800.00"
     assert _count("SELECT count(*) FROM goal_transactions") == 1
 
@@ -442,7 +453,7 @@ def test_referenced_budget_cannot_be_deleted(client: TestClient, clean_database:
 # ------------------------------------------------------------------
 
 
-def test_no_statement_touches_execution_alert_or_hold_tables(client: TestClient, clean_database: None) -> None:
+def test_floor_activity_never_writes_execution_or_alert_tables(client: TestClient, clean_database: None) -> None:
     user_id, account, goal = _setup(client, "1500.00")
     budget = create_budget(client, user_id)
 
@@ -462,5 +473,11 @@ def test_no_statement_touches_execution_alert_or_hold_tables(client: TestClient,
     statements = _statements(run)
 
     assert statements
-    assert not [s for s in statements if any(
-        word in s for word in ("rule_executions", "rule_execution_items", "rule_execution_audit", "rule_alerts"))]
+    assert not [s for s in statements if "rule_alerts" in s]
+    # Floor-only activity may READ the execution tables (active holds, delete
+    # pre-check) but never writes them.
+    assert not [
+        s for s in statements
+        if any(word in s for word in ("rule_executions", "rule_execution_items", "rule_execution_audit"))
+        and s.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+    ]
