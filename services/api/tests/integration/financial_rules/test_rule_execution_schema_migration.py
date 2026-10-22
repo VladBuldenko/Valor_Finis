@@ -842,16 +842,10 @@ def test_orm_metadata_matches_the_e6_schema_exactly(e6_database: Engine) -> None
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    # The only differences are the goal_transactions objects deliberately left
-    # unmapped until the E7 runtime (the first code that uses them).
+    # Since VF-020E7 the ORM maps every E6 object, including the
+    # goal_transactions column, keys and CHECKs: no difference remains.
+    assert differences == []
     assert exclude_stages_after(differences, E6_REVISION) == []
-    deferred = sorted((d[0], getattr(d[1], "name", None) or repr(d[1])[:60]) for d in differences)
-    assert {d[0] for d in differences} <= {"remove_column", "remove_fk", "remove_index", "remove_constraint"}
-    assert all(
-        any(name in repr(d) or name == getattr(d[1], "name", None) for name in ("rule_execution_id", "uq_goal_transactions_id_user_id"))
-        for d in differences
-    ), deferred
-    assert any(d[0] == "remove_column" and d[3].name == "rule_execution_id" for d in differences if len(d) > 3)
 
 
 def test_older_revisions_expect_the_e6_objects_only_through_the_drift_helper(e4_database: Engine) -> None:
@@ -864,17 +858,18 @@ def test_older_revisions_expect_the_e6_objects_only_through_the_drift_helper(e4_
     assert exclude_stages_after(differences, E4_REVISION) == []
 
 
-def test_e6_is_schema_only_the_application_never_uses_the_new_tables() -> None:
-    pattern = re.compile(r"rule_executions|rule_execution_items|rule_execution_audit|RuleExecution|rule_execution_id|hold_sequence")
-    referencing = sorted(
-        str(path.relative_to(API_DIR))
-        for path in APP_DIR.rglob("*.py")
-        if any(pattern.search(line) and not line.strip().startswith("#") for line in path.read_text(encoding="utf-8").splitlines())
-    )
+def test_goal_transaction_model_maps_the_e6_execution_link() -> None:
+    from app.modules.goals.goal_transaction_models import GoalTransactionModel
 
-    # goal_transaction_models.py is intentionally NOT in this list: the new
-    # goal_transactions.rule_execution_id column is mapped by the E7 runtime.
-    assert referencing == [
-        "app/db/database_models.py",
-        "app/modules/financial_rules/rule_execution_models.py",
-    ]
+    table = GoalTransactionModel.__table__
+    assert "rule_execution_id" in table.c
+    assert table.c.rule_execution_id.nullable is True
+    constraint_names = {constraint.name for constraint in table.constraints}
+    assert {
+        "ck_goal_transactions_linked_requires_origin",
+        "ck_goal_transactions_origin_exclusive",
+        "ck_goal_transactions_rule_execution_shape",
+        "uq_goal_transactions_id_user_id",
+        "fk_goal_transactions_rule_execution_id_user_id",
+    } <= constraint_names
+    assert OLD_CHECK not in constraint_names
