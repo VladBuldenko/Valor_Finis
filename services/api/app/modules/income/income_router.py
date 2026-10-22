@@ -1,11 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
+from app.modules.financial_events import financial_event_processor
 from app.modules.income import income_service
 from app.modules.income.income_schemas import (
     IncomeCreate,
@@ -26,6 +27,7 @@ router = APIRouter(
     status_code=status.HTTP_201_CREATED,
 )
 def create_income(
+    background_tasks: BackgroundTasks,
     income_data: IncomeCreate,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
@@ -52,11 +54,17 @@ def create_income(
         Domain exceptions propagated to the global exception handlers.
     """
 
-    return income_service.create_income(
+    created = income_service.create_income(
         db_session=db_session,
         income_data=income_data,
         user_id=current_user.id,
     )
+    # Runs after the response is sent; the committed event is already durable.
+    background_tasks.add_task(
+        financial_event_processor.dispatch_user_events_best_effort, current_user.id,
+    )
+
+    return created
 
 
 @router.get(
@@ -102,6 +110,7 @@ def get_income(
     status_code=status.HTTP_200_OK,
 )
 def update_income(
+    background_tasks: BackgroundTasks,
     income_id: UUID,
     income_data: IncomeUpdate,
     current_user: CurrentUser = Depends(get_current_user),
@@ -130,12 +139,17 @@ def update_income(
         Domain exceptions propagated to the global exception handlers.
     """
 
-    return income_service.update_income(
+    updated = income_service.update_income(
         db_session=db_session,
         income_id=income_id,
         income_data=income_data,
         user_id=current_user.id,
     )
+    background_tasks.add_task(
+        financial_event_processor.dispatch_user_events_best_effort, current_user.id,
+    )
+
+    return updated
 
 
 @router.delete(
@@ -143,6 +157,7 @@ def update_income(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_income(
+    background_tasks: BackgroundTasks,
     income_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
@@ -173,4 +188,7 @@ def delete_income(
         db_session=db_session,
         income_id=income_id,
         user_id=current_user.id,
+    )
+    background_tasks.add_task(
+        financial_event_processor.dispatch_user_events_best_effort, current_user.id,
     )

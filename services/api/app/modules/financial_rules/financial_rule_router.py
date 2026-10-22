@@ -1,17 +1,19 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
+from app.modules.financial_events import financial_event_processor
 from app.modules.financial_rules import financial_rule_service
 from app.modules.financial_rules.financial_rule_schemas import (
     FinancialRuleCreate,
     FinancialRuleResponse,
     FinancialRuleUpdate,
 )
+from app.modules.financial_rules.rule_execution_schemas import RuleEvaluationResponse
 
 router = APIRouter(
     prefix="/financial-rules",
@@ -31,6 +33,38 @@ def create_financial_rule(
 ):
     return financial_rule_service.create_rule(
         db_session=db_session, rule_data=rule_data, user_id=current_user.id,
+    )
+
+
+# Drains ONLY the caller's own due income events (bounded, strict FIFO) and
+# runs their AUTO rules (VF-020E7). Idempotent; it creates no new identities
+# and never scans historical Income. It is a user-triggered durable drain, not
+# an unattended scheduler (that is VF-020E10).
+@router.post(
+    "/evaluate",
+    response_model=RuleEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def evaluate_financial_rules(
+    limit: int = Query(
+        default=financial_event_processor.DEFAULT_DRAIN_LIMIT,
+        ge=1,
+        le=financial_event_processor.MAX_DRAIN_LIMIT,
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+):
+    summary = financial_event_processor.drain_user_events(
+        db_session=db_session, user_id=current_user.id, limit=limit,
+    )
+
+    return RuleEvaluationResponse(
+        processed=summary.processed,
+        deferred=summary.deferred,
+        failed_retryable=summary.failed_retryable,
+        dead=summary.dead,
+        blocked=summary.blocked,
+        outcomes=summary.outcomes,
     )
 
 

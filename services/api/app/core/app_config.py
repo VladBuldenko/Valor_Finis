@@ -422,6 +422,8 @@ class AppSettings:
     - receipt_storage_bucket: Supabase Storage bucket used for receipts.
     - receipt_upload_dir: Local directory used for receipt file uploads.
     - receipt_max_file_size_mb: Maximum receipt file size in megabytes.
+    - rule_event_background_dispatch: Whether Income writes schedule a
+      best-effort, post-response drain of the user's due financial events.
     - receipt_ocr_driver: OCR provider used to extract text from receipts.
     - receipt_ocr_max_image_pixels: maximum decoded receipt image pixel
       count (width * height) allowed before OCR processing.
@@ -475,6 +477,15 @@ class AppSettings:
                 "10",
             )
         )
+
+        # Best-effort draining of the caller's due income events after an
+        # Income response (VF-020E7). Failure never affects the response and
+        # the durable outbox still holds every event. It is NOT the unattended
+        # dispatcher guarantee (VF-020E10).
+        self.rule_event_background_dispatch = os.getenv(
+            "RULE_EVENT_BACKGROUND_DISPATCH",
+            "true",
+        ).strip().lower() in ("1", "true", "yes", "on")
 
         self.receipt_ocr_driver = (
             get_receipt_ocr_driver()

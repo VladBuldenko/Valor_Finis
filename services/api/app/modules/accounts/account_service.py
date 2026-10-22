@@ -29,7 +29,7 @@ from app.modules.accounts.account_transaction_schemas import (
     AccountTransactionCreate,
     AccountTransactionResponse,
 )
-from app.modules.financial_rules import financial_rule_repository
+from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
 from app.modules.goals import goal_transaction_repository
 
 
@@ -108,6 +108,12 @@ def _build_account_responses(
         account_ids=account_ids,
     )
 
+    holds = rule_execution_repository.get_active_holds_for_accounts(
+        db_session=db_session,
+        user_id=user_id,
+        account_ids=account_ids,
+    )
+
     responses = []
 
     for account_model in account_models:
@@ -153,6 +159,12 @@ def _build_account_responses(
                 ),
                 negative_balance=balance_as_of_today < 0,
                 minimum_unallocated_floor=floors.get(account_model.id, zero).quantize(cent),
+                active_rule_holds=holds.get(account_model.id, zero).quantize(cent),
+                rule_capacity=(
+                    reservable_amount
+                    - floors.get(account_model.id, zero).quantize(cent)
+                    - holds.get(account_model.id, zero).quantize(cent)
+                ),
                 created_at=account_model.created_at,
                 updated_at=account_model.updated_at,
             )
@@ -179,6 +191,30 @@ def get_reservable_amount(
     return _build_account_responses(
         db_session, account_model.user_id, [account_model], as_of
     )[0].reservable_amount
+
+
+# Returns the derived capacity figures of already LOCKED Accounts for the rule
+# executor (VF-020E7): reservable_amount, the enabled floor and the active
+# holds, so rule_capacity = reservable - floor - holds is computed from the
+# very same read model the API exposes. Callers must hold the Account row locks.
+# Returns:
+# - {account_id: (reservable_amount, minimum_unallocated_floor, active_rule_holds)}
+def get_rule_capacity_inputs(
+    db_session: Session,
+    user_id: UUID,
+    account_models: list[AccountModel],
+    as_of: date,
+) -> dict[UUID, tuple[Decimal, Decimal, Decimal]]:
+    responses = _build_account_responses(db_session, user_id, account_models, as_of)
+
+    return {
+        response.id: (
+            response.reservable_amount,
+            response.minimum_unallocated_floor,
+            response.active_rule_holds,
+        )
+        for response in responses
+    }
 
 
 # Creates a new account using validated input data and authenticated user
@@ -359,7 +395,13 @@ def update_account(
                 db_session.rollback()
                 raise AccountReferencedByPlannedTransferError()
 
+            # Rule execution history (VF-020E7) keeps referencing the Account
+            # even after the rule that produced it was edited.
             if financial_rule_repository.account_is_referenced_by_rule(
+                db_session=db_session,
+                account_id=account_id,
+                user_id=user_id,
+            ) or rule_execution_repository.account_has_execution_items(
                 db_session=db_session,
                 account_id=account_id,
                 user_id=user_id,
@@ -464,6 +506,10 @@ def delete_account(
         raise AccountReferencedByPlannedTransferError()
 
     if financial_rule_repository.account_is_referenced_by_rule(
+        db_session=db_session,
+        account_id=account_id,
+        user_id=user_id,
+    ) or rule_execution_repository.account_has_execution_items(
         db_session=db_session,
         account_id=account_id,
         user_id=user_id,

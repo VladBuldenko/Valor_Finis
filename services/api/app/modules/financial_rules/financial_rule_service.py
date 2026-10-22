@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.modules.accounts import account_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.budgets import budget_repository
-from app.modules.financial_rules import financial_rule_repository
+from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
 from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleActivationNotAvailableError,
     FinancialRuleAlreadyExistsError,
@@ -459,6 +460,15 @@ def update_rule(db_session: Session, rule_id: UUID, update_data: FinancialRuleUp
                 db_session, user_id, rule_model.rule_type, validated.source_account_id, None, rule_model.id,
             )
 
+        if (
+            rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION
+            and rule_model.status == "enabled"
+            and validated.execution_mode != "AUTO"
+        ):
+            # An enabled rule must stay executable: CONFIRM has no runtime
+            # until VF-020E8, so it cannot replace AUTO on a live rule.
+            raise FinancialRuleActivationNotAvailableError()
+
         rule_model.name = validated.name
         rule_model.description = validated.description
 
@@ -537,15 +547,46 @@ def _replace_targets(
 # ------------------------------------------------------------------
 
 
+# VF-020E7: AUTO income-allocation rules can be enabled; CONFIRM stays
+# unavailable until VF-020E8 (no proposal runtime exists). Enabling re-runs the
+# current validation (active Account and Goals, equal currencies) so a rule that
+# is already invalid cannot be activated; pause and disable are always allowed
+# by the status machine.
+def _assert_allocation_rule_transition_available(
+    db_session: Session, user_id: UUID, rule_model: FinancialRuleModel, action: str,
+) -> None:
+    if action != "enable":
+        return
+
+    if rule_model.execution_mode != "AUTO":
+        raise FinancialRuleActivationNotAvailableError()
+
+    targets = financial_rule_repository.get_targets_for_rules(
+        db_session, user_id, [rule_model.id],
+    ).get(rule_model.id, [])
+
+    _validate_allocation_references(
+        db_session=db_session,
+        user_id=user_id,
+        source_account_id=rule_model.source_account_id,
+        goal_ids_to_check=[target.goal_id for target in targets],
+        check_account_status=True,
+    )
+
+
 def _transition(db_session: Session, rule_id: UUID, user_id: UUID, action: str):
     try:
         goal_user_lock.acquire_goal_user_lock(db_session, user_id)
 
         rule_model = financial_rule_repository.get_rule_by_id_for_update(db_session, rule_id, user_id)
 
-        if rule_model.rule_type != RULE_TYPE_FLOOR:
-            # Allocation and alert rules stay drafts in VF-020E5: no execution
-            # or alert runtime exists, so activation is not available.
+        if rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION:
+            _assert_allocation_rule_transition_available(
+                db_session, user_id, rule_model, action,
+            )
+        elif rule_model.rule_type != RULE_TYPE_FLOOR:
+            # Alert rules stay drafts until the alert runtime exists (VF-020E9):
+            # a rule must never look operational when nothing evaluates it.
             if action == "enable":
                 raise FinancialRuleActivationNotAvailableError()
 
@@ -565,6 +606,11 @@ def _transition(db_session: Session, rule_id: UUID, user_id: UUID, action: str):
         if action == "enable":
             # Every transition into enabled resets active_since.
             rule_model.active_since = func.now()
+
+            # effective_from defaults to the server date of the FIRST
+            # activation and never moves on later enables (§10.3).
+            if rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION and rule_model.effective_from is None:
+                rule_model.effective_from = date.today()
 
         db_session.flush()
         db_session.commit()
@@ -593,10 +639,11 @@ def disable_rule(db_session: Session, rule_id: UUID, user_id: UUID):
 # ------------------------------------------------------------------
 
 
-# Deletes a draft or disabled rule; its targets go with it (database
-# cascade). VF-020E5 has no execution history, so there is no history
-# pre-check here; that check ships with the first runtime that can create
-# executions.
+# Deletes a draft or disabled rule without execution history; its targets go
+# with it (database cascade). A rule with any rule_executions row is a
+# controlled 409 (APPROVED P57): the user must disable it instead. The
+# pre-check runs under L0 and the rule lock, before the RESTRICT foreign key,
+# so the caller never sees a raw IntegrityError.
 def delete_rule(db_session: Session, rule_id: UUID, user_id: UUID) -> None:
     try:
         goal_user_lock.acquire_goal_user_lock(db_session, user_id)
@@ -604,6 +651,9 @@ def delete_rule(db_session: Session, rule_id: UUID, user_id: UUID) -> None:
         rule_model = financial_rule_repository.get_rule_by_id_for_update(db_session, rule_id, user_id)
 
         if rule_model.status not in ("draft", "disabled"):
+            raise FinancialRuleDeletionNotAllowedError()
+
+        if rule_execution_repository.rule_has_executions(db_session, rule_id, user_id):
             raise FinancialRuleDeletionNotAllowedError()
 
         financial_rule_repository.delete_rule(db_session, rule_model)
