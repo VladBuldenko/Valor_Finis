@@ -32,6 +32,9 @@ LATER_STAGES = (
         "rule_executions", "rule_execution_items", "rule_execution_audit",
         "rule_execution_id", "uq_goal_transactions_id_user_id",
     )),
+    # VF-020E9A: the rule_alerts table (its constraints and indexes carry the
+    # table name, so they are matched by name).
+    ("a7c3e91d5b24", ("rule_alerts",)),
 )
 
 REVISION_ORDER = (
@@ -41,6 +44,7 @@ REVISION_ORDER = (
     "115998e2e795",
     "861064d31463",
     "e0503e9ca9d3",
+    "a7c3e91d5b24",
 )
 
 

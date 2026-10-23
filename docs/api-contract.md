@@ -912,8 +912,8 @@ revalidation fails first commits cancelled (stale) and then returns 409. Reads n
 proposals to expired. Creating a proposal writes no GoalTransaction or balance; confirming
 writes the frozen amounts once.
 
-Planned, NOT implemented: /preview, /api/v1/rule-alerts, alerts (VF-020E9), the periodic
-dispatcher (VF-020E10).
+Planned, NOT implemented: /preview, /api/v1/rule-alerts and the alert runtime (VF-020E9B; the
+rule_alerts schema of VF-020E9A adds no endpoint), the periodic dispatcher (VF-020E10).
 
 Delete Goal
 

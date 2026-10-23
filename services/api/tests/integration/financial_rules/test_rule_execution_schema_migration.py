@@ -180,7 +180,10 @@ def _exec_ok(world: World, **overrides: Any) -> UUID:
 def test_revision_chain_and_single_head() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [E6_REVISION]
+    # E6 is no longer the head: E9A (a7c3e91d5b24) sits directly on it and is
+    # the single head (its own test asserts that).
+    assert len(script.get_heads()) == 1
+    assert script.get_revision("a7c3e91d5b24").down_revision == E6_REVISION
     assert script.get_revision(E6_REVISION).down_revision == E4_REVISION
 
 
@@ -844,8 +847,9 @@ def test_orm_metadata_matches_the_e6_schema_exactly(e6_database: Engine) -> None
 
     # Since VF-020E7 the ORM maps every E6 object, including the
     # goal_transactions column, keys and CHECKs: no difference remains.
-    assert differences == []
+    # The only remaining difference belongs to a LATER stage (E9A rule_alerts).
     assert exclude_stages_after(differences, E6_REVISION) == []
+    assert all("rule_alerts" in repr(difference) for difference in differences)
 
 
 def test_older_revisions_expect_the_e6_objects_only_through_the_drift_helper(e4_database: Engine) -> None:
