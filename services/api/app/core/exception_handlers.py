@@ -50,6 +50,8 @@ from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleInvalidFieldsError,
     FinancialRuleInvalidTransitionError,
     FinancialRuleNotFoundError,
+    RuleProposalNotFoundError,
+    RuleProposalStaleError,
     FinancialRuleSubjectArchivedError,
 )
 from app.modules.goals.goal_errors import (
@@ -123,6 +125,14 @@ DOMAIN_ERROR_RESPONSES: Dict[
     FinancialRuleNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Financial rule not found.",
+    ),
+    RuleProposalNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Rule proposal not found.",
+    ),
+    RuleProposalStaleError: (
+        status.HTTP_409_CONFLICT,
+        "The proposal can no longer be confirmed and was cancelled (stale). Nothing was written.",
     ),
     FinancialRuleAlreadyExistsError: (
         status.HTTP_409_CONFLICT,

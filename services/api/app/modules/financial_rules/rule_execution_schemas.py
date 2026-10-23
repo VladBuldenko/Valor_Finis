@@ -91,3 +91,58 @@ class RuleExecutionListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class RuleProposalItemResponse(BaseModel):
+    """One planned allocation of a proposal with the Goal figures around it."""
+
+    id: UUID
+    goal_id: UUID
+    goal_name: str
+    position: int
+    planned_amount: Decimal
+    applied_amount: Optional[Decimal]
+    goal_transaction_id: Optional[UUID]
+    target_amount: Decimal
+    current_amount: Decimal = Field(description="The Goal's current total (all partitions).")
+    expected_amount: Decimal = Field(
+        description="current_amount + planned_amount while the proposal is awaiting confirmation.",
+    )
+
+
+class RuleProposalResponse(BaseModel):
+    """
+    Read model of a CONFIRM proposal (§20.4). confirm_capacity is the CURRENT
+    reservable - floor - prior holds for this proposal (own and later holds
+    excluded) and is only present while it is awaiting confirmation.
+    """
+
+    id: UUID
+    rule_id: UUID
+    rule_name: str
+    rule_version: int
+    status: Literal[
+        "awaiting_confirmation", "executed", "executed_partial", "rejected", "expired", "cancelled",
+    ]
+    reason_code: Optional[str]
+    partial: bool
+    hold_sequence: int
+    expires_at: datetime
+    created_at: datetime
+    decided_at: Optional[datetime]
+    source_id: UUID
+    source_amount: Decimal
+    source_currency: str
+    source_received_at: date
+    account_id: Optional[UUID]
+    currency: str
+    planned_total: Decimal
+    confirm_capacity: Optional[Decimal]
+    items: list[RuleProposalItemResponse]
+
+
+class RuleProposalListResponse(BaseModel):
+    items: list[RuleProposalResponse]
+    total: int
+    limit: int
+    offset: int

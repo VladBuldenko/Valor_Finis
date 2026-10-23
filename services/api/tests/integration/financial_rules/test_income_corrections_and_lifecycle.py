@@ -394,17 +394,3 @@ def test_background_drain_is_off_by_default_in_the_suite(client: TestClient, cle
     post_income(client, user_id, "10.00", account["id"])
 
     assert scalar("SELECT status FROM financial_events") == "pending"
-
-
-def test_an_enabled_auto_rule_cannot_be_switched_to_confirm_before_e8(client: TestClient, clean_database: None) -> None:
-    user_id = str(uuid4())
-    account = funded_account(client, user_id, opening="2000.00")
-    goal = goal_with_target(client, user_id, "G", 3000)
-    rule = enabled_rule(client, user_id, account["id"], [goal["id"]])
-
-    assert patch_rule(client, user_id, rule["id"], execution_mode="CONFIRM").status_code == 409
-
-    paused = action(client, user_id, rule["id"], "pause")
-    assert paused.status_code == 200
-    assert patch_rule(client, user_id, rule["id"], execution_mode="CONFIRM").status_code == 200  # a draft-like edit stays allowed
-    assert action(client, user_id, rule["id"], "enable").status_code == 409

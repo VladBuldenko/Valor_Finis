@@ -413,7 +413,7 @@ The backend is implemented and deployed in production, and the mobile client imp
 
 Current priorities (docs/roadmap.md is the authoritative direction):
 
-VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — E2 outbox schema complete and applied to production (revision 115998e2e795); E3 Income outbox runtime merged; E4 rules schema applied to production (revision 861064d31463); E5 rules CRUD and floor runtime merged; E6 execution schema merged and applied to production (revision e0503e9ca9d3); E7 AUTO execution runtime implemented on a local feature branch (not pushed or deployed; env RULE_EVENT_BACKGROUND_DISPATCH, default true, controls the best-effort post-response drain); next: E8 CONFIRM; VF-020F mobile later)
+VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — E2 outbox schema complete and applied to production (revision 115998e2e795); E3 Income outbox runtime merged; E4 rules schema applied to production (revision 861064d31463); E5 rules CRUD and floor runtime merged; E6 execution schema merged and applied to production (revision e0503e9ca9d3); E7 AUTO execution runtime merged (env RULE_EVENT_BACKGROUND_DISPATCH, default true, controls the best-effort post-response drain); E8 CONFIRM proposals implemented on a local feature branch (not pushed or deployed); next: E9 alerts; VF-020F mobile later)
     ↓
 Improve the API and the mobile app based on real usage
 💡 Final Rule
