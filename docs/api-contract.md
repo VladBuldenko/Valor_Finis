@@ -865,7 +865,7 @@ action endpoints only. A MINIMUM_UNALLOCATED_FLOOR rule and (since VF-020E7) an
 INCOME_ALLOCATION rule with execution_mode AUTO can be enabled / paused / disabled;
 enabling re-validates the source Account and target Goals (archived 409, currency 422)
 and sets effective_from to the server date of the first activation when it was absent.
-CONFIRM allocation rules and alert rules stay drafts (enable returns 409). A material
+Since VF-020E8 CONFIRM allocation rules can be enabled too; alert rules stay drafts (enable returns 409). A material
 edit increments version (execution_mode, source_account_id, income_sources, policy,
 percent, cap_at_target, allow_partial, effective_from, targets, floor_amount, the alert
 subject); name, description, execution_order and target positions do not. A missing or
@@ -895,8 +895,25 @@ Amounts are decimal strings. A rule-generated allocation is a contribution GoalT
 linked to the source Account with no client_request_id; nothing else is created (no
 AccountTransaction, Income or Expense).
 
-Planned, NOT implemented: /preview, /api/v1/rule-proposals, /api/v1/rule-alerts and the
-CONFIRM runtime (VF-020E8), alerts (VF-020E9), the periodic dispatcher (VF-020E10).
+CONFIRM proposals (VF-020E8, authenticated, user-scoped; a missing or foreign id is 404):
+  GET /api/v1/rule-proposals?limit&offset&status   list, newest hold first (limit 1-100)
+  GET /api/v1/rule-proposals/{id}
+  POST /api/v1/rule-proposals/{id}/confirm
+  POST /api/v1/rule-proposals/{id}/reject
+A proposal has id, rule_id, rule_name, rule_version, status (awaiting_confirmation | executed |
+executed_partial | rejected | expired | cancelled), reason_code (superseded | stale |
+source_changed | source_deleted | rule_inactive), partial, hold_sequence, expires_at (168 h after
+creation), source_* snapshot, account_id, currency, planned_total, confirm_capacity (only while
+awaiting: reservable - floor - prior holds, own and later holds excluded) and items (goal_id,
+goal_name, planned_amount, applied_amount, goal_transaction_id, target_amount, current_amount,
+expected_amount). Confirm / reject of a terminal proposal return its stored state (200) with
+no second effect; confirm of an expired proposal returns it as expired. A confirm whose
+revalidation fails first commits cancelled (stale) and then returns 409. Reads normalize due
+proposals to expired. Creating a proposal writes no GoalTransaction or balance; confirming
+writes the frozen amounts once.
+
+Planned, NOT implemented: /preview, /api/v1/rule-alerts, alerts (VF-020E9), the periodic
+dispatcher (VF-020E10).
 
 Delete Goal
 

@@ -1314,8 +1314,10 @@ each item agrees with its GoalTransaction on user, execution, Goal, Account and 
 a Rule that has any execution, and deleting a Goal / deleting or re-currencying an Account that
 rule_execution_items reference (every new FK is RESTRICT).
 
+VF-020E8 (runtime only, NO migration) starts using hold_sequence (nextval of rule_execution_hold_sequence, assigned once per proposal), expires_at (now + 168 hours) and the awaiting_confirmation / rejected / expired / cancelled states of rule_executions; rule_execution_audit rows now use clock_timestamp() for created_at so entries of one transaction keep their order.
+
 Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): rule_alerts (E9A) and the CONFIRM runtime (E8). The Account safety floor is a
+v0.6 sections 19.2-19.3): rule_alerts (E9A). The Account safety floor is a
 financial_rules row, never an accounts column. The C1 check
 ck_goal_transactions_linked_requires_client_request_id was replaced by
 ck_goal_transactions_linked_requires_origin in revision e0503e9ca9d3 (applied to production).

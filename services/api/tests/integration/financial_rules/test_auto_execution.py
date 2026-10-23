@@ -666,7 +666,7 @@ def test_two_incomes_use_the_capacity_left_by_the_first(client: TestClient, clea
     assert statuses == ["executed", "skipped"]  # 310 - 200 = 110 < 200
 
 
-def test_enable_rules_for_the_e7_stage(client: TestClient, clean_database: None) -> None:
+def test_enable_rules_auto_and_confirm_but_not_alerts(client: TestClient, clean_database: None) -> None:
     user_id = str(uuid4())
     account = funded_account(client, user_id, opening="2000.00")
     goal = goal_with_target(client, user_id, "G", 3000)
@@ -674,7 +674,7 @@ def test_enable_rules_for_the_e7_stage(client: TestClient, clean_database: None)
     confirm = create_rule(
         client, user_id, allocation_payload(account["id"], [goal["id"]], execution_mode="CONFIRM"),
     )
-    assert action(client, user_id, confirm["id"], "enable").status_code == 409  # CONFIRM ships with E8
+    assert action(client, user_id, confirm["id"], "enable").status_code == 200  # CONFIRM ships with E8
 
     auto = create_rule(client, user_id, allocation_payload(account["id"], [goal["id"]], name="Auto"))
     enabled = action(client, user_id, auto["id"], "enable").json()

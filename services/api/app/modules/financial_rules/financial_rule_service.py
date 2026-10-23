@@ -460,15 +460,6 @@ def update_rule(db_session: Session, rule_id: UUID, update_data: FinancialRuleUp
                 db_session, user_id, rule_model.rule_type, validated.source_account_id, None, rule_model.id,
             )
 
-        if (
-            rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION
-            and rule_model.status == "enabled"
-            and validated.execution_mode != "AUTO"
-        ):
-            # An enabled rule must stay executable: CONFIRM has no runtime
-            # until VF-020E8, so it cannot replace AUTO on a live rule.
-            raise FinancialRuleActivationNotAvailableError()
-
         rule_model.name = validated.name
         rule_model.description = validated.description
 
@@ -493,6 +484,14 @@ def update_rule(db_session: Session, rule_id: UUID, update_data: FinancialRuleUp
 
         if material:
             rule_model.version = rule_model.version + 1
+
+            if rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION:
+                # A material edit supersedes the rule's open proposals and ends
+                # their holds; committed decisions are never re-executed.
+                rule_execution_repository.cancel_open_proposals(
+                    db_session, user_id, rule_execution_repository.CANCEL_SUPERSEDED,
+                    rule_id=rule_model.id,
+                )
 
         db_session.flush()
         db_session.commit()
@@ -547,8 +546,8 @@ def _replace_targets(
 # ------------------------------------------------------------------
 
 
-# VF-020E7: AUTO income-allocation rules can be enabled; CONFIRM stays
-# unavailable until VF-020E8 (no proposal runtime exists). Enabling re-runs the
+# VF-020E7/E8: AUTO and CONFIRM income-allocation rules can be enabled (no
+# hidden "previewed" state exists; the preview is a UX rule). Enabling re-runs the
 # current validation (active Account and Goals, equal currencies) so a rule that
 # is already invalid cannot be activated; pause and disable are always allowed
 # by the status machine.
@@ -557,9 +556,6 @@ def _assert_allocation_rule_transition_available(
 ) -> None:
     if action != "enable":
         return
-
-    if rule_model.execution_mode != "AUTO":
-        raise FinancialRuleActivationNotAvailableError()
 
     targets = financial_rule_repository.get_targets_for_rules(
         db_session, user_id, [rule_model.id],
@@ -602,6 +598,14 @@ def _transition(db_session: Session, rule_id: UUID, user_id: UUID, action: str):
             raise FinancialRuleInvalidTransitionError()
 
         rule_model.status = {"enable": "enabled", "pause": "paused", "disable": "disabled"}[action]
+
+        if action in ("pause", "disable") and rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION:
+            # Open proposals of an inactive rule can no longer be confirmed;
+            # completed allocations are untouched.
+            rule_execution_repository.cancel_open_proposals(
+                db_session, user_id, rule_execution_repository.CANCEL_RULE_INACTIVE,
+                rule_id=rule_model.id,
+            )
 
         if action == "enable":
             # Every transition into enabled resets active_since.

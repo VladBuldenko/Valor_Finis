@@ -95,3 +95,21 @@ class FinancialRuleInvalidFieldsError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class RuleProposalNotFoundError(Exception):
+    """
+    Raised when a CONFIRM proposal does not exist or does not belong to the
+    user (404). A foreign and a nonexistent proposal are indistinguishable.
+    """
+
+    pass
+
+
+class RuleProposalStaleError(Exception):
+    """
+    Raised AFTER the proposal was committed as cancelled (stale) because the
+    frozen amounts can no longer be confirmed (409). Nothing was written.
+    """
+
+    pass

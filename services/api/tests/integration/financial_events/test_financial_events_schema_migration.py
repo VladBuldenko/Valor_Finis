@@ -826,6 +826,7 @@ def test_financial_events_references_are_confined_to_the_event_module_and_income
         "app/modules/financial_events/financial_event_service.py",
         "app/modules/financial_rules/financial_rule_router.py",
         "app/modules/financial_rules/rule_execution_service.py",
+        "app/modules/financial_rules/rule_proposal_service.py",
         "app/modules/income/income_router.py",
         "app/modules/income/income_service.py",
     ]

@@ -4,7 +4,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, literal_column
 from sqlalchemy.orm import Session
 
 from app.modules.accounts import account_repository, account_service
@@ -40,6 +40,11 @@ STATUS_EXECUTED = "executed"
 STATUS_EXECUTED_PARTIAL = "executed_partial"
 STATUS_SKIPPED = "skipped"
 STATUS_BLOCKED = "blocked"
+STATUS_AWAITING_CONFIRMATION = "awaiting_confirmation"
+
+# Absolute 168 hours (not "7 days"): a calendar-day interval would shift by an
+# hour across a DST change in the session time zone.
+PROPOSAL_LIFETIME_SQL = "interval '168 hours'"
 
 REASON_INSUFFICIENT_CAPACITY = "insufficient_capacity"
 REASON_NOTHING_TO_ALLOCATE = "nothing_to_allocate"
@@ -56,12 +61,17 @@ NOT_ELIGIBLE_WINDOW = "received_outside_live_window"
 NOT_ELIGIBLE_SOURCE = "income_source_not_selected"
 NOT_ELIGIBLE_NO_CREATION_EVENT = "no_creation_event"
 
+AUDIT_PROPOSED = "proposed"
+AUDIT_CANCELLED = "cancelled"
 AUDIT_APPLIED = "applied"
 AUDIT_APPLIED_PARTIAL = "applied_partial"
 AUDIT_SKIPPED = "skipped"
 AUDIT_BLOCKED = "blocked"
 AUDIT_SOURCE_CHANGED = "source_changed"
 AUDIT_SOURCE_DELETED = "source_deleted"
+
+MODE_AUTO = "AUTO"
+MODE_CONFIRM = "CONFIRM"
 
 POLICY_FIXED = "FIXED_PER_GOAL"
 POLICY_PERCENT = "PERCENT_OF_INCOME_WATERFALL"
@@ -343,6 +353,41 @@ def _assert_item_matches_transaction(
         raise RuleExecutionInvariantError("item and goal transaction disagree")
 
 
+# Writes ONE GoalTransaction for an execution item and links it (shared by AUTO
+# execution and CONFIRM confirmation). The caller holds L0 and the Goal and
+# Account locks. The transaction is a contribution linked to the source Account
+# with no client_request_id; the item <-> transaction agreement is asserted
+# before returning, so a mismatch rolls the whole transaction back.
+def write_item_transaction(
+    db_session: Session,
+    user_id: UUID,
+    execution: RuleExecutionModel,
+    item_model: RuleExecutionItemModel,
+    goal: GoalModel,
+    description: str,
+    applied: Decimal,
+    today: date,
+) -> None:
+    transaction = goal_transaction_repository.create_transaction(
+        db_session=db_session,
+        goal_id=goal.id,
+        user_id=user_id,
+        type="contribution",
+        amount=applied,
+        description=description[:255],
+        currency=goal.currency,
+        effective_date=today,
+        client_request_id=None,
+        account_id=item_model.account_id,
+        rule_execution_id=execution.id,
+        commit=False,
+    )
+    item_model.applied_amount = applied
+    item_model.goal_transaction_id = transaction.id
+    db_session.flush()
+    _assert_item_matches_transaction(item_model, execution, transaction)
+
+
 # Executes one eligible rule inside the already locked transaction and writes
 # the execution row, its items, the GoalTransactions and the audit row. The
 # capacity object is mutated so later rules of the same event see what this
@@ -362,6 +407,8 @@ def _execute_rule(
     reason_code: Optional[str] = None
     items_to_apply: list[tuple[_PlannedItem, Decimal]] = []
     plan: list[_PlannedItem] = []
+    is_confirm = rule_model.execution_mode == MODE_CONFIRM
+    proposal_partial = False
 
     capacity_reservable = capacity.reservable
     capacity_floor = capacity.floor
@@ -381,11 +428,12 @@ def _execute_rule(
         if not plan:
             status, reason_code = STATUS_SKIPPED, REASON_NOTHING_TO_ALLOCATE
         elif available >= total:
-            status = STATUS_EXECUTED
+            status = STATUS_AWAITING_CONFIRMATION if is_confirm else STATUS_EXECUTED
             items_to_apply = [(item, item.planned) for item in plan]
         elif rule_model.allow_partial and available > ZERO:
             # Deterministic Goal-priority order until capacity is exhausted.
-            status = STATUS_EXECUTED_PARTIAL
+            status = STATUS_AWAITING_CONFIRMATION if is_confirm else STATUS_EXECUTED_PARTIAL
+            proposal_partial = is_confirm
             remaining = available
 
             for item in plan:
@@ -397,13 +445,29 @@ def _execute_rule(
         else:
             status, reason_code = STATUS_SKIPPED, REASON_INSUFFICIENT_CAPACITY
 
+    params_snapshot = _params_snapshot(rule_model, targets)
+
+    if proposal_partial:
+        # Remembered so confirmation ends as executed_partial.
+        params_snapshot["proposal_partial"] = True
+
+    proposal_fields: dict[str, Any] = {}
+
+    if status == STATUS_AWAITING_CONFIRMATION:
+        # hold_sequence is assigned exactly once, here, under L0 (P80); the
+        # expiry is immutable (P54). A rollback leaves a harmless gap.
+        proposal_fields = {
+            "hold_sequence": rule_execution_repository.next_hold_sequence(db_session),
+            "expires_at": func.now() + literal_column(PROPOSAL_LIFETIME_SQL),
+        }
+
     execution = rule_execution_repository.add_execution(
         db_session,
         RuleExecutionModel(
             user_id=user_id,
             rule_id=rule_model.id,
             rule_version=rule_model.version,
-            params_snapshot=_params_snapshot(rule_model, targets),
+            params_snapshot=params_snapshot,
             source_type=rule_execution_repository.SOURCE_TYPE_INCOME,
             source_id=event_model.aggregate_id,
             triggering_event_id=event_model.id,
@@ -417,13 +481,25 @@ def _execute_rule(
             capacity_holds=capacity_holds,
             status=status,
             reason_code=reason_code,
-            decided_at=func.now(),
+            decided_at=None if status == STATUS_AWAITING_CONFIRMATION else func.now(),
+            **proposal_fields,
         ),
     )
 
     applied_by_goal = {item.goal.id: applied for item, applied in items_to_apply}
 
     for item in plan:
+        if status == STATUS_AWAITING_CONFIRMATION:
+            # A proposal's planned amount IS its soft hold, so it holds exactly
+            # what a confirmation would write (a partial proposal omits the
+            # Goals that do not fit).
+            if item.goal.id not in applied_by_goal:
+                continue
+
+            planned = applied_by_goal[item.goal.id]
+        else:
+            planned = item.planned
+
         item_model = rule_execution_repository.add_item(
             db_session,
             RuleExecutionItemModel(
@@ -432,41 +508,36 @@ def _execute_rule(
                 goal_id=item.goal.id,
                 account_id=rule_model.source_account_id,
                 position=item.position,
-                planned_amount=item.planned,
+                planned_amount=planned,
             ),
         )
         applied = applied_by_goal.get(item.goal.id)
 
-        if applied is None:
+        if applied is None or status == STATUS_AWAITING_CONFIRMATION:
             continue
 
-        transaction = goal_transaction_repository.create_transaction(
-            db_session=db_session,
-            goal_id=item.goal.id,
-            user_id=user_id,
-            type="contribution",
-            amount=applied,
-            description=f"Auto allocation: {rule_model.name}"[:255],
-            currency=item.goal.currency,
-            effective_date=today,
-            client_request_id=None,
-            account_id=rule_model.source_account_id,
-            rule_execution_id=execution.id,
-            commit=False,
+        write_item_transaction(
+            db_session, user_id, execution, item_model, item.goal,
+            f"Auto allocation: {rule_model.name}", applied, today,
         )
-        item_model.applied_amount = applied
-        item_model.goal_transaction_id = transaction.id
-        db_session.flush()
-        _assert_item_matches_transaction(item_model, execution, transaction)
 
     applied_total = sum((applied for _, applied in items_to_apply), ZERO)
-    capacity.reservable = capacity.reservable - applied_total
+
+    if status == STATUS_AWAITING_CONFIRMATION:
+        # The new hold reduces what every LATER rule of this event may use,
+        # without touching the Account's reservable amount (a hold is not
+        # reserved money). The in-memory figure replaces a stale snapshot; the
+        # database row is already counted by any later read.
+        capacity.holds = capacity.holds + applied_total
+    else:
+        capacity.reservable = capacity.reservable - applied_total
 
     audit_code = {
         STATUS_EXECUTED: AUDIT_APPLIED,
         STATUS_EXECUTED_PARTIAL: AUDIT_APPLIED_PARTIAL,
         STATUS_SKIPPED: AUDIT_SKIPPED,
         STATUS_BLOCKED: AUDIT_BLOCKED,
+        STATUS_AWAITING_CONFIRMATION: AUDIT_PROPOSED,
     }[status]
 
     rule_execution_repository.add_audit(
@@ -528,11 +599,6 @@ def _evaluate_rules(
     eligible: list[FinancialRuleModel] = []
 
     for rule_model in rules:
-        if rule_model.execution_mode != "AUTO":
-            # CONFIRM evaluation ships with VF-020E8; an enabled CONFIRM rule
-            # cannot exist before it, and is never silently run as AUTO.
-            continue
-
         if rule_model.id in existing:
             summary.replayed += 1
             continue
@@ -605,6 +671,25 @@ def _annotate_existing(
     )
 
     for execution in executions.values():
+        if execution.status == STATUS_AWAITING_CONFIRMATION:
+            # An open proposal follows its source (§15.2): EVERY committed
+            # income.updated (even a description-only edit) cancels it
+            # (source_changed) and every income.deleted cancels it
+            # (source_deleted); either ends its hold. Nothing was written, so
+            # there is nothing to compensate. Terminal rows are never reached,
+            # which makes a redelivered event a no-op. The snapshot comparison
+            # applies only to the annotation of COMPLETED executions below.
+            if audit_code == AUDIT_SOURCE_DELETED:
+                reason = rule_execution_repository.CANCEL_SOURCE_DELETED
+            else:
+                reason = rule_execution_repository.CANCEL_SOURCE_CHANGED
+
+            rule_execution_repository.cancel_proposal(
+                db_session, execution, reason, event_model.id,
+            )
+            summary.count("cancelled")
+            continue
+
         if rule_execution_repository.audit_exists(
             db_session, user_id, execution.id, audit_code, event_model.id,
         ):
@@ -660,6 +745,10 @@ def process_event(
             datetime.combine(event_model.snap_received_at, datetime.min.time(), tzinfo=timezone.utc)
             + timedelta(hours=1)
         )
+
+    # Lazy expiry at dispatch (P54): a due proposal is normalized to `expired`
+    # before rules are evaluated (its hold already stopped counting).
+    rule_execution_repository.expire_due_proposals(db_session, user_id)
 
     if event_model.event_type == EVENT_INCOME_CREATED:
         _evaluate_rules(db_session, user_id, event_model, event_model, summary)

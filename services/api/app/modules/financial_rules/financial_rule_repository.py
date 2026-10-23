@@ -35,6 +35,16 @@ def get_rule_by_id(db_session: Session, rule_id: UUID, user_id: UUID) -> Financi
     return rule_model
 
 
+def get_rule_by_id_or_none(
+    db_session: Session, rule_id: UUID, user_id: UUID,
+) -> Optional[FinancialRuleModel]:
+    return (
+        db_session.query(FinancialRuleModel)
+        .filter(FinancialRuleModel.id == rule_id, FinancialRuleModel.user_id == user_id)
+        .first()
+    )
+
+
 def get_rule_by_id_for_update(
     db_session: Session, rule_id: UUID, user_id: UUID,
 ) -> FinancialRuleModel:
