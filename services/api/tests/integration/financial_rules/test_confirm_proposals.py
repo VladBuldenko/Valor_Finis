@@ -452,22 +452,61 @@ def test_pause_keeps_a_completed_allocation_untouched(client: TestClient, clean_
     assert _proposal(client, user_id, proposal["id"])["status"] == "executed" and _tx_count(user_id) == 1
 
 
-def test_income_update_cancels_the_proposal_only_when_the_snapshot_changes(client: TestClient, clean_database: None) -> None:
+def test_every_income_update_cancels_the_proposal_even_a_description_only_edit(
+    client: TestClient, clean_database: None,
+) -> None:
     user_id, account, rule, goal, proposal = _pending(client)
     income_id = scalar("SELECT id FROM income WHERE user_id = :u", u=user_id)
+    assert account_view(client, user_id, account["id"])["active_rule_holds"] == "100.00"
 
     client.patch(f"/api/v1/income/{income_id}", headers=auth_headers(user_id), json={"description": "note"})
-    evaluate(client, user_id)
-    assert _proposal(client, user_id, proposal["id"])["status"] == "awaiting_confirmation"
-
-    client.patch(f"/api/v1/income/{income_id}", headers=auth_headers(user_id), json={"amount": "5.00"})
     evaluate(client, user_id)
 
     stored = _proposal(client, user_id, proposal["id"])
     assert (stored["status"], stored["reason_code"]) == ("cancelled", "source_changed")
-    assert _confirm(client, user_id, proposal["id"]).json()["status"] == "cancelled"
+    assert stored["hold_sequence"] == proposal["hold_sequence"] and stored["expires_at"] == proposal["expires_at"]
+    assert account_view(client, user_id, account["id"])["active_rule_holds"] == "0.00"  # hold released
     assert _tx_count(user_id) == 0
+    assert _confirm(client, user_id, proposal["id"]).json()["status"] == "cancelled"
     assert executions(client, user_id)["total"] == 1  # no new proposal for the same source
+    codes = [a["code"] for a in executions(client, user_id)["items"][0]["audit"]]
+    assert codes == ["proposed", "cancelled"]
+
+    for _ in range(2):  # redelivery: no duplicate cancellation or audit
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE financial_events SET status = 'pending', processed_at = NULL, outcome_summary = NULL "
+                "WHERE event_type = 'income.updated'"))
+        evaluate(client, user_id)
+    assert [a["code"] for a in executions(client, user_id)["items"][0]["audit"]] == codes
+
+
+def test_an_income_update_leaves_a_completed_execution_unchanged_except_for_its_snapshot_annotation(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id, account, rule, goal, proposal = _pending(client)
+    assert _confirm(client, user_id, proposal["id"]).json()["status"] == "executed"
+    income_id = scalar("SELECT id FROM income WHERE user_id = :u", u=user_id)
+
+    client.patch(f"/api/v1/income/{income_id}", headers=auth_headers(user_id), json={"description": "note"})
+    evaluate(client, user_id)
+    assert _proposal(client, user_id, proposal["id"])["status"] == "executed"
+    assert [a["code"] for a in executions(client, user_id)["items"][0]["audit"]] == ["proposed", "confirmed", "applied"]
+
+    client.patch(f"/api/v1/income/{income_id}", headers=auth_headers(user_id), json={"amount": "5.00"})
+    evaluate(client, user_id)  # snapshot-based annotation, still no re-run
+    assert _proposal(client, user_id, proposal["id"])["status"] == "executed"
+    assert [a["code"] for a in executions(client, user_id)["items"][0]["audit"]][-1] == "source_changed"
+    assert _tx_count(user_id) == 1
+
+
+def test_a_stored_audit_trail_has_a_stable_order_on_every_read(client: TestClient, clean_database: None) -> None:
+    user_id, account, rule, goal, proposal = _pending(client)
+    _confirm(client, user_id, proposal["id"])
+
+    reads = {tuple(a["code"] for a in executions(client, user_id)["items"][0]["audit"]) for _ in range(5)}
+
+    assert reads == {("proposed", "confirmed", "applied")}
 
 
 def test_income_delete_cancels_the_proposal_and_leaves_executed_allocations(

@@ -672,16 +672,17 @@ def _annotate_existing(
 
     for execution in executions.values():
         if execution.status == STATUS_AWAITING_CONFIRMATION:
-            # An open proposal follows its source (§15.2): a changed snapshot
-            # cancels it (source_changed), a deletion cancels it
+            # An open proposal follows its source (§15.2): EVERY committed
+            # income.updated (even a description-only edit) cancels it
+            # (source_changed) and every income.deleted cancels it
             # (source_deleted); either ends its hold. Nothing was written, so
-            # there is nothing to compensate. Terminal rows are never reached.
+            # there is nothing to compensate. Terminal rows are never reached,
+            # which makes a redelivered event a no-op. The snapshot comparison
+            # applies only to the annotation of COMPLETED executions below.
             if audit_code == AUDIT_SOURCE_DELETED:
                 reason = rule_execution_repository.CANCEL_SOURCE_DELETED
-            elif _changed_fields(_execution_snapshot_dict(execution), _snapshot_dict(event_model)):
-                reason = rule_execution_repository.CANCEL_SOURCE_CHANGED
             else:
-                continue
+                reason = rule_execution_repository.CANCEL_SOURCE_CHANGED
 
             rule_execution_repository.cancel_proposal(
                 db_session, execution, reason, event_model.id,

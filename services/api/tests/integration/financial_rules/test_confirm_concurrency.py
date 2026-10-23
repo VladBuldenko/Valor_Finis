@@ -218,7 +218,7 @@ def test_ct05_income_update_event_versus_confirmation(client: TestClient, clean_
     for _ in range(ROUNDS):
         user_id, _, _, _, proposal_id = _setup(client)
         income_id = scalar("SELECT id FROM income WHERE user_id = :u", u=user_id)
-        response = client.patch(f"/api/v1/income/{income_id}", headers={"X-User-Id": user_id}, json={"amount": "5.00"})
+        response = client.patch(f"/api/v1/income/{income_id}", headers={"X-User-Id": user_id}, json={"description": "note only"})
         assert response.status_code == 200, response.text
 
         def drain():
@@ -236,7 +236,9 @@ def test_ct05_income_update_event_versus_confirmation(client: TestClient, clean_
             assert _tx(user_id) == 0
         else:
             assert _tx(user_id) == 1
-            assert scalar("SELECT count(*) FROM rule_execution_audit WHERE execution_id = :e AND code = 'source_changed'", e=proposal_id) == 1
+            # A description-only edit leaves the snapshot unchanged: a completed
+            # execution gets no annotation (snapshot-based), and is never re-run.
+            assert scalar("SELECT count(*) FROM rule_execution_audit WHERE execution_id = :e AND code = 'source_changed'", e=proposal_id) == 0
 
 
 def test_two_users_confirm_independently(client: TestClient, clean_database: None) -> None:
