@@ -1316,8 +1316,65 @@ rule_execution_items reference (every new FK is RESTRICT).
 
 VF-020E8 (runtime only, NO migration) starts using hold_sequence (nextval of rule_execution_hold_sequence, assigned once per proposal), expires_at (now + 168 hours) and the awaiting_confirmation / rejected / expired / cancelled states of rule_executions; rule_execution_audit rows now use clock_timestamp() for created_at so entries of one transaction keep their order.
 
-Planned, NOT implemented (VF-020E, contract in docs/modules/smart-goals-rules.md
-v0.6 sections 19.2-19.3): rule_alerts (E9A). The Account safety floor is a
+VF-020E9A (migration a7c3e91d5b24, down_revision e0503e9ca9d3; implemented on a local feature branch, NOT applied to production) adds one table, rule_alerts:
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| `id` | UUID | NOT NULL | primary key |
+| `user_id` | UUID | NOT NULL | owner; part of the ownership FK and of the alert key |
+| `rule_id` | UUID | NULL | originating rule; set to NULL when the rule is deleted |
+| `rule_type` | VARCHAR(32) | NOT NULL | snapshot of the rule type: `MINIMUM_UNALLOCATED_FLOOR`, `OVERCOMMITMENT_ALERT` or `BUDGET_ALERT` |
+| `subject_type` | VARCHAR(16) | NOT NULL | `account` or `budget` |
+| `subject_id` | UUID | NOT NULL | **soft reference** to the Account or Budget (no FK) |
+| `period_key` | VARCHAR(40) | NOT NULL | Budget alert: the Budget **period start** as an ISO date (`YYYY-MM-DD`); Account alert: the episode number `E1`, `E2`, ... |
+| `level` | VARCHAR(16) | NOT NULL | Budget: `watch` / `at_risk` / `exceeded`; Account: `breached` |
+| `created_at` | TIMESTAMPTZ | NOT NULL | default `now()` |
+| `acknowledged_at` | TIMESTAMPTZ | NULL | set by the acknowledge action |
+| `resolved_at` | TIMESTAMPTZ | NULL | Account episode ended (the Account recovered); always NULL for a Budget alert |
+
+Constraints and indexes (all named):
+
+- `rule_alerts_pkey (id)`.
+- `fk_rule_alerts_rule_id_user_id`: `(rule_id, user_id)` -> `financial_rules(id, user_id)`
+  `ON DELETE SET NULL (rule_id)` (PostgreSQL 15+; production 17.6, CI 16, local 18). The
+  composite key prevents a cross-user rule; only `rule_id` is nulled, never `user_id`.
+- `uq_rule_alerts_alert_key`: `UNIQUE (user_id, rule_type, subject_id, period_key, level)` - the
+  deduplication key (the rule id is deliberately **not** part of it).
+- `uq_rule_alerts_open_account_episode`: partial `UNIQUE (user_id, rule_type, subject_id)`
+  `WHERE resolved_at IS NULL AND rule_type <> 'BUDGET_ALERT'` - at most one open episode per
+  Account and alert type.
+- `ix_rule_alerts_user_id_unacknowledged`: `(user_id, created_at, id) WHERE acknowledged_at IS NULL`.
+- `ix_rule_alerts_rule_id`: `(rule_id) WHERE rule_id IS NOT NULL` (supports the SET NULL scan).
+- CHECKs: `ck_rule_alerts_rule_type_valid`, `ck_rule_alerts_subject_type_valid`,
+  `ck_rule_alerts_level_valid`, `ck_rule_alerts_type_shape` (Budget alert <=> `subject_type =
+  'budget'`, level in {watch, at_risk, exceeded}, ISO-date `period_key`, `resolved_at IS NULL`; Account
+  alert <=> `subject_type = 'account'`, level `breached`, `period_key ~ '^E[1-9][0-9]{0,8}$'`),
+  `ck_rule_alerts_acknowledged_at_valid` and `ck_rule_alerts_resolved_at_valid` (neither may precede
+  `created_at`).
+- Data API: `REVOKE ALL` on the table from `anon`, `authenticated`, `service_role` (guarded by a
+  `pg_roles` existence check); no sequence exists (UUID key). The downgrade refuses to run if any
+  alert exists.
+
+**Deduplication and transitions.** *Budget:* each severity level is alerted at most once per
+`(budget, period start)`. Only an upward transition inserts a row; repeated evaluation at the same
+level, or the same level again after a de-escalation inside the period, collides with the alert
+key and inserts nothing. A new period starts clean. *Account (floor, overcommitment):* a breach
+opens episode `E<n>`; while it is open the partial unique index forbids a second open episode;
+when the Account recovers the runtime sets `resolved_at`; a later breach inserts `E<n+1>`. The
+floor breach and the overcommitment are separate `rule_type` values and never conflated; a manual
+floor warning is advisory and never an alert row; a soft hold is not reserved money and never
+creates an alert by itself. The runtime derives the next episode number from the Account's latest
+row and relies on the two unique indexes as the final concurrency defense (one winner).
+
+**Lifecycle (P57).** Alerts are informational history. A rule without executions stays deletable
+because the rule link is nulled, not cascaded or restricted; the alert survives with its
+`rule_type`, subject and key. The subject is a soft reference, so deleting an Account or a Budget is
+never blocked by alerts (a referencing rule still blocks it with the existing controlled 409). A
+replacement rule for the same subject keeps deduplicating because the key excludes `rule_id`.
+Residual: the subject is not FK-checked; the E9B runtime must derive `subject_id` from the user's own
+rule and read it only for the owner.
+
+Planned, NOT implemented: the alert runtime and Inbox (E9B). The Account safety floor is a
 financial_rules row, never an accounts column. The C1 check
 ck_goal_transactions_linked_requires_client_request_id was replaced by
 ck_goal_transactions_linked_requires_origin in revision e0503e9ca9d3 (applied to production).

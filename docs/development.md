@@ -413,7 +413,32 @@ The backend is implemented and deployed in production, and the mobile client imp
 
 Current priorities (docs/roadmap.md is the authoritative direction):
 
-VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — E2 outbox schema complete and applied to production (revision 115998e2e795); E3 Income outbox runtime merged; E4 rules schema applied to production (revision 861064d31463); E5 rules CRUD and floor runtime merged; E6 execution schema merged and applied to production (revision e0503e9ca9d3); E7 AUTO execution runtime merged (env RULE_EVENT_BACKGROUND_DISPATCH, default true, controls the best-effort post-response drain); E8 CONFIRM proposals implemented on a local feature branch (not pushed or deployed); next: E9 alerts; VF-020F mobile later)
+VF-020 Smart Goals & Rules (VF-020B–D complete; VF-020E rules engine contract finalized — E2 outbox schema complete and applied to production (revision 115998e2e795); E3 Income outbox runtime merged; E4 rules schema applied to production (revision 861064d31463); E5 rules CRUD and floor runtime merged; E6 execution schema merged and applied to production (revision e0503e9ca9d3); E7 AUTO execution runtime merged (env RULE_EVENT_BACKGROUND_DISPATCH, default true, controls the best-effort post-response drain); E8 CONFIRM proposals merged (PR #91); E9A rule_alerts schema (migration a7c3e91d5b24) implemented on a local feature branch (not pushed, merged or applied to production; E9B is blocked until it is applied and verified); VF-020F mobile later)
     ↓
 Improve the API and the mobile app based on real usage
 💡 Final Rule
+
+
+Future production migration plan for E9A (DOCUMENTED ONLY - nothing below has been executed, and
+no production credential was used while preparing E9A). It starts only after the E9A PR is merged
+and needs its own explicit authorization:
+
+1. Explicit authorization: a separate user message naming the revision `a7c3e91d5b24`.
+2. Read-only production preflight: `alembic current` must be exactly `e0503e9ca9d3`; `rule_alerts`
+   must not exist; the server must be PostgreSQL 15+ (`ON DELETE SET NULL (column)`); no other
+   writer holds long locks on `financial_rules`.
+3. Backup verification: a fresh logical backup (libpq environment variables, nothing secret in
+   argv) with a recorded checksum and a confirmed restore path BEFORE the migration.
+4. Lock-timeout policy: the migration takes only SHARE ROW EXCLUSIVE on `financial_rules`; run it
+   in one transaction with a transaction-local `lock_timeout` of about 5 seconds (injected by the
+   operator wrapper, never stored in the revision) and abort rather than wait.
+5. Exact-revision migration: `alembic upgrade a7c3e91d5b24` (never `head`), one transaction.
+6. Post-migration verification: `alembic current` = `a7c3e91d5b24`; the table, its six CHECKs, the
+   foreign key (`ON DELETE SET NULL (rule_id)`), the unique constraint and the three indexes exist
+   with the documented predicates; `anon`, `authenticated` and `service_role` hold no privilege on
+   `rule_alerts`; the table is empty; the deployed E8 API still answers.
+7. Rollback / incident approach: the revision is additive and the E8 runtime ignores the table, so
+   the first response to any problem is to leave the table in place and stop; `alembic downgrade
+   e0503e9ca9d3` is available while the table is empty and refuses once alerts exist; a failed
+   upgrade rolls back as one transaction (transactional DDL). E9B must not deploy before step 6
+   passes.
