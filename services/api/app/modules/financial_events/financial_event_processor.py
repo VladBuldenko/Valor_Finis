@@ -11,7 +11,7 @@ from app.core.app_config import settings
 from app.db.database_session import SessionLocal
 from app.modules.financial_events import financial_event_queue_repository as queue
 from app.modules.financial_events.financial_event_models import FinancialEventModel
-from app.modules.financial_rules import rule_execution_service
+from app.modules.financial_rules import rule_alert_service, rule_execution_service
 from app.modules.goals import goal_user_lock
 
 logger = logging.getLogger(__name__)
@@ -236,6 +236,8 @@ def dispatch_user_events_best_effort(user_id: UUID) -> None:
 
     try:
         drain_user_events(db_session, user_id)
+        # Detect alert transitions caused by the drain (never raises).
+        rule_alert_service.evaluate_user_alerts_best_effort(db_session, user_id)
     except Exception as error:
         logger.error("best-effort event dispatch failed (%s)", type(error).__name__)
     finally:

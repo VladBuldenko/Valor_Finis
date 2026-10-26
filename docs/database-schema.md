@@ -1374,7 +1374,9 @@ replacement rule for the same subject keeps deduplicating because the key exclud
 Residual: the subject is not FK-checked; the E9B runtime must derive `subject_id` from the user's own
 rule and read it only for the owner.
 
-Planned, NOT implemented: the alert runtime and Inbox (E9B). The Account safety floor is a
+VF-020E9B (runtime only, NO migration; local feature branch) is the first code that reads and writes rule_alerts, only through rule_alert_repository and always after a to_regclass existence check, with ON CONFLICT DO NOTHING inserts, resolved_at set when an Account episode ends and acknowledged_at set once by a conditional UPDATE.
+
+Planned, NOT implemented: the periodic dispatcher (E10). The Account safety floor is a
 financial_rules row, never an accounts column. The C1 check
 ck_goal_transactions_linked_requires_client_request_id was replaced by
 ck_goal_transactions_linked_requires_origin in revision e0503e9ca9d3 (applied to production).

@@ -50,6 +50,7 @@ from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleInvalidFieldsError,
     FinancialRuleInvalidTransitionError,
     FinancialRuleNotFoundError,
+    RuleAlertNotFoundError,
     RuleProposalNotFoundError,
     RuleProposalStaleError,
     FinancialRuleSubjectArchivedError,
@@ -125,6 +126,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     FinancialRuleNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Financial rule not found.",
+    ),
+    RuleAlertNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Rule alert not found.",
     ),
     RuleProposalNotFoundError: (
         status.HTTP_404_NOT_FOUND,

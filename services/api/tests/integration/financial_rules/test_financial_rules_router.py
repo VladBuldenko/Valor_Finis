@@ -511,9 +511,11 @@ def test_paused_floor_can_be_disabled(client: TestClient, clean_database: None) 
     assert action(client, user_id, rule["id"], "disable").json()["status"] == "disabled"
 
 
-def test_alert_rules_cannot_be_enabled_before_their_stage(
-    client: TestClient, clean_database: None,
+def test_alert_rules_are_enabled_only_where_the_alert_schema_exists(
+    client: TestClient, clean_database: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.modules.financial_rules import rule_alert_repository
+
     user_id, account, goal = _setup(client)
     budget = create_budget(client, user_id)
     rules = [
@@ -521,13 +523,18 @@ def test_alert_rules_cannot_be_enabled_before_their_stage(
         create_rule(client, user_id, budget_alert_payload(budget["id"])),
     ]
 
+    with monkeypatch.context() as patched:
+        patched.setattr(rule_alert_repository, "table_exists", lambda _session: False)
+        for rule in rules:
+            assert action(client, user_id, rule["id"], "enable").status_code == 409  # schema not ready
+            body = get_rule(client, user_id, rule["id"]).json()
+            assert body["status"] == "draft" and body["active_since"] is None
+
     for rule in rules:
-        response = action(client, user_id, rule["id"], "enable")
-        assert response.status_code == 409
-        assert action(client, user_id, rule["id"], "pause").status_code == 409
-        assert action(client, user_id, rule["id"], "disable").status_code == 409
-        body = get_rule(client, user_id, rule["id"]).json()
-        assert body["status"] == "draft" and body["active_since"] is None
+        enabled = action(client, user_id, rule["id"], "enable")
+        assert enabled.status_code == 200 and enabled.json()["status"] == "enabled"
+        assert action(client, user_id, rule["id"], "pause").json()["status"] == "paused"
+        assert action(client, user_id, rule["id"], "disable").json()["status"] == "disabled"
 
 
 # ------------------------------------------------------------------
@@ -574,7 +581,7 @@ def test_future_stage_endpoints_do_not_exist(client: TestClient, clean_database:
     user_id = str(uuid4())
     for method, path in (
         ("post", f"{RULES_URL}/{uuid4()}/preview"),
-        ("get", "/api/v1/rule-alerts"),
+
     ):
         response = getattr(client, method)(path, headers=auth_headers(user_id))
         assert response.status_code in (404, 405, 422), (method, path, response.status_code)

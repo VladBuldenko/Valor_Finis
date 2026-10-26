@@ -666,7 +666,7 @@ def test_two_incomes_use_the_capacity_left_by_the_first(client: TestClient, clea
     assert statuses == ["executed", "skipped"]  # 310 - 200 = 110 < 200
 
 
-def test_enable_rules_auto_and_confirm_but_not_alerts(client: TestClient, clean_database: None) -> None:
+def test_enable_rules_auto_confirm_and_alerts(client: TestClient, clean_database: None) -> None:
     user_id = str(uuid4())
     account = funded_account(client, user_id, opening="2000.00")
     goal = goal_with_target(client, user_id, "G", 3000)
@@ -687,7 +687,7 @@ def test_enable_rules_auto_and_confirm_but_not_alerts(client: TestClient, clean_
     assert again["effective_from"] == date.today().isoformat() and again["version"] == enabled["version"]
 
     alert = create_rule(client, user_id, {"rule_type": "OVERCOMMITMENT_ALERT", "name": "A", "source_account_id": account["id"]})
-    assert action(client, user_id, alert["id"], "enable").status_code == 409
+    assert action(client, user_id, alert["id"], "enable").status_code == 200  # E9B, schema present
 
 
 def test_enable_revalidates_an_archived_target_goal(client: TestClient, clean_database: None) -> None:

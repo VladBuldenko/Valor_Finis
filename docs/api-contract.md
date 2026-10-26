@@ -912,8 +912,23 @@ revalidation fails first commits cancelled (stale) and then returns 409. Reads n
 proposals to expired. Creating a proposal writes no GoalTransaction or balance; confirming
 writes the frozen amounts once.
 
-Planned, NOT implemented: /preview, /api/v1/rule-alerts and the alert runtime (VF-020E9B; the
-rule_alerts schema of VF-020E9A adds no endpoint), the periodic dispatcher (VF-020E10).
+Rule alerts (VF-020E9B; implemented on a local feature branch, not deployed; live alerting needs the
+E9A migration applied):
+  GET /api/v1/rule-alerts?limit&offset&acknowledged   newest first, limit 1-100 (default 20), user-scoped
+  POST /api/v1/rule-alerts/{id}/acknowledge           idempotent; keeps the first acknowledged_at; 404 when
+                                                      missing or foreign
+An alert has id, rule_id (null once the rule was deleted), rule_type (MINIMUM_UNALLOCATED_FLOOR |
+OVERCOMMITMENT_ALERT | BUDGET_ALERT), subject_type (account | budget), subject_id, subject_name (null once the
+subject was deleted), period_key (Budget period start as an ISO date, or the Account episode E1, E2, ...),
+level (watch | at_risk | exceeded for a Budget; breached for an Account), created_at, acknowledged_at and
+resolved_at (an Account episode ended). The list also returns available=false (and no items) while the
+rule_alerts table does not exist. POST /api/v1/financial-rules/evaluate gains alerts_available (false only
+when the table is missing), alerts_created, alerts_resolved and alerts_failed (true when the alert evaluation
+raised; the drain result is still valid). Alert rules (OVERCOMMITMENT_ALERT, BUDGET_ALERT) can be enabled, paused and
+disabled; enabling is a 409 while the alert table does not exist. An alert never blocks an Expense, Transfer or
+reservation and moves no money.
+
+Planned, NOT implemented: /preview, the periodic dispatcher (VF-020E10).
 
 Delete Goal
 

@@ -534,18 +534,20 @@ def test_older_revision_differs_only_by_the_e9a_table(e6_database: Engine) -> No
     assert exclude_stages_after(differences, E6_REVISION) == []
 
 
-def test_no_runtime_code_reads_or_writes_rule_alerts() -> None:
-    pattern = ("RuleAlertModel", "rule_alerts", "rule_alert_models")
+def test_rule_alert_persistence_is_confined_to_the_model_and_the_repository() -> None:
+    # E9A shipped the schema with no runtime use; since VF-020E9B the table is
+    # read and written ONLY through rule_alert_repository (the service, router and
+    # rule service go through it and never name the table or model).
     referencing = sorted(
         str(path.relative_to(API_DIR))
         for path in APP_DIR.rglob("*.py")
-        if any(word in path.read_text(encoding="utf-8") for word in pattern)
+        if any(word in path.read_text(encoding="utf-8") for word in ("RuleAlertModel", "rule_alert_models"))
     )
 
-    # The model, the model registry and the module docstring that names the table.
     assert referencing == [
         "app/db/database_models.py",
         "app/modules/financial_rules/rule_alert_models.py",
+        "app/modules/financial_rules/rule_alert_repository.py",
     ]
 
 

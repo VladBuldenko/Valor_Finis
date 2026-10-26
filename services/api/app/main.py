@@ -11,6 +11,7 @@ from app.modules.budgets.budget_router import router as budgets_router
 from app.modules.categories.router import router as categories_router
 from app.modules.expenses.expenses_router import router as expenses_router
 from app.modules.financial_rules.financial_rule_router import router as financial_rules_router
+from app.modules.financial_rules.rule_alert_router import router as rule_alerts_router
 from app.modules.financial_rules.rule_execution_router import router as rule_executions_router
 from app.modules.financial_rules.rule_proposal_router import router as rule_proposals_router
 from app.modules.goals.goal_router import router as goals_router
@@ -116,6 +117,10 @@ app.include_router(
 )
 app.include_router(
     rule_proposals_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    rule_alerts_router,
     prefix="/api/v1",
 )
 
