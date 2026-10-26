@@ -847,9 +847,12 @@ def test_orm_metadata_matches_the_e6_schema_exactly(e6_database: Engine) -> None
 
     # Since VF-020E7 the ORM maps every E6 object, including the
     # goal_transactions column, keys and CHECKs: no difference remains.
-    # The only remaining difference belongs to a LATER stage (E9A rule_alerts).
+    # The only remaining differences belong to LATER stages (E9A rule_alerts, E10 progress).
     assert exclude_stages_after(differences, E6_REVISION) == []
-    assert all("rule_alerts" in repr(difference) for difference in differences)
+    assert all(
+        "rule_alerts" in repr(difference) or "alert_dispatch_progress" in repr(difference)
+        for difference in differences
+    )
 
 
 def test_older_revisions_expect_the_e6_objects_only_through_the_drift_helper(e4_database: Engine) -> None:

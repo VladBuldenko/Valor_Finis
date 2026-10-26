@@ -19,6 +19,7 @@ from app.modules.financial_rules.financial_rule_models import (
     FinancialRuleGoalTargetModel,
     FinancialRuleModel,
 )
+from app.modules.financial_rules.alert_dispatch_progress_models import AlertDispatchProgressModel
 from app.modules.financial_rules.rule_alert_models import RuleAlertModel
 from app.modules.financial_rules.rule_execution_models import (
     RuleExecutionAuditModel,
@@ -103,8 +104,10 @@ def client() -> TestClient:
 # migration is pending). Only these explicitly named tables may be absent; a
 # missing core table, or any other SQL error, still fails the test.
 # rule_alerts (VF-020E9A, migration a7c3e91d5b24) is optional for the same reason.
+# alert_dispatch_progress (VF-020E10, migration c4d8a2f6e193) likewise.
 OPTIONAL_E6_TABLES = frozenset({
     "rule_execution_audit", "rule_execution_items", "rule_executions", "rule_alerts",
+    "alert_dispatch_progress",
 })
 
 # Deletion order that satisfies every foreign key (children first).
@@ -113,6 +116,7 @@ _CLEANUP_MODELS = (
     ExpenseModel,
     FinancialEventModel,
     RuleAlertModel,
+    AlertDispatchProgressModel,
     RuleExecutionAuditModel,
     RuleExecutionItemModel,
     GoalTransactionModel,

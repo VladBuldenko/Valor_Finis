@@ -3159,3 +3159,27 @@ PostgreSQL
     └── PK user_id
 
 This document should be updated whenever the persisted schema, constraints, relationships, or migration strategy changes.
+
+VF-020E10 persistent alert dispatch fairness (migration c4d8a2f6e193, down_revision a7c3e91d5b24; schema stage, local
+feature branch, NOT applied to production) adds ONE private operational table and ONE sequence:
+
+alert_dispatch_progress (one row per user the periodic dispatcher attempted to evaluate alerts for):
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| user_id | UUID | NOT NULL | primary key; no foreign key (there is no users table) |
+| service_seq | BIGINT | NOT NULL | drawn from sequence alert_dispatch_service_seq on EVERY attempt (success or failure); UNIQUE |
+| last_attempted_at | TIMESTAMPTZ | NOT NULL | default now(); monitoring only, never used for ordering |
+| last_success_at | TIMESTAMPTZ | NULL | monitoring only |
+| consecutive_failures | INTEGER | NOT NULL | default 0; CHECK >= 0 |
+| last_error_code | VARCHAR(64) | NULL | an exception class name only (never a message) |
+
+Constraints and indexes: alert_dispatch_progress_pkey (user_id); uq_alert_dispatch_progress_service_seq
+(UNIQUE (service_seq)) - the total, clock-independent service order; ck_alert_dispatch_progress_consecutive_failures_valid;
+ck_alert_dispatch_progress_last_success_at_valid (last_success_at <= last_attempted_at); ix_alert_dispatch_progress_last_success_at
+(monitoring: users not successfully evaluated recently). Data API: REVOKE ALL on the table AND the sequence from anon,
+authenticated and service_role (guarded by pg_roles checks). Ownership and retention: written and read only by the
+dispatcher; no HTTP API exposes it; it stores no amounts and no personal data; the dispatcher deletes the row of a user
+that no longer has an enabled alert rule (bounded housekeeping), and losing all rows only resets the dispatcher to "every
+user never attempted". It touches no existing table, takes no lock on one, needs no backfill and does not change
+rule_alerts uniqueness. Downgrade drops the index, table and sequence (no history guard: the rows are scheduling state).

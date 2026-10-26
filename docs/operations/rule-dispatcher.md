@@ -89,6 +89,25 @@ authorization sequence (read-only preflight, backup, exact-revision migration, p
 cut/missed/doubled runs against the deterministic bound. Until then the probabilistic guarantee above is the
 accurate statement; do not describe alert coverage as guaranteed fair beyond the first row of the table.
 
+### 1b. Persistent progress: schema stage and rollout order
+
+Migration `c4d8a2f6e193` (down_revision `a7c3e91d5b24`) creates `alert_dispatch_progress` and the sequence
+`alert_dispatch_service_seq` (column contract in `docs/database-schema.md`). It is additive: no existing table is
+read, locked or changed, there is no backfill, and the deployed runtime ignores it. It is a SEPARATE change from the
+runtime that uses it, and the schema must be merged and applied before the deterministic runtime is activated.
+
+Exact order (nothing below has been executed): (1) verify the Render database connection; (2) verify E9A
+`a7c3e91d5b24` is applied and healthy; (3) obtain a separate authorization naming `c4d8a2f6e193`; (4) read-only
+preflight (revision exactly `a7c3e91d5b24`, table and sequence absent) and a verified backup; (5) apply
+`alembic upgrade c4d8a2f6e193` with a transaction-local `lock_timeout` (no existing relation is locked); (6) verify the
+table, six columns, four constraints, the index, the sequence and that the Data API roles hold no privilege on either;
+(7) deploy the runtime only after a separate approval; (8) observe a scheduled run report
+`alert_selection: progress` and verify coverage before describing alert evaluation as deterministic.
+
+Rollback assumptions: the runtime falls back to the random sample while the table is absent, so
+`alembic downgrade a7c3e91d5b24` (or `RULE_DISPATCHER_ALERT_PROGRESS=off`) is safe at any time; the only loss is the
+service order, which rebuilds itself.
+
 ## 2. Process contract
 
 Environment (all optional, validated before any work; invalid -> exit 2):
