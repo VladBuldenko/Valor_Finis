@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -43,6 +43,8 @@ class AlertEvaluation:
     # deliberately separate from `available`, which only means "the E9A table is
     # not there": a failure must never be reported as a missing schema.
     failed: bool = False
+    # The exception class name when `failed` (a code, never a message).
+    error_code: Optional[str] = None
 
 
 # Account episode lifecycle for one rule (floor breach or overcommitment).
@@ -155,7 +157,11 @@ def _evaluate_budget_rules(
 # transaction under L0 (so one user's evaluations are serialized; the unique
 # constraints stay the final defense). Idempotent: repeating it with an
 # unchanged state changes nothing. Without the E9A table it does nothing.
-def evaluate_user_alerts(db_session: Session, user_id: UUID) -> AlertEvaluation:
+def evaluate_user_alerts(
+    db_session: Session,
+    user_id: UUID,
+    on_success: Optional[Callable[[Session], None]] = None,
+) -> AlertEvaluation:
     result = AlertEvaluation()
 
     try:
@@ -167,6 +173,12 @@ def evaluate_user_alerts(db_session: Session, user_id: UUID) -> AlertEvaluation:
         rules = rule_alert_repository.get_enabled_alert_rules(db_session, user_id)
         _evaluate_account_rules(db_session, user_id, rules, result)
         _evaluate_budget_rules(db_session, user_id, rules, result)
+
+        if on_success is not None:
+            # Runs in THIS transaction (the dispatcher records its progress here),
+            # so success is committed together with the alert writes or not at all.
+            on_success(db_session)
+
         db_session.commit()
     except Exception:
         db_session.rollback()
@@ -177,13 +189,20 @@ def evaluate_user_alerts(db_session: Session, user_id: UUID) -> AlertEvaluation:
 
 # Never raises: used right after an event drain and by the best-effort
 # post-response task, where an alert problem must not hide the drain result.
-def evaluate_user_alerts_best_effort(db_session: Session, user_id: UUID) -> AlertEvaluation:
+def evaluate_user_alerts_best_effort(
+    db_session: Session,
+    user_id: UUID,
+    on_success: Optional[Callable[[Session], None]] = None,
+) -> AlertEvaluation:
     try:
-        return evaluate_user_alerts(db_session, user_id)
+        if on_success is None:
+            return evaluate_user_alerts(db_session, user_id)
+
+        return evaluate_user_alerts(db_session, user_id, on_success=on_success)
     except Exception as error:
         logger.error("alert evaluation failed (%s)", type(error).__name__)
 
-        return AlertEvaluation(available=True, failed=True)
+        return AlertEvaluation(available=True, failed=True, error_code=type(error).__name__)
 
 
 def _responses(db_session: Session, user_id: UUID, alerts: list) -> list[RuleAlertResponse]:

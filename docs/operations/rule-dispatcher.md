@@ -56,42 +56,49 @@ holding capacity at the instant it expires; stored state is normalized to `expir
 reject and event dispatch (which the dispatcher triggers for every user with events). No separate expiry job or
 schema was added; confirmation still revalidates in full.
 
-### 1a. Alert-user liveness: what is guaranteed, and the migration gate
+### 1a. Alert-user liveness: what is guaranteed
 
 *Finding (reproduced on the first E10 design).* Selecting a page by `floor(time / interval) % pages` over a fixed
 user order cannot give liveness without stored progress: with 6 alert users and every run interrupted after two
 users, only the same first two users were EVER evaluated (2 of 6 after 10 runs); and when the real cadence was a
-multiple of the configured interval, the same single page was visited forever (2 of 6). Full-page tests and a
-stable cadence hid both.
+multiple of the configured interval, the same single page was visited forever (2 of 6). A per-run random sample
+(the temporary fallback, still in the code) removes both failure modes but is only probabilistic.
 
-*Current behaviour (no schema change).* Each run orders the enabled-alert users by `md5(user_id || fresh random
-seed)` and evaluates a prefix up to the cap and the time budget. There is no page index and no dependence on the
-clock, so skipped, delayed or doubled ticks change nothing and an interrupted run evaluated a uniformly random
-subset, not a fixed prefix.
+*Persistent progress (this design).* The alert phase orders the users that have an enabled alert rule by
+`alert_dispatch_progress.service_seq` ascending, users without a row first (by `user_id`). `service_seq` is drawn
+from a sequence on EVERY attempt, so it is a strict total order that never depends on a clock. A success is written
+in the SAME transaction as the alert evaluation it records (both commit or neither does); a failure is written in its
+own short transaction and still moves the user to the back, so a failing user is retried once per cycle and cannot
+monopolize the queue. Users not reached in a run (cap, time budget, circuit breaker, crash) are untouched and stay
+at the front. Rows of users without an enabled alert rule are deleted (bounded housekeeping), so a disabled user is
+never processed and a newly enabled user (no row) is served first without initialization.
+
+*Bound and assumptions.* Let `M` be the number of users with an enabled alert rule, constant between runs, and let each
+run attempt and durably record at least `n` distinct users. A user attempted in the current cycle always sorts after
+every user not yet attempted in it (those have older sequence values or no row), so each run takes the next `n` of the
+not-yet-attempted users: after `k` runs at least `min(M, k*n)` distinct users have been attempted. **Every user is
+therefore attempted within `ceil(M / n)` runs.** (tests: 6 users / 2 per run -> 3 runs, plus (7,3), (5,5), (9,4),
+(4,1), (3,10), repeated partial-page interruption, irregular and frozen clocks, additions, removals, failures.)
+Assumptions: (A1) the population is stable (a user added during a cycle is served first and delays the others by at
+most the number of arrivals); (A2) each completed run records `n` distinct attempts (a run shortened by the time budget, the circuit breaker or a crash records fewer, and the bound then counts only the attempts actually recorded; a crash before the progress
+commit repeats that user; overlapping runs may repeat the same users, so the bound counts non-overlapping runs, which
+Render's single-active-run behaviour provides in normal operation); (A3) the progress commit is durable; (A4) runs
+actually happen. **The bound is in RUNS, not in minutes: no wall-clock deadline is claimed** until the scheduler's
+reliability and the per-run capacity (`n` per cycle time) are measured in production. A user that fails is *attempted*
+within the bound but *successfully evaluated* only when its failure clears.
 
 | Situation | Guarantee |
 |---|---|
-| enabled-alert users <= `RULE_DISPATCHER_MAX_ALERT_USERS` and the pass is not cut by the time budget and no alert failure trips the consecutive-failure breaker | **every user is evaluated in every run** (hard) |
-| more users than one pass can evaluate, or passes that are cut early | **almost-sure coverage, no deterministic bound**: after `k` runs a given user is still unvisited with probability about `(1 - n/M)^k` (`n` evaluated per run, `M` users), independent of cadence |
-| a run that crashes or is cancelled | the sample is simply different next run; nothing is lost |
+| progress table present, `RULE_DISPATCHER_ALERT_PROGRESS=auto` | every user attempted within `ceil(M/n)` runs under A1-A4 (`alert_selection: progress`, `alert_coverage: deterministic`) |
+| progress table absent, or `RULE_DISPATCHER_ALERT_PROGRESS=off` | temporary fallback: per-run random sample, almost-sure coverage with miss probability about `(1 - n/M)^k` after `k` runs, NO deterministic bound (`alert_selection: random`, `alert_coverage: probabilistic`) |
+| `rule_alerts` table absent | alert evaluation skipped (`alerts_unavailable: true`), no progress is written |
+| a genuine database error in any existence check | an alert failure (exit 3 / breaker), never read as "schema absent" |
 
-`alert_users_total` and `alert_users_truncated` expose when the population exceeds one pass, so operators can see
-the moment the probabilistic regime begins.
-
-*Why a deterministic bound needs persistent state, and the gate.* A hard bound ("every user within `ceil(M/n)`
-completed runs, however runs are cut or missed") requires remembering who was evaluated. That means a new
-table (for example `rule_alert_evaluation_state(user_id uuid primary key, last_evaluated_at timestamptz not
-null)`, written by the dispatcher after each evaluation and read as "least recently evaluated first"). That is
-production DDL and is **NOT part of this change**. If it is wanted, it is a separate stage with its own gates:
-(1) architecture decision recorded here, (2) additive migration with the Data API REVOKE pattern and an
-expand-first runtime (use the table only when it exists, otherwise fall back to the random sample), (3) the usual
-authorization sequence (read-only preflight, backup, exact-revision migration, post-checks) and (4) tests for
-cut/missed/doubled runs against the deterministic bound. Until then the probabilistic guarantee above is the
-accurate statement; do not describe alert coverage as guaranteed fair beyond the first row of the table.
+Never describe unattended alert evaluation as deterministic while `alert_coverage` reports `probabilistic`.
 
 ### 1b. Persistent progress: schema stage and rollout order
 
-Migration `c4d8a2f6e193` (down_revision `a7c3e91d5b24`) creates `alert_dispatch_progress` and the sequence
+Migration `c4d8a2f6e193` (down_revision `a7c3e91d5b24`; schema commit, reviewable on its own) creates `alert_dispatch_progress` and the sequence
 `alert_dispatch_service_seq` (column contract in `docs/database-schema.md`). It is additive: no existing table is
 read, locked or changed, there is no backfill, and the deployed runtime ignores it. It is a SEPARATE change from the
 runtime that uses it, and the schema must be merged and applied before the deterministic runtime is activated.
@@ -118,6 +125,7 @@ Environment (all optional, validated before any work; invalid -> exit 2):
 | `RULE_DISPATCHER_MAX_USERS` | 50 | 1-1000 | users drained per pass |
 | `RULE_DISPATCHER_MAX_EVENTS_PER_USER` | 20 | 1-100 | events per user per pass (same cap as the evaluate endpoint) |
 | `RULE_DISPATCHER_MAX_ALERT_USERS` | 200 | 1-5000 | alert users evaluated per pass (a random sample when more users have enabled alert rules) |
+| `RULE_DISPATCHER_ALERT_PROGRESS` | `auto` | auto / off | `auto` uses the persistent progress table when it exists (verified at run time), `off` forces the random fallback - the operational rollback switch; activate only after the schema is applied and verified |
 | `RULE_DISPATCHER_TIME_BUDGET_SECONDS` | 240 | 5-3300 | stop starting new users after this; the last fifth of the budget is reserved for alert evaluation; remaining work waits for the next run |
 
 Defaults come from the contract (per-user cap = evaluate default) and from finishing well inside a 10-minute
@@ -131,7 +139,7 @@ failed, three consecutive connection or unrecorded-failure users, or three conse
 failure, retryable-failed or dead events, alert failure). The last stdout line is
 `dispatcher_summary {json}` with only counters: `outcome, users_considered, users_processed, events_processed,
 events_deferred, events_failed_retryable, events_dead, events_unrecorded_failures, users_blocked, user_failures, alert_users_considered,
-alert_users_total, alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, alert_users_truncated, budget_exhausted,
+alert_users_total, alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, alert_users_truncated, alert_selection, alert_coverage, progress_update_failures, alert_progress_purged, budget_exhausted,
 execution_outcomes, elapsed_seconds`. Logs use a short hash of the user id and never contain the database URL,
 secrets, tokens, amounts or names.
 
@@ -200,6 +208,17 @@ line is `dispatcher_summary` with `outcome` `success` or `noop`. Then check, rea
 - Missing alert storage: `alerts_unavailable: true` in the summary means the E9A table is absent; it is expected only
   before the E9A production migration.
 
+**Alert progress monitoring (read-only, once the progress table exists).**
+- Users not successfully evaluated recently: `SELECT count(*) FROM alert_dispatch_progress WHERE last_success_at IS NULL OR last_success_at < now() - interval '2 hours';`
+- Enabled-alert users with no progress row yet (backlog never served): `SELECT count(DISTINCT r.user_id) FROM financial_rules r WHERE r.status = 'enabled' AND r.rule_type IN ('MINIMUM_UNALLOCATED_FLOOR','OVERCOMMITMENT_ALERT','BUDGET_ALERT') AND NOT EXISTS (SELECT 1 FROM alert_dispatch_progress p WHERE p.user_id = r.user_id);`
+- Persistently failing users (codes only): `SELECT last_error_code, count(*), max(consecutive_failures) FROM alert_dispatch_progress WHERE consecutive_failures > 0 GROUP BY 1;`
+- Cycle estimate: `alert_users_total / alert_users_evaluated` from the summary line is the number of runs per full cycle; an `alert_users_truncated: true` run with `alert_selection: random` means the fallback is active and coverage is only probabilistic.
+- In the logs, `alert_failures`, `progress_update_failures` and `alert_selection` appear in the `dispatcher_summary` line; recurring `progress_update_failures` means failures cannot be recorded (database trouble).
+
+**Failed evaluations and recovery.** A failed evaluation is rolled back (no partial alert), its user moves to the back and is
+retried one cycle later; `consecutive_failures` resets on the next success. Deleting all rows from
+`alert_dispatch_progress` is safe (the order rebuilds) and is the recovery for a corrupted order.
+
 **Disable safely.** Preferred: set `RULE_DISPATCHER_ENABLED=false` on the cron job (the next run exits 0 touching
 nothing); alternatively suspend the service in the dashboard (confirm the control exists on your plan). Pending
 events stay durable and are still processed by user-triggered drains.
@@ -228,8 +247,10 @@ Only after a successful, verified scheduled run may AUTO and alerts be described
 
 - Expense, Transfer and adjustment writes still do not trigger an alert evaluation themselves; the dispatcher
   detects them within one tick.
-- Alert-user coverage is almost-sure, not bounded, once enabled-alert users exceed one pass (section 1a). Watch
-  `alert_users_truncated`; a deterministic bound needs the persistent-progress migration described there.
+- Until the progress schema is applied and the runtime activated, alert coverage is only probabilistic (section 1a);
+  afterwards it is bounded in RUNS, not in minutes, and only under assumptions A1-A4. If runs are slower than the
+  schedule or `n` is below the population growth rate, the cycle time grows: watch the monitoring queries below.
+- A user that keeps failing is attempted once per cycle and consumes one of the `n` slots each time.
 - A manual "Trigger Run" cancels an active run mid-pass; the event it was draining is recovered by lease expiry
   (up to 5 minutes) - correct but briefly delayed for that user.
 - Exit-code and notification behaviour of Render cron runs is not documented in the pages read; verify in the

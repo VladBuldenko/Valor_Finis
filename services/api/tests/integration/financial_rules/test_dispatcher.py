@@ -854,7 +854,9 @@ def test_three_consecutive_alert_session_failures_are_fatal(client: TestClient, 
 
     assert summary.outcome == "fatal" and dispatcher.exit_code_for(summary) == 1
     assert summary.alert_failures == dispatcher.MAX_CONSECUTIVE_FAILURES
-    assert factory.calls == 2 + dispatcher.MAX_CONSECUTIVE_FAILURES  # the breaker stops further attempts
+    # 2 discovery sessions + per failed user one evaluation session and one attempt to record its progress;
+    # the breaker stops any further user.
+    assert factory.calls == 2 + 2 * dispatcher.MAX_CONSECUTIVE_FAILURES
 
 
 def test_a_single_alert_session_failure_is_a_counted_failure_not_fatal(client: TestClient, clean_database: None) -> None:

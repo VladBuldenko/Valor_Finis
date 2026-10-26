@@ -51,6 +51,9 @@ from sqlalchemy.orm import Session
 from app.db.database_session import SessionLocal, engine
 from app.modules.financial_events import financial_event_processor
 from app.modules.financial_events import financial_event_queue_repository as queue
+from app.modules.financial_rules import (
+    alert_dispatch_progress_repository as progress_repository,
+)
 from app.modules.financial_rules import rule_alert_repository, rule_alert_service
 
 logger = logging.getLogger("valor.dispatcher")
@@ -80,6 +83,10 @@ DEFAULT_MAX_USERS = 50
 DEFAULT_MAX_EVENTS_PER_USER = 20
 DEFAULT_MAX_ALERT_USERS = 200
 DEFAULT_TIME_BUDGET_SECONDS = 240
+# Stale progress rows deleted per pass (bounded housekeeping).
+PROGRESS_PURGE_BATCH = 500
+ALERT_PROGRESS_MODES = ('auto', 'off')
+DEFAULT_ALERT_PROGRESS = 'auto'
 
 
 class DispatcherConfigError(Exception):
@@ -93,6 +100,9 @@ class DispatcherConfig:
     max_events_per_user: int = DEFAULT_MAX_EVENTS_PER_USER
     max_alert_users: int = DEFAULT_MAX_ALERT_USERS
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS
+    # 'auto' uses the persistent progress table when it exists, 'off' forces the
+    # random-sample fallback (the operational rollback switch).
+    alert_progress: str = DEFAULT_ALERT_PROGRESS
 
 
 def _bounded_int(environ: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:
@@ -119,8 +129,14 @@ def load_config(environ: Optional[Mapping[str, str]] = None) -> DispatcherConfig
     if raw_enabled not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
         raise DispatcherConfigError("RULE_DISPATCHER_ENABLED must be true or false.")
 
+    alert_progress = environment.get("RULE_DISPATCHER_ALERT_PROGRESS", DEFAULT_ALERT_PROGRESS).strip().lower()
+
+    if alert_progress not in ALERT_PROGRESS_MODES:
+        raise DispatcherConfigError("RULE_DISPATCHER_ALERT_PROGRESS must be auto or off.")
+
     return DispatcherConfig(
         enabled=raw_enabled in ("true", "1", "yes", "on"),
+        alert_progress=alert_progress,
         max_users=_bounded_int(environment, "RULE_DISPATCHER_MAX_USERS", DEFAULT_MAX_USERS, 1, 1000),
         max_events_per_user=_bounded_int(
             environment, "RULE_DISPATCHER_MAX_EVENTS_PER_USER", DEFAULT_MAX_EVENTS_PER_USER, 1,
@@ -157,6 +173,14 @@ class DispatcherSummary:
     alert_failures: int = 0
     alerts_unavailable: bool = False
     alert_users_truncated: bool = False
+    # How the alert users were chosen: 'progress' (persistent service order,
+    # deterministic coverage under the documented assumptions), 'random' (fallback
+    # while the progress table is absent or switched off, probabilistic coverage)
+    # or 'none' (alert storage unavailable / nothing to evaluate).
+    alert_selection: str = "none"
+    alert_coverage: str = "none"
+    progress_update_failures: int = 0
+    alert_progress_purged: int = 0
     budget_exhausted: bool = False
     execution_outcomes: dict[str, int] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
@@ -165,7 +189,7 @@ class DispatcherSummary:
     def failure_count(self) -> int:
         return (
             self.user_failures + self.alert_failures + self.events_failed_retryable
-            + self.events_dead + self.events_unrecorded_failures
+            + self.events_dead + self.events_unrecorded_failures + self.progress_update_failures
         )
 
 
@@ -241,6 +265,40 @@ def _drain_event_users(
             summary.execution_outcomes[status] = summary.execution_outcomes.get(status, 0) + count
 
 
+def _success_recorder(use_progress: bool, user_id: UUID) -> Optional[Callable[[Session], None]]:
+    if not use_progress:
+        return None
+
+    def record(session: Session) -> None:
+        progress_repository.record_success(session, user_id)
+
+    return record
+
+
+# A failed attempt still moves the user to the back of the service order (so a
+# failing user is retried once per cycle and cannot monopolize the queue). It is
+# recorded in its own short transaction because the evaluation was rolled back; if
+# even that fails (the database is probably unreachable) the user simply stays
+# where it was and the failure is counted.
+def _record_failed_progress(
+    session_factory: Callable[[], Session],
+    summary: DispatcherSummary,
+    use_progress: bool,
+    user_id: UUID,
+    error_code: Optional[str],
+) -> None:
+    if not use_progress:
+        return
+
+    try:
+        with session_factory() as session:
+            progress_repository.record_failure(session, user_id, error_code)
+            session.commit()
+    except Exception as error:
+        summary.progress_update_failures += 1
+        logger.error("could not record alert progress for user %s (%s)", _user_tag(user_id), type(error).__name__)
+
+
 def _evaluate_alert_users(
     config: DispatcherConfig,
     summary: DispatcherSummary,
@@ -248,6 +306,8 @@ def _evaluate_alert_users(
     out_of_time: Callable[[], bool],
     seed: str,
 ) -> None:
+    use_progress = False
+
     try:
         with session_factory() as session:
             if not rule_alert_repository.table_exists(session):
@@ -257,9 +317,21 @@ def _evaluate_alert_users(
                 return
 
             summary.alert_users_total = rule_alert_repository.count_users_with_enabled_alert_rules(session)
-            users = rule_alert_repository.get_users_with_enabled_alert_rules_sample(
-                session, config.max_alert_users, seed,
-            )
+            # A genuine database error in either existence check propagates to the
+            # handler below (an alert failure); only a successful "false" means the
+            # progress schema is absent.
+            use_progress = config.alert_progress == "auto" and progress_repository.table_exists(session)
+
+            if use_progress:
+                summary.alert_selection, summary.alert_coverage = "progress", "deterministic"
+                summary.alert_progress_purged = progress_repository.purge_stale(session, PROGRESS_PURGE_BATCH)
+                session.commit()
+                users = progress_repository.select_next_users(session, config.max_alert_users)
+            else:
+                summary.alert_selection, summary.alert_coverage = "random", "probabilistic"
+                users = rule_alert_repository.get_users_with_enabled_alert_rules_sample(
+                    session, config.max_alert_users, seed,
+                )
     except Exception as error:
         summary.alert_failures += 1
         logger.error("alert discovery failed (%s)", type(error).__name__)
@@ -269,8 +341,9 @@ def _evaluate_alert_users(
         return
 
     summary.alert_users_considered = len(users)
-    # More enabled-alert users than one pass may evaluate: coverage is now
-    # probabilistic across runs. Operators should watch this flag.
+    # More enabled-alert users than one pass may evaluate. With persistent
+    # progress the remaining users are served first next run (bounded by
+    # ceil(M / n) runs); on the random fallback coverage is only probabilistic.
     summary.alert_users_truncated = summary.alert_users_total > len(users)
     consecutive_failures = 0
 
@@ -281,11 +354,15 @@ def _evaluate_alert_users(
 
         try:
             with session_factory() as session:
-                result = rule_alert_service.evaluate_user_alerts_best_effort(session, user_id)
+                result = rule_alert_service.evaluate_user_alerts_best_effort(
+                    session, user_id, on_success=_success_recorder(use_progress, user_id),
+                )
         except Exception as error:  # the best-effort wrapper never raises; opening the session may
             summary.alert_failures += 1
             consecutive_failures += 1
-            logger.error("alert evaluation failed for user %s (%s)", _user_tag(user_id), type(error).__name__)
+            error_code = type(error).__name__
+            logger.error("alert evaluation failed for user %s (%s)", _user_tag(user_id), error_code)
+            _record_failed_progress(session_factory, summary, use_progress, user_id, error_code)
 
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise _FatalError("alert evaluation failed for consecutive users") from error
@@ -295,6 +372,7 @@ def _evaluate_alert_users(
             summary.alert_failures += 1
             consecutive_failures += 1
             logger.error("alert evaluation failed for user %s", _user_tag(user_id))
+            _record_failed_progress(session_factory, summary, use_progress, user_id, result.error_code)
 
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise _FatalError("alert evaluation failed for consecutive users")
