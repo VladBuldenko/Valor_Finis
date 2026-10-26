@@ -450,7 +450,21 @@ def test_an_alert_failure_never_hides_the_drain_result(
     monkeypatch.setattr(rule_alert_service, "evaluate_user_alerts", explode)
     body = evaluate(client, user_id).json()
 
-    assert body["processed"] == 1 and body["alerts_available"] is False
+    # A genuine failure is reported as a failure, never as a missing schema.
+    assert body["processed"] == 1
+    assert body["alerts_failed"] is True and body["alerts_available"] is True
+
+
+def test_a_missing_schema_is_not_reported_as_a_failure(
+    client: TestClient, clean_database: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = str(uuid4())
+    funded_account(client, user_id, opening="1000.00")
+    monkeypatch.setattr(rule_alert_repository, "table_exists", lambda _session: False)
+
+    body = evaluate(client, user_id).json()
+
+    assert body["alerts_available"] is False and body["alerts_failed"] is False
 
 
 def test_a_failed_evaluation_rolls_back_every_alert_write(

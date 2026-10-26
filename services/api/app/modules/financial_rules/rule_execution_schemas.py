@@ -33,6 +33,10 @@ class RuleEvaluationResponse(BaseModel):
     )
     alerts_created: int = 0
     alerts_resolved: int = 0
+    alerts_failed: bool = Field(
+        default=False,
+        description="True when the alert evaluation raised; the drain result above is still valid.",
+    )
 
 
 class RuleExecutionItemResponse(BaseModel):

@@ -66,6 +66,7 @@ def evaluate_financial_rules(
         alerts_available=alerts.available,
         alerts_created=alerts.created,
         alerts_resolved=alerts.resolved,
+        alerts_failed=alerts.failed,
         processed=summary.processed,
         deferred=summary.deferred,
         failed_retryable=summary.failed_retryable,

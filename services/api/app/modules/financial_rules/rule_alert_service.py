@@ -39,6 +39,10 @@ class AlertEvaluation:
     available: bool = True
     created: int = 0
     resolved: int = 0
+    # True when the evaluation raised (a genuine database or code failure). It is
+    # deliberately separate from `available`, which only means "the E9A table is
+    # not there": a failure must never be reported as a missing schema.
+    failed: bool = False
 
 
 # Account episode lifecycle for one rule (floor breach or overcommitment).
@@ -179,7 +183,7 @@ def evaluate_user_alerts_best_effort(db_session: Session, user_id: UUID) -> Aler
     except Exception as error:
         logger.error("alert evaluation failed (%s)", type(error).__name__)
 
-        return AlertEvaluation(available=False)
+        return AlertEvaluation(available=True, failed=True)
 
 
 def _responses(db_session: Session, user_id: UUID, alerts: list) -> list[RuleAlertResponse]:
