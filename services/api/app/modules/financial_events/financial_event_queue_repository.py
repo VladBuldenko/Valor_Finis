@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, update
+from sqlalchemy import and_, func, or_, text, update
 from sqlalchemy.orm import Session
 
 from app.modules.financial_events.financial_event_models import FinancialEventModel
@@ -198,3 +198,49 @@ def record_technical_failure(
     )
 
     return resulting_status
+
+
+# Cross-user discovery for the periodic dispatcher (VF-020E10, APPROVED P50 /
+# P87). Returns the users whose FIFO head can make progress RIGHT NOW, oldest
+# head first.
+#
+# Head selection happens FIRST: DISTINCT ON (user_id) over every unfinished,
+# non-business-deferred event in (occurred_at, id) order (APPROVED P52). Only
+# then is the head tested for claimability, exactly like select_head_for_update
+# + is_claimable: pending; or failed_retryable whose next_attempt_at has passed;
+# or processing whose lease has expired (an expired max-attempt lease is
+# claimable here too - the claim path turns it into `dead`). A user whose head
+# is under a live lease or waiting for its retry is NOT returned, so a newer
+# event can never bypass an older one and no slot is wasted on a blocked user.
+#
+# Fairness: ordering by the head's age puts the longest-waiting user first, and
+# serving a user advances (or removes) its head, so a fixed batch cannot starve
+# the users beyond the first page across runs. The query reads only
+# financial_events (partial FIFO index on the unfinished statuses), never Income.
+# Parameters:
+# - limit: maximum number of users returned.
+# Returns:
+# - user ids, oldest claimable head first.
+DISCOVER_PROGRESSING_USERS_SQL = """
+WITH heads AS (
+    SELECT DISTINCT ON (user_id)
+        id, user_id, occurred_at, status, next_attempt_at, lease_expires_at
+    FROM financial_events
+    WHERE status IN ('pending', 'processing', 'failed_retryable')
+      AND (not_before IS NULL OR not_before <= now())
+    ORDER BY user_id, occurred_at, id
+)
+SELECT user_id
+FROM heads
+WHERE status = 'pending'
+   OR (status = 'failed_retryable' AND next_attempt_at <= now())
+   OR (status = 'processing' AND lease_expires_at <= now())
+ORDER BY occurred_at, id
+LIMIT :limit
+"""
+
+
+def discover_users_with_progressing_head(db_session: Session, limit: int) -> list[UUID]:
+    rows = db_session.execute(text(DISCOVER_PROGRESSING_USERS_SQL), {"limit": limit}).all()
+
+    return [row[0] for row in rows]
