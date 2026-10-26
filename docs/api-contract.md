@@ -912,8 +912,7 @@ revalidation fails first commits cancelled (stale) and then returns 409. Reads n
 proposals to expired. Creating a proposal writes no GoalTransaction or balance; confirming
 writes the frozen amounts once.
 
-Rule alerts (VF-020E9B; implemented on a local feature branch, not deployed; live alerting needs the
-E9A migration applied):
+Rule alerts (VF-020E9B, merged in PR #93; live alerting needs the E9A migration applied):
   GET /api/v1/rule-alerts?limit&offset&acknowledged   newest first, limit 1-100 (default 20), user-scoped
   POST /api/v1/rule-alerts/{id}/acknowledge           idempotent; keeps the first acknowledged_at; 404 when
                                                       missing or foreign
@@ -928,7 +927,8 @@ raised; the drain result is still valid). Alert rules (OVERCOMMITMENT_ALERT, BUD
 disabled; enabling is a 409 while the alert table does not exist. An alert never blocks an Expense, Transfer or
 reservation and moves no money.
 
-Planned, NOT implemented: /preview, the periodic dispatcher (VF-020E10).
+Periodic dispatcher (VF-020E10, local branch): a CLI process, NOT an HTTP endpoint - there is no public cross-user
+dispatcher API. Planned, NOT implemented: /preview.
 
 Delete Goal
 

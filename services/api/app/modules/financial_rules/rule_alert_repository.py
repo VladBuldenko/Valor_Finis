@@ -195,3 +195,37 @@ def get_subject_names(
             names[budget_id] = name
 
     return names
+
+
+# Cross-user discovery for the periodic dispatcher (VF-020E10): users with at
+# least one ENABLED alert rule (floor, overcommitment, Budget), independent of
+# any Income event. Reads only financial_rules.
+def count_users_with_enabled_alert_rules(db_session: Session) -> int:
+    return int(
+        db_session.execute(
+            text(
+                "SELECT count(DISTINCT user_id) FROM financial_rules "
+                "WHERE status = 'enabled' AND rule_type IN "
+                "('MINIMUM_UNALLOCATED_FLOOR', 'OVERCOMMITMENT_ALERT', 'BUDGET_ALERT')"
+            )
+        ).scalar_one()
+    )
+
+
+# One deterministic page of those users in user_id order. The dispatcher picks the
+# page by a rotating run index, so every user is evaluated within
+# ceil(users / page size) consecutive runs without any stored cursor.
+def get_users_with_enabled_alert_rules_page(
+    db_session: Session, limit: int, offset: int,
+) -> list[UUID]:
+    rows = db_session.execute(
+        text(
+            "SELECT DISTINCT user_id FROM financial_rules "
+            "WHERE status = 'enabled' AND rule_type IN "
+            "('MINIMUM_UNALLOCATED_FLOOR', 'OVERCOMMITMENT_ALERT', 'BUDGET_ALERT') "
+            "ORDER BY user_id LIMIT :limit OFFSET :offset"
+        ),
+        {"limit": limit, "offset": offset},
+    ).all()
+
+    return [row[0] for row in rows]

@@ -37,6 +37,10 @@ class DrainSummary:
     dead: int = 0
     blocked: bool = False
     outcomes: dict[str, int] = field(default_factory=dict)
+    # Processing failed AND the failure could not be recorded (typically the
+    # database is gone). The event keeps its lease and is recovered by expiry, but
+    # callers must still see that the attempt failed.
+    unrecorded_failures: int = 0
 
 
 @dataclass
@@ -66,7 +70,9 @@ def _error_code(error: Exception) -> str:
 # the next head, because dead never blocks.
 # Returns:
 # - The claim, or None when nothing is due or the head blocks the queue.
-def _claim_next(db_session: Session, user_id: UUID) -> tuple[Optional[_Claim], bool]:
+def _claim_next(
+    db_session: Session, user_id: UUID, summary: DrainSummary,
+) -> tuple[Optional[_Claim], bool]:
     try:
         goal_user_lock.acquire_goal_user_lock(db_session, user_id)
 
@@ -84,6 +90,8 @@ def _claim_next(db_session: Session, user_id: UUID) -> tuple[Optional[_Claim], b
             if head.attempts >= queue.MAX_ATTEMPTS:
                 queue.mark_dead_lease_expired(db_session, head)
                 db_session.commit()
+                # Visible to operators: an event reached `dead` through recovery.
+                summary.dead += 1
                 goal_user_lock.acquire_goal_user_lock(db_session, user_id)
                 continue
 
@@ -112,6 +120,7 @@ def _record_failure(
         # The lease simply expires and the event is recovered by the reclaim
         # path; nothing financial was committed.
         db_session.rollback()
+        summary.unrecorded_failures += 1
         logger.error("could not record the failure of event %s", claim.event_id)
         return
 
@@ -209,7 +218,7 @@ def drain_user_events(
     handled = 0
 
     while handled < bounded:
-        claim, blocked = _claim_next(db_session, user_id)
+        claim, blocked = _claim_next(db_session, user_id, summary)
 
         if claim is None:
             summary.blocked = blocked
