@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 from app.modules.accounts import account_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.budgets import budget_repository
-from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
+from app.modules.financial_rules import (
+    financial_rule_repository,
+    rule_alert_repository,
+    rule_execution_repository,
+)
 from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleActivationNotAvailableError,
     FinancialRuleAlreadyExistsError,
@@ -580,13 +584,13 @@ def _transition(db_session: Session, rule_id: UUID, user_id: UUID, action: str):
             _assert_allocation_rule_transition_available(
                 db_session, user_id, rule_model, action,
             )
-        elif rule_model.rule_type != RULE_TYPE_FLOOR:
-            # Alert rules stay drafts until the alert runtime exists (VF-020E9):
-            # a rule must never look operational when nothing evaluates it.
-            if action == "enable":
+        elif rule_model.rule_type in (RULE_TYPE_OVERCOMMITMENT, RULE_TYPE_BUDGET_ALERT):
+            # Alert rules (VF-020E9B) can be enabled only where the E9A schema
+            # exists: a rule must never look operational when nothing can store
+            # its alerts (the runtime is deployed before the production
+            # migration is applied).
+            if action == "enable" and not rule_alert_repository.table_exists(db_session):
                 raise FinancialRuleActivationNotAvailableError()
-
-            raise FinancialRuleInvalidTransitionError()
 
         allowed_from = {
             "enable": ("draft", "paused", "disabled"),

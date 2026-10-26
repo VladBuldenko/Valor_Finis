@@ -113,3 +113,12 @@ class RuleProposalStaleError(Exception):
     """
 
     pass
+
+
+class RuleAlertNotFoundError(Exception):
+    """
+    Raised when a rule alert does not exist or does not belong to the user
+    (404). A foreign and a nonexistent alert are indistinguishable.
+    """
+
+    pass

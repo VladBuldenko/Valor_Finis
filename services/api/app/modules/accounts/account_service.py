@@ -217,6 +217,29 @@ def get_rule_capacity_inputs(
     }
 
 
+# Returns the figures the VF-020E9B alert evaluation needs for the given
+# Accounts, from the same read model the API exposes: reservable_amount, the
+# ENABLED floor and allocation_status. Read-only; no row locks.
+# Returns:
+# - {account_id: (reservable_amount, minimum_unallocated_floor, allocation_status)}
+def get_account_alert_figures(
+    db_session: Session,
+    user_id: UUID,
+    account_models: list[AccountModel],
+    as_of: date,
+) -> dict[UUID, tuple[Decimal, Decimal, str]]:
+    responses = _build_account_responses(db_session, user_id, account_models, as_of)
+
+    return {
+        response.id: (
+            response.reservable_amount,
+            response.minimum_unallocated_floor,
+            response.allocation_status,
+        )
+        for response in responses
+    }
+
+
 # Creates a new account using validated input data and authenticated user
 # id, optionally recording a real pre-existing balance as one immutable
 # opening_balance transaction.

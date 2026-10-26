@@ -27,6 +27,12 @@ class RuleEvaluationResponse(BaseModel):
     dead: int
     blocked: bool
     outcomes: dict[str, int] = Field(default_factory=dict)
+    alerts_available: bool = Field(
+        default=True,
+        description="False while the rule_alerts schema is not available in this database.",
+    )
+    alerts_created: int = 0
+    alerts_resolved: int = 0
 
 
 class RuleExecutionItemResponse(BaseModel):

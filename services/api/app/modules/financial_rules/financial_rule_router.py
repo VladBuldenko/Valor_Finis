@@ -7,7 +7,7 @@ from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.financial_events import financial_event_processor
-from app.modules.financial_rules import financial_rule_service
+from app.modules.financial_rules import financial_rule_service, rule_alert_service
 from app.modules.financial_rules.financial_rule_schemas import (
     FinancialRuleCreate,
     FinancialRuleResponse,
@@ -58,7 +58,14 @@ def evaluate_financial_rules(
         db_session=db_session, user_id=current_user.id, limit=limit,
     )
 
+    # Alerts are detected at evaluation (§17): after the drain, and never able to
+    # hide its result.
+    alerts = rule_alert_service.evaluate_user_alerts_best_effort(db_session, current_user.id)
+
     return RuleEvaluationResponse(
+        alerts_available=alerts.available,
+        alerts_created=alerts.created,
+        alerts_resolved=alerts.resolved,
         processed=summary.processed,
         deferred=summary.deferred,
         failed_retryable=summary.failed_retryable,
