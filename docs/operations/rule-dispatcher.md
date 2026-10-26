@@ -13,8 +13,10 @@ adds no HTTP endpoint (no public cross-user dispatcher API).
 
 **Why no migration.** The durable queue, leases, retries, execution uniqueness and alert uniqueness already
 live in `financial_events`, `rule_executions` and `rule_alerts` (E2, E6, E9A). The dispatcher only chooses which
-users to serve. A cursor/state table was rejected: fairness comes from ordering by head age (events) and from a
-rotating page index derived from the clock (alerts), neither of which needs stored state.
+users to serve. No cursor/state table was added. Event fairness comes from ordering by head age (a served user's
+head advances, so progress is intrinsic). Alert-user fairness has NO persistent progress marker, so it is
+probabilistic when the population exceeds one pass - see section 1a for the exact guarantee and the migration gate
+for a deterministic one.
 
 **Reuse vs new code.**
 
@@ -43,8 +45,9 @@ manual Render trigger are all safe: the second worker sees a live lease or a pro
 a cancelled run's lease simply expires. Render's single-active-run guarantee is therefore not relied upon.
 
 **Alerts.** Users with at least one ENABLED floor, overcommitment or Budget alert rule are evaluated every pass,
-even without events (page size `RULE_DISPATCHER_MAX_ALERT_USERS`; when there are more users than one page the page
-rotates with `floor(unix_time / interval)`, so with a stable user set every user is covered within `ceil(users / page)` consecutive runs; users joining or leaving between runs, or a configured interval that differs from the real schedule, can delay one user by a cycle).
+even without events. At most `RULE_DISPATCHER_MAX_ALERT_USERS` users are evaluated per pass, chosen as a per-run random
+sample (ordered by `md5(user_id || fresh per-run seed)`; no cursor, no clock). See section 1a for what this does and
+does not guarantee.
 A missing `rule_alerts` table is reported as `alerts_unavailable` and is NOT a failure; a real evaluation or
 discovery error is `alert_failures` and makes the run exit 3. A missing table never blocks event processing.
 
@@ -52,6 +55,39 @@ discovery error is `alert_failures` and makes the run exit 3. A missing table ne
 holding capacity at the instant it expires; stored state is normalized to `expired` lazily at read, confirm,
 reject and event dispatch (which the dispatcher triggers for every user with events). No separate expiry job or
 schema was added; confirmation still revalidates in full.
+
+### 1a. Alert-user liveness: what is guaranteed, and the migration gate
+
+*Finding (reproduced on the first E10 design).* Selecting a page by `floor(time / interval) % pages` over a fixed
+user order cannot give liveness without stored progress: with 6 alert users and every run interrupted after two
+users, only the same first two users were EVER evaluated (2 of 6 after 10 runs); and when the real cadence was a
+multiple of the configured interval, the same single page was visited forever (2 of 6). Full-page tests and a
+stable cadence hid both.
+
+*Current behaviour (no schema change).* Each run orders the enabled-alert users by `md5(user_id || fresh random
+seed)` and evaluates a prefix up to the cap and the time budget. There is no page index and no dependence on the
+clock, so skipped, delayed or doubled ticks change nothing and an interrupted run evaluated a uniformly random
+subset, not a fixed prefix.
+
+| Situation | Guarantee |
+|---|---|
+| enabled-alert users <= `RULE_DISPATCHER_MAX_ALERT_USERS` and the pass is not cut by the time budget and no alert failure trips the consecutive-failure breaker | **every user is evaluated in every run** (hard) |
+| more users than one pass can evaluate, or passes that are cut early | **almost-sure coverage, no deterministic bound**: after `k` runs a given user is still unvisited with probability about `(1 - n/M)^k` (`n` evaluated per run, `M` users), independent of cadence |
+| a run that crashes or is cancelled | the sample is simply different next run; nothing is lost |
+
+`alert_users_total` and `alert_users_truncated` expose when the population exceeds one pass, so operators can see
+the moment the probabilistic regime begins.
+
+*Why a deterministic bound needs persistent state, and the gate.* A hard bound ("every user within `ceil(M/n)`
+completed runs, however runs are cut or missed") requires remembering who was evaluated. That means a new
+table (for example `rule_alert_evaluation_state(user_id uuid primary key, last_evaluated_at timestamptz not
+null)`, written by the dispatcher after each evaluation and read as "least recently evaluated first"). That is
+production DDL and is **NOT part of this change**. If it is wanted, it is a separate stage with its own gates:
+(1) architecture decision recorded here, (2) additive migration with the Data API REVOKE pattern and an
+expand-first runtime (use the table only when it exists, otherwise fall back to the random sample), (3) the usual
+authorization sequence (read-only preflight, backup, exact-revision migration, post-checks) and (4) tests for
+cut/missed/doubled runs against the deterministic bound. Until then the probabilistic guarantee above is the
+accurate statement; do not describe alert coverage as guaranteed fair beyond the first row of the table.
 
 ## 2. Process contract
 
@@ -62,9 +98,8 @@ Environment (all optional, validated before any work; invalid -> exit 2):
 | `RULE_DISPATCHER_ENABLED` | `true` | true/false | operational switch; `false` exits 0 without touching the database |
 | `RULE_DISPATCHER_MAX_USERS` | 50 | 1-1000 | users drained per pass |
 | `RULE_DISPATCHER_MAX_EVENTS_PER_USER` | 20 | 1-100 | events per user per pass (same cap as the evaluate endpoint) |
-| `RULE_DISPATCHER_MAX_ALERT_USERS` | 200 | 1-5000 | alert users per pass (one rotating page) |
+| `RULE_DISPATCHER_MAX_ALERT_USERS` | 200 | 1-5000 | alert users evaluated per pass (a random sample when more users have enabled alert rules) |
 | `RULE_DISPATCHER_TIME_BUDGET_SECONDS` | 240 | 5-3300 | stop starting new users after this; the last fifth of the budget is reserved for alert evaluation; remaining work waits for the next run |
-| `RULE_DISPATCHER_INTERVAL_SECONDS` | 600 | 60-86400 | scheduler period, used only to rotate the alert page |
 
 Defaults come from the contract (per-user cap = evaluate default) and from finishing well inside a 10-minute
 tick; they are not an SLA. Re-derive them from measured run times after the first production runs.
@@ -77,7 +112,7 @@ failed, three consecutive connection or unrecorded-failure users, or three conse
 failure, retryable-failed or dead events, alert failure). The last stdout line is
 `dispatcher_summary {json}` with only counters: `outcome, users_considered, users_processed, events_processed,
 events_deferred, events_failed_retryable, events_dead, events_unrecorded_failures, users_blocked, user_failures, alert_users_considered,
-alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, budget_exhausted,
+alert_users_total, alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, alert_users_truncated, budget_exhausted,
 execution_outcomes, elapsed_seconds`. Logs use a short hash of the user id and never contain the database URL,
 secrets, tokens, amounts or names.
 
@@ -174,8 +209,8 @@ Only after a successful, verified scheduled run may AUTO and alerts be described
 
 - Expense, Transfer and adjustment writes still do not trigger an alert evaluation themselves; the dispatcher
   detects them within one tick.
-- An alert-page rotation covers a growing user base in `ceil(users / page)` runs; very large bases need a larger
-  page or a shorter interval.
+- Alert-user coverage is almost-sure, not bounded, once enabled-alert users exceed one pass (section 1a). Watch
+  `alert_users_truncated`; a deterministic bound needs the persistent-progress migration described there.
 - A manual "Trigger Run" cancels an active run mid-pass; the event it was draining is recovered by lease expiry
   (up to 5 minutes) - correct but briefly delayed for that user.
 - Exit-code and notification behaviour of Render cron runs is not documented in the pages read; verify in the

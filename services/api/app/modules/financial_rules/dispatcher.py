@@ -12,8 +12,9 @@ What:
            users whose strict-FIFO head can make progress and drain each one with
            the existing per-user drain (claim / lease / retry / dead, AUTO and
            CONFIRM, lazy proposal expiry - all reused unchanged).
-        2. Alert evaluation: for users that have an enabled alert rule, run the
-           existing E9B evaluation, independent of any Income event.
+        2. Alert evaluation: for a per-run random sample of the users that have an
+           enabled alert rule, run the existing E9B evaluation, independent of any
+           Income event.
 
 Why:
     Without a durable scheduler AUTO executes only at the next user-triggered
@@ -36,10 +37,10 @@ amounts or names.
 import hashlib
 import json
 import logging
-import math
 import os
 import sys
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Mapping, Optional
 from uuid import UUID
@@ -79,7 +80,6 @@ DEFAULT_MAX_USERS = 50
 DEFAULT_MAX_EVENTS_PER_USER = 20
 DEFAULT_MAX_ALERT_USERS = 200
 DEFAULT_TIME_BUDGET_SECONDS = 240
-DEFAULT_INTERVAL_SECONDS = 600
 
 
 class DispatcherConfigError(Exception):
@@ -93,7 +93,6 @@ class DispatcherConfig:
     max_events_per_user: int = DEFAULT_MAX_EVENTS_PER_USER
     max_alert_users: int = DEFAULT_MAX_ALERT_USERS
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS
-    interval_seconds: int = DEFAULT_INTERVAL_SECONDS
 
 
 def _bounded_int(environ: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:
@@ -133,9 +132,6 @@ def load_config(environ: Optional[Mapping[str, str]] = None) -> DispatcherConfig
         time_budget_seconds=_bounded_int(
             environment, "RULE_DISPATCHER_TIME_BUDGET_SECONDS", DEFAULT_TIME_BUDGET_SECONDS, 5, 3300,
         ),
-        interval_seconds=_bounded_int(
-            environment, "RULE_DISPATCHER_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS, 60, 86400,
-        ),
     )
 
 
@@ -153,12 +149,14 @@ class DispatcherSummary:
     events_unrecorded_failures: int = 0
     users_blocked: int = 0
     user_failures: int = 0
+    alert_users_total: int = 0
     alert_users_considered: int = 0
     alert_users_evaluated: int = 0
     alerts_created: int = 0
     alerts_resolved: int = 0
     alert_failures: int = 0
     alerts_unavailable: bool = False
+    alert_users_truncated: bool = False
     budget_exhausted: bool = False
     execution_outcomes: dict[str, int] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
@@ -248,7 +246,7 @@ def _evaluate_alert_users(
     summary: DispatcherSummary,
     session_factory: Callable[[], Session],
     out_of_time: Callable[[], bool],
-    rotation_index: int,
+    seed: str,
 ) -> None:
     try:
         with session_factory() as session:
@@ -258,10 +256,9 @@ def _evaluate_alert_users(
                 logger.warning("rule_alerts table is not available; alert evaluation skipped")
                 return
 
-            total = rule_alert_repository.count_users_with_enabled_alert_rules(session)
-            pages = max(1, math.ceil(total / config.max_alert_users))
-            users = rule_alert_repository.get_users_with_enabled_alert_rules_page(
-                session, config.max_alert_users, (rotation_index % pages) * config.max_alert_users,
+            summary.alert_users_total = rule_alert_repository.count_users_with_enabled_alert_rules(session)
+            users = rule_alert_repository.get_users_with_enabled_alert_rules_sample(
+                session, config.max_alert_users, seed,
             )
     except Exception as error:
         summary.alert_failures += 1
@@ -272,6 +269,9 @@ def _evaluate_alert_users(
         return
 
     summary.alert_users_considered = len(users)
+    # More enabled-alert users than one pass may evaluate: coverage is now
+    # probabilistic across runs. Operators should watch this flag.
+    summary.alert_users_truncated = summary.alert_users_total > len(users)
     consecutive_failures = 0
 
     for user_id in users:
@@ -282,9 +282,13 @@ def _evaluate_alert_users(
         try:
             with session_factory() as session:
                 result = rule_alert_service.evaluate_user_alerts_best_effort(session, user_id)
-        except Exception as error:  # the best-effort wrapper never raises; the session may
+        except Exception as error:  # the best-effort wrapper never raises; opening the session may
             summary.alert_failures += 1
+            consecutive_failures += 1
             logger.error("alert evaluation failed for user %s (%s)", _user_tag(user_id), type(error).__name__)
+
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                raise _FatalError("alert evaluation failed for consecutive users") from error
             continue
 
         if result.failed:
@@ -314,7 +318,7 @@ def run_once(
     config: DispatcherConfig,
     session_factory: Callable[[], Session] = SessionLocal,
     monotonic: Callable[[], float] = time.monotonic,
-    rotation_index: Optional[int] = None,
+    seed: Optional[str] = None,
 ) -> DispatcherSummary:
     summary = DispatcherSummary()
     started = monotonic()
@@ -333,11 +337,12 @@ def run_once(
     def out_of_time() -> bool:
         return monotonic() - started >= config.time_budget_seconds
 
-    rotation = int(time.time() // config.interval_seconds) if rotation_index is None else rotation_index
+    # A fresh seed per run (never derived from the clock) reshuffles the alert users.
+    run_seed = uuid.uuid4().hex if seed is None else seed
 
     try:
         _drain_event_users(config, summary, session_factory, drain_out_of_time)
-        _evaluate_alert_users(config, summary, session_factory, out_of_time, rotation)
+        _evaluate_alert_users(config, summary, session_factory, out_of_time, run_seed)
     except _FatalError as error:
         logger.error("fatal: %s", error)
         summary.outcome = OUTCOME_FATAL

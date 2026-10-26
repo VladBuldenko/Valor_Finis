@@ -1104,7 +1104,7 @@ claim, lease, retry and dead transitions; `financial_event_processor` drives the
 runs one bounded pass and exits (exit codes 0 / 1 infra / 2 config / 3 completed with failures). Phase 1 discovers,
 from `financial_events` only, the users whose FIFO head is claimable now (head selected first, claimability tested
 after; blocked users are skipped; oldest head first for fairness) and drains each with the unchanged per-user
-drain. Phase 2 evaluates alerts for users with an enabled alert rule, independent of events, with a rotating page.
+drain. Phase 2 evaluates alerts for a per-run random sample (no cursor, no clock) of the users with an enabled alert rule, independent of events: every user every run while they fit one pass, otherwise almost-sure (not bounded) coverage - a deterministic bound needs persisted progress and is a separate migration gate (see `docs/operations/rule-dispatcher.md` section 1a).
 A missing `rule_alerts` table is `alerts_unavailable` (not a failure); real alert errors are `alert_failures`.
 Dead recoveries are counted in the drain summary. The full decision record, configuration, Render proposal and
 operations guide are in `docs/operations/rule-dispatcher.md`.
