@@ -35,6 +35,9 @@ LATER_STAGES = (
     # VF-020E9A: the rule_alerts table (its constraints and indexes carry the
     # table name, so they are matched by name).
     ("a7c3e91d5b24", ("rule_alerts",)),
+    # VF-020E10: the alert_dispatch_progress table (and its constraints/indexes,
+    # which carry the table name). The sequence is not diffed by compare_metadata.
+    ("c4d8a2f6e193", ("alert_dispatch_progress",)),
 )
 
 REVISION_ORDER = (
@@ -45,6 +48,7 @@ REVISION_ORDER = (
     "861064d31463",
     "e0503e9ca9d3",
     "a7c3e91d5b24",
+    "c4d8a2f6e193",
 )
 
 

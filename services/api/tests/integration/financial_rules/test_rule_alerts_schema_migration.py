@@ -139,7 +139,9 @@ def _rejected(database_engine: Engine, values: Dict[str, Any]) -> str:
 def test_revision_chain_has_one_head_and_the_expected_parent() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [E9A_REVISION]
+    # E9A is no longer the head: the alert dispatch progress revision sits on it.
+    assert len(script.get_heads()) == 1
+    assert script.get_revision("c4d8a2f6e193").down_revision == E9A_REVISION
     assert script.get_revision(E9A_REVISION).down_revision == E6_REVISION
 
 
@@ -521,7 +523,9 @@ def test_orm_metadata_matches_the_e9a_schema_exactly(e9a_database: Engine) -> No
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    # The only remaining difference belongs to the LATER dispatch-progress stage.
+    assert exclude_stages_after(differences, E9A_REVISION) == []
+    assert all("alert_dispatch_progress" in repr(d) for d in differences)
 
 
 def test_older_revision_differs_only_by_the_e9a_table(e6_database: Engine) -> None:

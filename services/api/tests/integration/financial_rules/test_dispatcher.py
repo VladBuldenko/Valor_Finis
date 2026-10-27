@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -84,7 +85,7 @@ def test_defaults_are_bounded_and_documented() -> None:
     config = dispatcher.load_config({})
 
     assert (config.enabled, config.max_users, config.max_events_per_user) == (True, 50, 20)
-    assert (config.max_alert_users, config.time_budget_seconds, config.interval_seconds) == (200, 240, 600)
+    assert (config.max_alert_users, config.time_budget_seconds) == (200, 240)
 
 
 @pytest.mark.parametrize(
@@ -93,7 +94,7 @@ def test_defaults_are_bounded_and_documented() -> None:
         {"RULE_DISPATCHER_MAX_USERS": "0"}, {"RULE_DISPATCHER_MAX_USERS": "1001"},
         {"RULE_DISPATCHER_MAX_USERS": "abc"}, {"RULE_DISPATCHER_MAX_EVENTS_PER_USER": "101"},
         {"RULE_DISPATCHER_MAX_ALERT_USERS": "0"}, {"RULE_DISPATCHER_TIME_BUDGET_SECONDS": "4"},
-        {"RULE_DISPATCHER_INTERVAL_SECONDS": "59"}, {"RULE_DISPATCHER_ENABLED": "maybe"},
+        {"RULE_DISPATCHER_ENABLED": "maybe"},
     ],
 )
 def test_invalid_configuration_is_rejected_before_any_work(environment: dict[str, str]) -> None:
@@ -490,19 +491,6 @@ def test_the_batch_is_bounded_and_backlog_users_are_served_oldest_head_first(
     assert _run(config).outcome == "noop"  # nobody starved beyond the first page
 
 
-def test_alert_users_rotate_so_every_user_is_covered(client: TestClient, clean_database: None) -> None:
-    users = [_floor_user(client)[0] for _ in range(5)]
-    config = DispatcherConfig(max_alert_users=2)
-
-    covered: set[str] = set()
-    for rotation in range(3):  # ceil(5 / 2) consecutive runs
-        summary = _run(config, rotation_index=rotation)
-        assert summary.alert_users_considered <= 2
-        covered |= {u for u in users if _alert_count(u) > 0}
-
-    assert covered == set(users)
-
-
 def test_the_time_budget_stops_the_pass_without_failing(client: TestClient, clean_database: None) -> None:
     for _ in range(3):
         _auto_user(client)
@@ -715,3 +703,174 @@ def test_alert_evaluation_keeps_a_reserved_share_of_the_time_budget(client: Test
 
     assert summary.budget_exhausted is True
     assert summary.alert_users_evaluated == 1 and summary.alerts_created == 1
+
+
+
+# ------------------------------------------------------------------
+# VF-020E10 corrective review: alert-user liveness (HIGH / MEDIUM / LOW)
+#
+# The previous design picked a page by floor(time / interval) % pages in user_id
+# order. Reproduced on the merged code with 6 users: when every run was cut after
+# two users, only the first two were EVER evaluated (2 of 6 after 10 runs), and
+# when the real cadence was 3x the configured interval, the same single page was
+# visited forever (2 of 6). Stateless paging cannot give liveness under partial
+# runs or missed ticks. The replacement shuffles with a fresh per-run seed
+# (no clock, no cursor): an interrupted run evaluated a random prefix, and a
+# skipped tick changes nothing. The guarantee is therefore: a full pass over a
+# population within the cap covers everyone EVERY run; beyond that, coverage is
+# almost-sure, with per-user miss probability (1 - n/M)^k after k runs. A
+# deterministic bound needs persisted progress (a migration, documented as a gate).
+# ------------------------------------------------------------------
+
+
+def _alert_users(client: TestClient, count: int) -> list[str]:
+    return [_floor_user(client)[0] for _ in range(count)]
+
+
+def _covered_users(users: list[str]) -> set[str]:
+    return {u for u in users if _alert_count(u) > 0}
+
+
+def _cut_after(users_allowed: int):
+    """A clock that lets exactly `users_allowed` alert users start, then runs out of budget."""
+    calls = {"count": 0}
+
+    def clock() -> float:
+        calls["count"] += 1
+        return 0.0 if calls["count"] <= 1 + users_allowed else 10_000.0
+
+    return clock
+
+
+def test_every_run_cut_midway_through_the_sample_still_covers_all_users_eventually(
+    client: TestClient, clean_database: None,
+) -> None:
+    users = _alert_users(client, 6)
+    config = DispatcherConfig(max_alert_users=6, time_budget_seconds=100)
+
+    first = _run(config, monotonic=_cut_after(2), seed="run-0")
+    assert first.alert_users_evaluated == 2 and first.budget_exhausted is True
+    assert len(_covered_users(users)) == 2
+
+    for index in range(1, 20):  # every single run is interrupted after two users
+        _run(config, monotonic=_cut_after(2), seed=f"run-{index}")
+
+    assert _covered_users(users) == set(users)  # the old design stayed at 2 of 6 forever
+
+
+def test_the_first_evaluated_user_differs_between_runs_unlike_the_old_fixed_order(
+    client: TestClient, clean_database: None,
+) -> None:
+    users = _alert_users(client, 6)
+
+    with SessionLocal() as session:
+        firsts = [
+            rule_alert_repository.get_users_with_enabled_alert_rules_sample(session, 1, f"seed-{i}")[0]
+            for i in range(12)
+        ]
+        same_seed = [
+            rule_alert_repository.get_users_with_enabled_alert_rules_sample(session, 6, "fixed") for _ in range(2)
+        ]
+
+    assert len(set(firsts)) >= 3 and {str(u) for u in firsts} <= set(users)  # a moving prefix, never one fixed head
+    assert same_seed[0] == same_seed[1] and sorted(map(str, same_seed[0])) == sorted(users)  # deterministic per seed
+
+
+def test_delayed_or_skipped_ticks_do_not_change_coverage(
+    client: TestClient, clean_database: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    users = _alert_users(client, 6)
+    config = DispatcherConfig(max_alert_users=2)
+    # The wall clock only ever jumps by whole multiples of any plausible cadence
+    # (what used to make floor(time / interval) land on one page forever).
+    ticks = iter(range(1_000_000, 10_000_000, 1800))
+    monkeypatch.setattr(time, "time", lambda: float(next(ticks)))
+
+    for _ in range(60):  # unseeded: a fresh random seed per run, as in production
+        _run(config)
+
+    assert _covered_users(users) == set(users)
+
+
+def test_a_population_within_the_cap_is_covered_completely_by_every_run(client: TestClient, clean_database: None) -> None:
+    users = _alert_users(client, 5)
+
+    summary = _run(DispatcherConfig(max_alert_users=5), seed="any")
+
+    assert summary.alert_users_total == 5 and summary.alert_users_evaluated == 5
+    assert summary.alert_users_truncated is False and _covered_users(users) == set(users)
+
+
+def test_truncation_is_visible_when_the_population_exceeds_the_cap(client: TestClient, clean_database: None) -> None:
+    _alert_users(client, 5)
+
+    summary = _run(DispatcherConfig(max_alert_users=2), seed="x")
+
+    assert (summary.alert_users_total, summary.alert_users_considered) == (5, 2)
+    assert summary.alert_users_truncated is True and summary.outcome == "success"
+
+
+def test_users_added_and_removed_between_runs_are_handled(client: TestClient, clean_database: None) -> None:
+    original = _alert_users(client, 4)
+    config = DispatcherConfig(max_alert_users=2)
+    _run(config, seed="a")
+
+    newcomers = _alert_users(client, 2)  # joined while the group was being walked
+    rules = scalar("SELECT id FROM financial_rules WHERE user_id = :u", u=original[0])
+    with engine.begin() as connection:  # one user leaves (their rule is disabled)
+        connection.execute(text("UPDATE financial_rules SET status = 'disabled' WHERE id = :i"), {"i": rules})
+
+    for index in range(40):
+        _run(config, seed=f"churn-{index}")
+
+    stayers = original[1:] + newcomers
+    assert _covered_users(stayers) == set(stayers)  # everyone still enabled, old or new, is reached
+    leaver_alerts = _alert_count(original[0])
+    assert leaver_alerts <= 1  # at most the alert from before they left; never evaluated again after disabling
+
+
+class _FailingAlertSessions:
+    """A session factory whose sessions work for discovery and fail for every evaluation."""
+
+    def __init__(self, healthy_calls: int) -> None:
+        self.calls = 0
+        self.healthy_calls = healthy_calls
+
+    def __call__(self):
+        self.calls += 1
+
+        if self.calls > self.healthy_calls:
+            raise OperationalError("SELECT 1", {}, Exception("could not open a session"))
+
+        return SessionLocal()
+
+
+def test_three_consecutive_alert_session_failures_are_fatal(client: TestClient, clean_database: None) -> None:
+    _alert_users(client, 5)
+    # call 1 = event discovery, call 2 = alert discovery; every evaluation session fails.
+    factory = _FailingAlertSessions(healthy_calls=2)
+
+    summary = _run(DispatcherConfig(max_alert_users=5), session_factory=factory, seed="s")
+
+    assert summary.outcome == "fatal" and dispatcher.exit_code_for(summary) == 1
+    assert summary.alert_failures == dispatcher.MAX_CONSECUTIVE_FAILURES
+    # 2 discovery sessions + per failed user one evaluation session and one attempt to record its progress;
+    # the breaker stops any further user.
+    assert factory.calls == 2 + 2 * dispatcher.MAX_CONSECUTIVE_FAILURES
+
+
+def test_a_single_alert_session_failure_is_a_counted_failure_not_fatal(client: TestClient, clean_database: None) -> None:
+    users = _alert_users(client, 3)
+    seen = {"calls": 0}
+
+    def flaky():
+        seen["calls"] += 1
+        if seen["calls"] == 3:  # exactly one evaluation session fails
+            raise RuntimeError("transient session failure")
+        return SessionLocal()
+
+    summary = _run(DispatcherConfig(max_alert_users=3), session_factory=flaky, seed="s")
+
+    assert summary.alert_failures == 1 and summary.alert_users_evaluated == 2
+    assert summary.outcome == "completed_with_failures" and dispatcher.exit_code_for(summary) == 3
+    assert len(_covered_users(users)) == 2

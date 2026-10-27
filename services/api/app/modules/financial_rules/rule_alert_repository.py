@@ -212,20 +212,24 @@ def count_users_with_enabled_alert_rules(db_session: Session) -> int:
     )
 
 
-# One deterministic page of those users in user_id order. The dispatcher picks the
-# page by a rotating run index, so every user is evaluated within
-# ceil(users / page size) consecutive runs without any stored cursor.
-def get_users_with_enabled_alert_rules_page(
-    db_session: Session, limit: int, offset: int,
+# A per-run RANDOM SAMPLE of those users: ordered by md5(user_id || seed) with a
+# fresh seed for every dispatcher run, then cut at `limit`. There is no cursor, no
+# page index and no dependence on the clock, so (1) a run that stops early always
+# evaluated a uniformly random prefix, never the same tail-starved prefix, and (2)
+# skipped, delayed or doubled scheduler ticks cannot leave any user unvisited.
+# This gives almost-sure (probabilistic) liveness, NOT a deterministic bound; a
+# deterministic bound needs persisted progress (see docs/operations/rule-dispatcher.md).
+def get_users_with_enabled_alert_rules_sample(
+    db_session: Session, limit: int, seed: str,
 ) -> list[UUID]:
     rows = db_session.execute(
         text(
-            "SELECT DISTINCT user_id FROM financial_rules "
+            "SELECT user_id FROM (SELECT DISTINCT user_id FROM financial_rules "
             "WHERE status = 'enabled' AND rule_type IN "
-            "('MINIMUM_UNALLOCATED_FLOOR', 'OVERCOMMITMENT_ALERT', 'BUDGET_ALERT') "
-            "ORDER BY user_id LIMIT :limit OFFSET :offset"
+            "('MINIMUM_UNALLOCATED_FLOOR', 'OVERCOMMITMENT_ALERT', 'BUDGET_ALERT')) AS alert_users "
+            "ORDER BY md5(user_id::text || :seed), user_id LIMIT :limit"
         ),
-        {"limit": limit, "offset": offset},
+        {"limit": limit, "seed": seed},
     ).all()
 
     return [row[0] for row in rows]
