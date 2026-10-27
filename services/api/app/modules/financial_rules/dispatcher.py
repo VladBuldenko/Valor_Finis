@@ -180,6 +180,12 @@ class DispatcherSummary:
     alert_selection: str = "none"
     alert_coverage: str = "none"
     progress_update_failures: int = 0
+    # Failures whose progress write was correctly ignored because a NEWER attempt of
+    # the same user was already recorded; still counted in alert_failures.
+    progress_stale_ignored: int = 0
+    # Failures that happened before the user's lock was held (no attempt identity,
+    # nothing evaluated): the user keeps its place; still counted in alert_failures.
+    progress_unordered_failures: int = 0
     alert_progress_purged: int = 0
     budget_exhausted: bool = False
     execution_outcomes: dict[str, int] = field(default_factory=dict)
@@ -265,38 +271,70 @@ def _drain_event_users(
             summary.execution_outcomes[status] = summary.execution_outcomes.get(status, 0) + count
 
 
-def _success_recorder(use_progress: bool, user_id: UUID) -> Optional[Callable[[Session], None]]:
-    if not use_progress:
-        return None
+# The ordering identity of ONE alert attempt for one user. It is drawn by the
+# evaluation transaction right after it holds the user's lock L0 (on_locked), kept
+# here in memory (the draw survives a rollback), and carried to whichever write
+# reports the outcome. `seq` stays None when the attempt failed before L0 was held.
+class _Attempt:
+    def __init__(self, user_id: UUID, use_progress: bool) -> None:
+        self.user_id = user_id
+        self.use_progress = use_progress
+        self.seq: Optional[int] = None
 
-    def record(session: Session) -> None:
-        progress_repository.record_success(session, user_id)
+    def on_locked(self) -> Optional[Callable[[Session], None]]:
+        if not self.use_progress:
+            return None
 
-    return record
+        def draw(session: Session) -> None:
+            self.seq = progress_repository.allocate_attempt_seq(session)
+
+        return draw
+
+    def on_success(self) -> Optional[Callable[[Session], None]]:
+        if not self.use_progress:
+            return None
+
+        def record(session: Session) -> None:
+            # Same transaction as the alert writes; always follows on_locked.
+            assert self.seq is not None
+            progress_repository.record_success(session, self.user_id, self.seq)
+
+        return record
 
 
 # A failed attempt still moves the user to the back of the service order (so a
 # failing user is retried once per cycle and cannot monopolize the queue). It is
-# recorded in its own short transaction because the evaluation was rolled back; if
-# even that fails (the database is probably unreachable) the user simply stays
-# where it was and the failure is counted.
+# recorded in its own short transaction because the evaluation was rolled back and
+# its lock released, so a newer attempt may already have committed: the write is
+# guarded by the attempt identity and an older failure is ignored (and counted).
+# A failure before L0 was held has no identity and cannot be ordered, so it is not
+# written; if even a valid write fails (the database is probably unreachable) the
+# user simply stays where it was and the failure is counted.
 def _record_failed_progress(
     session_factory: Callable[[], Session],
     summary: DispatcherSummary,
-    use_progress: bool,
-    user_id: UUID,
+    attempt: _Attempt,
     error_code: Optional[str],
 ) -> None:
-    if not use_progress:
+    if not attempt.use_progress:
+        return
+
+    if attempt.seq is None:
+        summary.progress_unordered_failures += 1
         return
 
     try:
         with session_factory() as session:
-            progress_repository.record_failure(session, user_id, error_code)
+            applied = progress_repository.record_failure(session, attempt.user_id, attempt.seq, error_code)
             session.commit()
+
+        if not applied:
+            summary.progress_stale_ignored += 1
     except Exception as error:
         summary.progress_update_failures += 1
-        logger.error("could not record alert progress for user %s (%s)", _user_tag(user_id), type(error).__name__)
+        logger.error(
+            "could not record alert progress for user %s (%s)", _user_tag(attempt.user_id), type(error).__name__,
+        )
 
 
 def _evaluate_alert_users(
@@ -352,17 +390,19 @@ def _evaluate_alert_users(
             summary.budget_exhausted = True
             return
 
+        attempt = _Attempt(user_id, use_progress)
+
         try:
             with session_factory() as session:
                 result = rule_alert_service.evaluate_user_alerts_best_effort(
-                    session, user_id, on_success=_success_recorder(use_progress, user_id),
+                    session, user_id, on_success=attempt.on_success(), on_locked=attempt.on_locked(),
                 )
         except Exception as error:  # the best-effort wrapper never raises; opening the session may
             summary.alert_failures += 1
             consecutive_failures += 1
             error_code = type(error).__name__
             logger.error("alert evaluation failed for user %s (%s)", _user_tag(user_id), error_code)
-            _record_failed_progress(session_factory, summary, use_progress, user_id, error_code)
+            _record_failed_progress(session_factory, summary, attempt, error_code)
 
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise _FatalError("alert evaluation failed for consecutive users") from error
@@ -372,7 +412,7 @@ def _evaluate_alert_users(
             summary.alert_failures += 1
             consecutive_failures += 1
             logger.error("alert evaluation failed for user %s", _user_tag(user_id))
-            _record_failed_progress(session_factory, summary, use_progress, user_id, result.error_code)
+            _record_failed_progress(session_factory, summary, attempt, result.error_code)
 
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise _FatalError("alert evaluation failed for consecutive users")

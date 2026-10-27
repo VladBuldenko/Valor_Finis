@@ -202,10 +202,16 @@ def test_purge_is_bounded(client: TestClient, clean_database: None) -> None:
 def _fail_for(monkeypatch: pytest.MonkeyPatch, bad: set[str]) -> None:
     original = rule_alert_service.evaluate_user_alerts
 
-    def selective(session, user_id, on_success=None):
+    def selective(session, user_id, on_success=None, on_locked=None):
         if str(user_id) in bad:
+            # A failure INSIDE the evaluation: the user lock is held and the attempt
+            # identity drawn, exactly like a real evaluation error.
+            session.execute(text("SELECT 1"))
+            if on_locked is not None:
+                on_locked(session)
+            session.rollback()
             raise RuntimeError("persistent failure")
-        return original(session, user_id, on_success=on_success)
+        return original(session, user_id, on_success=on_success, on_locked=on_locked)
 
     monkeypatch.setattr(rule_alert_service, "evaluate_user_alerts", selective)
 
@@ -290,8 +296,11 @@ def test_a_crash_after_the_successful_commit_leaves_progress_and_alert_together(
     users = sorted(_users(client, 3))
 
     with SessionLocal() as session:  # the evaluation commits (alert + progress), then the process "dies"
+        seqs: list[int] = []
         rule_alert_service.evaluate_user_alerts(
-            session, UUID(users[0]), on_success=lambda s: progress.record_success(s, UUID(users[0])),
+            session, UUID(users[0]),
+            on_locked=lambda s: seqs.append(progress.allocate_attempt_seq(s)),
+            on_success=lambda s: progress.record_success(s, UUID(users[0]), seqs[0]),
         )
 
     assert _alert_count(users[0]) == 1 and _row(users[0])["last_success_at"] is not None  # durable together
@@ -407,8 +416,8 @@ def test_the_selection_order_is_never_attempted_first_then_least_recently_attemp
 ) -> None:
     users = sorted(_users(client, 4))
     with SessionLocal() as session:
-        progress.record_success(session, UUID(users[2]))
-        progress.record_success(session, UUID(users[0]))
+        progress.record_success(session, UUID(users[2]), progress.allocate_attempt_seq(session))
+        progress.record_success(session, UUID(users[0]), progress.allocate_attempt_seq(session))
         session.commit()
 
     with SessionLocal() as session:
