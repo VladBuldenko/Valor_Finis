@@ -300,3 +300,57 @@ Summary:
 - **Acceptance (when built):** every non-success execution displays a plain-language reason mapped from
   `reason_code`; unknown codes fall back to a neutral message; the user is never told a retry will happen unless the
   response says `failed_retryable`.
+
+---
+
+## v1.1 Addendum (VF-MVP-ENG-003)
+
+Approved decisions change or add the following. Everything above remains the audited baseline.
+
+### Changes to existing journeys
+
+| Journey | v1.1 change |
+|---|---|
+| J01 | Sign-in now has links to registration (J19) and recovery (J20). The expired-session recovery is **P0** (M11): a 401 signs the user out, clears the query cache and returns them to sign-in with a "session ended" message. |
+| J03 | After a successful Income create the app calls `POST /financial-rules/evaluate` (debounced) when the user has enabled rules (M10); an Inbox badge may appear. |
+| J07 | The safety-floor warning is **P0** (M08): success plus warning, never an error; an idempotent replay renders whatever warnings the response carries. |
+| J12 | Dashboard shows no aggregate balance (Q10). Date-dependent labels state the server date (Q8). |
+| J13 | Four rule types ship (Q11). CONFIRM is presented first. Alert rules show "not available yet" until the alerts table exists in that environment. |
+| J14 | Preview is an approved backend capability (BE-2). **Enabling AUTO requires a preview of the current rule version**; editing a rule invalidates its preview. Copy rule C1 binds all AUTO text. |
+| J15 | Inbox is client-composed (Q9): proposals (`awaiting_confirmation`), unacknowledged alerts, recent failed/blocked executions; opening it calls evaluate first. Outcome is read from `status` (C5). |
+| J16 | Unchanged; `available:false` is a distinct state. |
+| J18 | Execution history is **P1** (M07). No recovery endpoint exists; the UI explains counters only. |
+
+### J19 — Register a new account
+- **Mobile:** NOT YET (M14a, P0). **Entry:** sign-in screen → Create account.
+- **Preconditions:** staging/production Supabase project allows sign-up (settings UNKNOWN until recorded).
+- **Actions:** email, password (and confirmation field) → Create account.
+- **API calls:** Supabase Auth `signUp` (not FastAPI). No FastAPI call until a session exists.
+- **State transitions:** no account → (if email confirmation is enabled) *confirmation pending* → confirmed → sign-in
+  → session. If confirmation is disabled, a session may start immediately.
+- **Expected:** the user lands on an empty Dashboard; first FastAPI call creates no rows except what normal use
+  creates (default categories are ensured lazily).
+- **Errors:** password policy failure (message from the project policy), invalid email, rate limited, network
+  failure. **The same neutral message is shown whether or not the email is already registered** (C6).
+- **Data changes:** a Supabase Auth user only.
+- **Cache:** none; the cache must be empty at start (cleared on any prior sign-out).
+- **Security:** no password or token logged or persisted outside Supabase storage; redirect URL uses the app-unique
+  scheme (B9); no account-existence leak; rate-limit behavior observed on staging.
+- **Acceptance:** drill on iOS and Android: register → (confirm) → sign in → empty-state Dashboard; a second
+  registration with the same email shows the neutral message and reveals nothing.
+
+### J20 — Recover a forgotten password
+- **Mobile:** NOT YET (M14b, P0). **Entry:** sign-in → Forgot password.
+- **Actions:** enter email → Send link → open the emailed link on the device → app opens the reset screen → enter a
+  new password → submit → sign in.
+- **API calls:** Supabase Auth `resetPasswordForEmail`, then session establishment from the link (the client has
+  `detectSessionInUrl: false`, so the app handles the link explicitly), then `updateUser({ password })`.
+- **State transitions:** signed out → link requested → link opened (recovery session) → password updated → signed in
+  or sent to sign-in.
+- **Errors:** link expired/invalid/already used (clear state with a way to request a new link); password policy
+  failure; rate limited; app not installed or link opened on another device (documented behavior, not a crash).
+- **Data changes:** Supabase Auth credentials only.
+- **Security:** the request step shows the same message for known and unknown emails (C6); the recovery session is
+  not used for FastAPI data screens until the password is set; tokens never logged; the link scheme is app-unique.
+- **Acceptance:** drill on both platforms against staging: complete recovery end to end; expired link shows the
+  expired state; a reused link does not log the user in.

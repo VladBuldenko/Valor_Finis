@@ -1,3 +1,6 @@
+> **Superseded by [mvp-readiness-gates.md](mvp-readiness-gates.md) (VF-MVP-ENG-003).** The tiers and criteria below
+> were written before the decisions were approved and are kept as history.
+
 # MVP Design Readiness Gate (VF-MVP-ENG-001, Part 9)
 
 Date: 2026-10-27. Basis: `main` @ `08d985c030a38823fe43863c806d90bbc86e97b4`.

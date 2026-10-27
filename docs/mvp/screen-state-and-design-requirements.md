@@ -210,3 +210,41 @@ reason), failure, and "preview is not a promise: figures can change before incom
 | Money reading | Amounts include currency and sign in a form a screen reader reads correctly | Unverified |
 | Reduced motion | No essential information in animation | Unverified |
 | Language | English strings only today; copy must be centralized for later localization | Strings inline |
+
+---
+
+## v1.1 Addendum (VF-MVP-ENG-003)
+
+### Auth surfaces (A-01..A-03)
+| State | Show | Actions | Recovery | Backend/Auth data |
+|---|---|---|---|---|
+| Sign-up initial | Email, password, confirm | Create account, back to sign-in | — | Supabase |
+| Submitting | Disabled controls | — | — | — |
+| Confirmation pending | "Check your email" (same text whether or not the email was already registered, C6) | Resend, back | Open mail app | project setting UNKNOWN |
+| Password policy failure | The policy requirement in plain words | Edit | Keep email | Supabase message |
+| Rate limited | "Try again later" | Wait | — | Supabase |
+| Network failure | Offline vs server wording | Retry | Keep input | — |
+| Forgot password request | Email field; the same confirmation message always (C6) | Send, back | — | Supabase |
+| Reset link opened | New password, confirm | Submit | — | recovery session |
+| Link expired/invalid/used | Clear state | Request a new link | — | Supabase |
+| Reset success | "Password updated" then signed in or to sign-in | Continue | — | — |
+| Session expired (all screens) | "Your session ended" | Sign in; return to previous screen | — | 401 (M11) |
+
+### Pagination states (Expenses, Income) after BE-3
+Loading first page; loaded; loading more (existing rows stay visible); end of list; page error with retry that keeps
+loaded rows; empty; refresh resets to the first page. Totals shown only from the response.
+
+### Server-date label (Q8)
+Date-dependent surfaces (transfers, goal transactions, overview, budget dates) show "Server date: <date>" or an
+equivalent approved label wherever "today" changes the outcome.
+
+### Rule preview (R-07), now in scope
+States: loading; result (planned amount per target Goal, partial/skip reasons mapped from codes, capacity figures:
+reservable, floor, holds, rule capacity); "nothing would happen" with reason; stale (rule edited after preview, must
+re-preview); failure (code-mapped); not previewable (rule status/type). Copy: "Preview uses your current balances; actual results can
+differ when income arrives." Enabling AUTO is disabled until a current preview was shown.
+
+### Inbox composition states (R-08)
+Opening the Inbox triggers evaluate then loads the three sources independently. Each source has its own loading,
+empty, error-with-retry state; one failing source does not blank the others. Badge counts only what was loaded and says
+so when a source failed.

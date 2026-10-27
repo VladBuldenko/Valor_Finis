@@ -87,3 +87,11 @@ After S1 is published, Gates C and F must use the guarded runner and not a hand-
 
 Offline UX research, wireframes, high-fidelity specification and mobile implementation **do not** depend on
 production readiness. Any claim about live alerts, unattended AUTO execution, or "Beta ready" **does**.
+
+---
+
+## v1.1 Addendum (VF-MVP-ENG-003)
+
+The OPS-03 procedure, gate sequencing and staging prerequisites are specified in
+[mvp-ops03-and-staging-prerequisites.md](mvp-ops03-and-staging-prerequisites.md). S1 and S2 remain **open** until their
+corrections are merged to `main` with evidence.

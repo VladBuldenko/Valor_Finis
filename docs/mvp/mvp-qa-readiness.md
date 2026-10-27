@@ -106,3 +106,15 @@ Rules:
 | High-fidelity UI specs | Open decisions Q1–Q12 answered; state matrix reviewed |
 | Implementation | G01, G02, G03 planned; staging environment (G14) defined |
 | Beta | G01–G06, G10, G14, G17 closed with stored evidence; Gate I observed for any "automatic" claim |
+
+---
+
+## v1.1 Addendum (VF-MVP-ENG-003)
+
+Gap IDs G01–G18 above are mapped to the new gap matrix ([mvp-engineering-gap-matrix.md](mvp-engineering-gap-matrix.md))
+and closure tasks ([mvp-engineering-qa-roadmap.md](mvp-engineering-qa-roadmap.md)). The device matrix is decided (Q12):
+floors iOS 15.1 and Android API 24 from the installed React Native 0.86.3 (Expo SDK 57 floor to be confirmed in QA-0),
+plus latest stable, at least one physical iOS and one physical Android device. Measurable Beta criteria are in
+[mvp-readiness-gates.md](mvp-readiness-gates.md). New test drills required by v1.1: registration and recovery on staging
+(J19, J20), preview parity and no-write tests (BE-2), error-code uniqueness test (BE-1), pagination compatibility test (BE-3),
+forbidden-copy check (C1–C3).

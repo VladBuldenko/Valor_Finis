@@ -176,3 +176,38 @@ unless marked.
 | Execution history | Understand what ran, why something was skipped/blocked | executions with `items`, `audit`, `reason_code`, capacity snapshot | `GET /rule-executions` | MISSING |
 | Floor warning (inline) | Advisory after a manual reservation | `warnings[]` on the Goal-transaction response | already returned | MISSING |
 | Account capacity detail (inline) | Explain reserved, holds, floor, rule capacity | `AccountResponse` fields | already returned | MISSING |
+
+---
+
+## v1.1 Addendum (VF-MVP-ENG-003)
+
+### Planned surfaces with IDs (used by the readiness gates)
+
+| ID | Surface | Priority | Source |
+|---|---|---|---|
+| A-01 | Sign-up (incl. confirmation-pending state) | P0 | Q5, J19 |
+| A-02 | Forgot password (request) | P0 | Q5, J20 |
+| A-03 | Reset password (from link) | P0 | Q5, J20 |
+| R-01 | Rules list | P0 | M01 |
+| R-02 | Rule editor: income allocation (AUTO/CONFIRM) | P0 | M01, M02 |
+| R-03 | Rule editor: safety floor | P0 | M01 |
+| R-04 | Rule editor: overcommitment alert | P0 | M01 |
+| R-05 | Rule editor: budget alert | P0 | M01 |
+| R-06 | Rule detail / lifecycle (enable, pause, disable, delete) | P0 | M01 |
+| R-07 | Rule preview | P0 | M03 (Q3) |
+| R-08 | Inbox (client-composed) with Dashboard entry/badge | P0 | M06 (Q9) |
+| R-09 | Proposal detail (confirm/reject, expiry, outcomes) | P0 | M04 |
+| R-10 | Alerts list/detail (acknowledge) | P0 | M05 |
+| R-11 | Execution history | P1 | M07 |
+| R-12 | Account capacity detail and floor-warning pattern (inline) | P0 warning / P1 capacity | M08, M09 |
+
+The twelve rule surfaces R-01..R-12 are the twelve rows of section 4 above, regrouped (the editors are split by
+rule type).
+
+### Other v1.1 changes
+- Receipts list/manage is **deferred** (Q6); no screen is planned.
+- Expenses and Income lists gain pagination states (Q7); the lists stay single-screen.
+- Dashboard: adds an Inbox entry; no aggregate balance (Q10).
+- Every screen showing a date that depends on "today" labels it as the server date (Q8).
+- Navigation remains a design decision; the only constraints are: Inbox reachable from the Dashboard, rules reachable
+  from a stable area, sign-up/recovery reachable from sign-in.

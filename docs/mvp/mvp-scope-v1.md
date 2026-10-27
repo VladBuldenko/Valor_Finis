@@ -1,3 +1,6 @@
+> **Superseded by [mvp-scope-v1.1.md](mvp-scope-v1.1.md) (approved, VF-MVP-ENG-003).** Q1–Q12 are decided in
+> [mvp-decision-record.md](mvp-decision-record.md). This file is kept unchanged below as the audit input.
+
 # MVP Scope v1 (VF-MVP-ENG-001, Part 2)
 
 Version: 1.0-proposed. Date: 2026-10-27. Basis: `main` @ `08d985c030a38823fe43863c806d90bbc86e97b4`.
