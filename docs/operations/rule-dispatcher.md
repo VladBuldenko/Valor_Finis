@@ -255,6 +255,10 @@ returns no rows. (4) `alerts_created` is 0 on a repeated run with unchanged stat
 
 ## 5. Release dependencies (all must be independently verified; none is assumed)
 
+The gated, step-by-step production procedure (Gates A-I, read-only verification SQL, backups, rollback limits,
+authorizations) is in [financial-rules-production-release.md](financial-rules-production-release.md). The list below is the
+summary; where they differ, the release document is authoritative.
+
 1. Render database connectivity restored (authenticated Account reads previously returned HTTP 500).
 2. Production Alembic revision equals `a7c3e91d5b24` (E9A applied; separate authorizations A/B/C).
 3. E9A schema, constraints and privileges verified (read-only post-check).
