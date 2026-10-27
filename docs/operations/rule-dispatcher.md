@@ -73,6 +73,28 @@ monopolize the queue. Users not reached in a run (cap, time budget, circuit brea
 at the front. Rows of users without an enabled alert rule are deleted (bounded housekeeping), so a disabled user is
 never processed and a newly enabled user (no row) is served first without initialization.
 
+*Attempt ordering and stale writes (VF-020E10R-02, runtime only, no migration).* A failure is recorded AFTER the
+attempt's transaction rolled back and released the per-user lock L0, so an older attempt could otherwise report late
+and overwrite a newer success. Every attempt therefore draws its identity from `alert_dispatch_service_seq` INSIDE the
+evaluation transaction, right after L0 is held and before any evaluation work. A competing attempt for the same user
+can only draw after that transaction ended, so for one user the identities follow the L0 order and are strictly
+increasing; `nextval()` is not rolled back, so a failed attempt keeps a valid identity (it only leaves a gap) and the
+dispatcher carries it in memory to the write that reports the outcome. Both writers (`record_success`,
+`record_failure`) replace the row only `WHERE service_seq < <this attempt's identity>`; under READ COMMITTED a writer
+that waited for a concurrent one re-checks that condition, so an older attempt can never overwrite a newer one. No
+wall clock takes part. A rejected stale failure is not lost: it stays in the run's `alert_failures`, exit code 3 and
+the `progress_stale_ignored` counter. A failure before L0 was held (session or lock could not be obtained; nothing was
+evaluated) has no identity and cannot be ordered, so it is counted (`alert_failures`, `progress_unordered_failures`)
+but not written: that user keeps its place and is retried next run (the 3-consecutive-failure breaker still applies).
+No lock is held across the failure write.
+
+*Timestamps.* `now()` is the transaction START time and clocks can step back, so a legitimate later attempt may carry a
+timestamp earlier than a stored one. The writers store `GREATEST(stored, now())` for `last_attempted_at` (and for a
+success, `last_success_at` equals it), so `last_success_at <= last_attempted_at` holds without relaxing the CHECK.
+Consequence for monitoring: after a backwards clock step these two columns are clamped at the previous maximum
+(non-decreasing) rather than showing the raw clock; ordering never depends on them. The existing schema
+(`c4d8a2f6e193`) supports all of this, so **no new migration is required**.
+
 *Bound and assumptions.* Let `M` be the number of users with an enabled alert rule, constant between runs, and let each
 run attempt and durably record at least `n` distinct users. A user attempted in the current cycle always sorts after
 every user not yet attempted in it (those have older sequence values or no row), so each run takes the next `n` of the
@@ -139,7 +161,7 @@ failed, three consecutive connection or unrecorded-failure users, or three conse
 failure, retryable-failed or dead events, alert failure). The last stdout line is
 `dispatcher_summary {json}` with only counters: `outcome, users_considered, users_processed, events_processed,
 events_deferred, events_failed_retryable, events_dead, events_unrecorded_failures, users_blocked, user_failures, alert_users_considered,
-alert_users_total, alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, alert_users_truncated, alert_selection, alert_coverage, progress_update_failures, alert_progress_purged, budget_exhausted,
+alert_users_total, alert_users_evaluated, alerts_created, alerts_resolved, alert_failures, alerts_unavailable, alert_users_truncated, alert_selection, alert_coverage, progress_update_failures, progress_stale_ignored, progress_unordered_failures, alert_progress_purged, budget_exhausted,
 execution_outcomes, elapsed_seconds`. Logs use a short hash of the user id and never contain the database URL,
 secrets, tokens, amounts or names.
 
@@ -213,7 +235,7 @@ line is `dispatcher_summary` with `outcome` `success` or `noop`. Then check, rea
 - Enabled-alert users with no progress row yet (backlog never served): `SELECT count(DISTINCT r.user_id) FROM financial_rules r WHERE r.status = 'enabled' AND r.rule_type IN ('MINIMUM_UNALLOCATED_FLOOR','OVERCOMMITMENT_ALERT','BUDGET_ALERT') AND NOT EXISTS (SELECT 1 FROM alert_dispatch_progress p WHERE p.user_id = r.user_id);`
 - Persistently failing users (codes only): `SELECT last_error_code, count(*), max(consecutive_failures) FROM alert_dispatch_progress WHERE consecutive_failures > 0 GROUP BY 1;`
 - Cycle estimate: `alert_users_total / alert_users_evaluated` from the summary line is the number of runs per full cycle; an `alert_users_truncated: true` run with `alert_selection: random` means the fallback is active and coverage is only probabilistic.
-- In the logs, `alert_failures`, `progress_update_failures` and `alert_selection` appear in the `dispatcher_summary` line; recurring `progress_update_failures` means failures cannot be recorded (database trouble).
+- In the logs, `alert_failures`, `progress_update_failures` and `alert_selection` appear in the `dispatcher_summary` line; recurring `progress_update_failures` means failures cannot be recorded (database trouble). `progress_stale_ignored` is informational (a late failure correctly ignored because a newer attempt was recorded; the failure itself is still in `alert_failures`); `progress_unordered_failures` counts failures before the user lock was held.
 
 **Failed evaluations and recovery.** A failed evaluation is rolled back (no partial alert), its user moves to the back and is
 retried one cycle later; `consecutive_failures` resets on the next success. Deleting all rows from

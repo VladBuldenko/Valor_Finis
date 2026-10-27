@@ -161,6 +161,7 @@ def evaluate_user_alerts(
     db_session: Session,
     user_id: UUID,
     on_success: Optional[Callable[[Session], None]] = None,
+    on_locked: Optional[Callable[[Session], None]] = None,
 ) -> AlertEvaluation:
     result = AlertEvaluation()
 
@@ -170,6 +171,12 @@ def evaluate_user_alerts(
             return AlertEvaluation(available=False)
 
         goal_user_lock.acquire_goal_user_lock(db_session, user_id)
+
+        if on_locked is not None:
+            # Runs right after L0, before any evaluation work: the dispatcher draws
+            # its attempt identity here, so attempts of one user are ordered by L0.
+            on_locked(db_session)
+
         rules = rule_alert_repository.get_enabled_alert_rules(db_session, user_id)
         _evaluate_account_rules(db_session, user_id, rules, result)
         _evaluate_budget_rules(db_session, user_id, rules, result)
@@ -193,12 +200,13 @@ def evaluate_user_alerts_best_effort(
     db_session: Session,
     user_id: UUID,
     on_success: Optional[Callable[[Session], None]] = None,
+    on_locked: Optional[Callable[[Session], None]] = None,
 ) -> AlertEvaluation:
     try:
-        if on_success is None:
+        if on_success is None and on_locked is None:
             return evaluate_user_alerts(db_session, user_id)
 
-        return evaluate_user_alerts(db_session, user_id, on_success=on_success)
+        return evaluate_user_alerts(db_session, user_id, on_success=on_success, on_locked=on_locked)
     except Exception as error:
         logger.error("alert evaluation failed (%s)", type(error).__name__)
 
