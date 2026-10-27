@@ -128,7 +128,7 @@ runtime that uses it, and the schema must be merged and applied before the deter
 Exact order (nothing below has been executed): (1) verify the Render database connection; (2) verify E9A
 `a7c3e91d5b24` is applied and healthy; (3) obtain a separate authorization naming `c4d8a2f6e193`; (4) read-only
 preflight (revision exactly `a7c3e91d5b24`, table and sequence absent) and a verified backup; (5) apply
-`alembic upgrade c4d8a2f6e193` with a transaction-local `lock_timeout` (no existing relation is locked); (6) verify the
+it only through the fail-closed `docs/operations/sql/run_guarded_migration.sh c4d8a2f6e193 <db>` (never a hand-typed `alembic upgrade`; no existing relation is locked); (6) verify the
 table, six columns, four constraints, the index, the sequence and that the Data API roles hold no privilege on either;
 (7) deploy the runtime only after a separate approval; (8) observe a scheduled run report
 `alert_selection: progress` and verify coverage before describing alert evaluation as deterministic.

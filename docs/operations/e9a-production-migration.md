@@ -118,42 +118,39 @@ counts immediately before the dump, explain every difference by traffic in that 
 
 ## 5. Step 3 - the exact upgrade (authorization C, naming `a7c3e91d5b24`)
 
-Immediately before, re-run Step 1 in the same maintenance window; it must still PASS. Then, from `services/api`
-with the Alembic environment loaded from the secret store (no echo):
+Use **only** the fail-closed runner. Do not type `alembic upgrade` by hand and do not assemble the steps yourself.
+With the libpq `PG*` variables (the same ones the preflight used) and `DATABASE_URL` loaded from the secret store
+into the operator's shell (no echo), from `docs/operations/sql`:
 
 ```bash
-export PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=60000'
-# Endpoint proof. The preflight used the PG* variables, Alembic uses DATABASE_URL: both must reach the SAME
-# server, and that server must honour the lock timeout. Neither command prints a URL or a password.
-FP_SQL="SELECT (SELECT oid FROM pg_database WHERE datname = current_database()), extract(epoch FROM pg_postmaster_start_time())::bigint, current_database(), current_user, current_setting('lock_timeout')"
-VIA_PG="$(psql -X -Atc "$FP_SQL")"
-VIA_URL="$(.venv/bin/python - "$FP_SQL" <<'PY'
-import os, sys
-from sqlalchemy import create_engine, text
-with create_engine(os.environ["DATABASE_URL"]).connect() as connection:
-    print("|".join(str(value) for value in connection.execute(text(sys.argv[1])).one()))
-PY
-)"
-echo "PG*: $VIA_PG"; echo "URL: $VIA_URL"
-[ "$VIA_PG" = "$VIA_URL" ] && case "$VIA_URL" in *"|5s") echo "SAME SERVER, lock_timeout 5s" ;; *) echo STOP ;; esac || echo STOP
-.venv/bin/alembic current                         # must print e0503e9ca9d3
-.venv/bin/alembic upgrade a7c3e91d5b24            # the EXACT revision; never `head`
+./run_guarded_migration.sh a7c3e91d5b24 <production_database_name>
 ```
 
-The proof must end with `SAME SERVER, lock_timeout 5s`. Anything else means **stop**: the two paths reach different
-servers or databases, or the endpoint dropped the startup options (some poolers do). Use the direct or session
-endpoint that honours the options and make `DATABASE_URL` and the `PG*` variables name the same server; never run
-the upgrade against a server that was not preflighted and backed up. Whether a given Supabase endpoint honours startup options is
-not verified here. `DATABASE_URL` must be set in that shell's environment only (the Alembic environment reads it); do not echo it.
-`PGOPTIONS` is honoured by libpq for every connection Alembic opens, so each statement runs under the lock
-timeout. This exact form was exercised locally: with another session holding `ROW EXCLUSIVE` on `financial_rules`
-the upgrade fails with a lock timeout, commits nothing and leaves revision `e0503e9ca9d3` and no `rule_alerts`.
+The runner applies exactly the named revision and **never reaches `alembic upgrade` unless every guard passed**.
+There is no override flag. In this order it requires:
 
-- **Lock timeout or any error:** nothing is committed. Verify with Step 1 (it must still PASS), report, and stop.
-  A retry needs a fresh Step 1 and a quiet moment; never retry in a loop and never raise the timeout to "make it
-  work".
-- Do not interrupt the process after it started the DDL; it is one transaction.
-- Alembic output must not be pasted if it contains connection details.
+1. a valid environment (`PGSERVICE`, `PGSERVICEFILE`, `PGHOSTADDR` refused; `PGDATABASE` equal to the expected name);
+2. an **endpoint proof**: the `PG*` path and the `DATABASE_URL` path must return the identical fingerprint (database
+   oid, postmaster start time, database name, role) and both must report `lock_timeout = 5s`. A different server or
+   database, or an endpoint that dropped the startup options (some poolers do), stops the run;
+3. `alembic current` reporting exactly the parent revision `e0503e9ca9d3` (the target already applied, a database
+   ahead of it, or no output all stop the run);
+4. the read-only `e9a_preflight` returning PASS (so every prerequisite, absence, lock and session check passed);
+5. only then `alembic upgrade a7c3e91d5b24` under `lock_timeout` 5 s and `statement_timeout` 60 s;
+6. the read-only `e9a_postcheck` returning PASS.
+
+| Exit | Meaning | Action |
+|---|---|---|
+| 0 | migrated and verified | continue with Gate D evidence |
+| 11 | **stopped before any migration; nothing changed** (a guard failed, the cause is printed) | fix the cause, re-run from the preflight |
+| 12 | `alembic upgrade` itself failed (one transaction: nothing committed) | verify with the preflight, report, stop |
+| 13 | migrated, but a post-check did not PASS | report; do not retry; see section 8 |
+| 64 | refused to start (usage or unsafe environment) | fix the invocation |
+
+Never retry in a loop and never raise a timeout to make a step pass. Do not interrupt the process after it started
+the DDL; it is one transaction. Do not paste Alembic or runner output that may contain connection details (the
+runner prints none). Whether a given Supabase endpoint honours startup options is not verified here: the endpoint
+proof is what decides, per endpoint. Use the direct or session-mode endpoint for both `PG*` and `DATABASE_URL`.
 
 ## 6. Step 4 - post-migration verification (Gate D)
 
@@ -211,8 +208,10 @@ duplicate revision rows, a partial object (including another schema), a missing 
 and a wrong database; the post-check passes after the real migration and detects a dropped constraint, a wrong
 foreign-key action, a dropped index and four kinds of effective Data API exposure (direct, inherited through role
 membership, `PUBLIC`, column-level); the scripts contain no write statement, run in a read-only rolled-back
-transaction and leave the schema, rows, ACLs and sequence values unchanged; the documented upgrade command fails
-cleanly under a lock conflict and succeeds when idle. The restore-verification block above was executed as written against a locally made dump (restore, preflight PASS,
+transaction and leave the schema, rows, ACLs and sequence values unchanged; the guarded runner (see section 5) stops with exit 11 and **never invokes `alembic upgrade`** on a `PG*`/`DATABASE_URL`
+mismatch, a dropped lock timeout, an unexpected current revision, a failed preflight prerequisite, a conflicting
+lock or an unreachable server, leaving schema and revision unchanged; it exits 12 when the upgrade fails and 13 when a
+post-check fails; it refuses unsafe invocations before running anything. The restore-verification block above was executed as written against a locally made dump (restore, preflight PASS,
 throwaway database removed). PostgreSQL 18.1 locally; the same tests run on PostgreSQL 16
 in CI after merge. PostgreSQL 17 (production) has not been exercised: its constraint text could differ, which
 would produce a **false STOP**, never a false PASS.

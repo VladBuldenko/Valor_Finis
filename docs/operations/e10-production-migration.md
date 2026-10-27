@@ -44,19 +44,17 @@ restored copy must pass `e10_preflight` (`alembic_revision_is_e9a` OK; the table
 
 ## 3. Gate F - the exact upgrade (authorization naming `c4d8a2f6e193`)
 
-Re-run the preflight immediately before; it must PASS. Then, from `services/api` with the Alembic environment
-loaded from the secret store (no echo):
+Use **only** the fail-closed runner described in the E9A runbook section 5 (same environment, same guards, same
+exit codes). Do not type `alembic upgrade` by hand.
 
 ```bash
-export PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=60000'
-# Run the endpoint proof of the E9A runbook section 5 here (FP_SQL / VIA_PG / VIA_URL): it must end with
-# `SAME SERVER, lock_timeout 5s`, otherwise stop.
-.venv/bin/alembic current                         # must print a7c3e91d5b24
-.venv/bin/alembic upgrade c4d8a2f6e193            # the EXACT revision
+./run_guarded_migration.sh c4d8a2f6e193 <production_database_name>
 ```
 
-Although this migration takes no lock on an existing relation, the timeouts stay: they bound any unexpected
-wait. A failure rolls the single transaction back; re-run the preflight, report and stop. No retry loop.
+Here the runner requires `alembic current` to be exactly `a7c3e91d5b24`, `e10_preflight` to PASS, and after the
+upgrade both `e10_postcheck` and `e9a_postcheck` to PASS (exit 13 otherwise). Although this migration takes no lock
+on an existing relation, the timeouts stay: they bound any unexpected wait. Exit 11 means nothing was changed;
+exit 12 means the single upgrade transaction failed and nothing was committed. No retry loop.
 
 ## 4. Gate G - post-check, role security and runtime compatibility
 

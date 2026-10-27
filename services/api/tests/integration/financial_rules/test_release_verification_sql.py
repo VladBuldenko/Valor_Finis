@@ -791,38 +791,6 @@ def test_the_wrapper_redacts_a_host_name_from_a_dns_failure() -> None:
     assert "secret-db-host" not in combined and "example.invalid" not in combined
 
 
-def _documented_endpoint_proof() -> str:
-    text_ = (SQL_DIR.parent / "e9a-production-migration.md").read_text()
-    start = text_.index("FP_SQL=")
-    end = text_.index("|| echo STOP\n", start) + len("|| echo STOP\n")
-    return text_[start:end].replace(".venv/bin/python", os.sys.executable)
-
-
-def _run_endpoint_proof(pg_database: str, url_database_engine: Engine) -> str:
-    environment = _libpq_env(pg_database)
-    environment["DATABASE_URL"] = _url_of(url_database_engine).render_as_string(hide_password=False)
-    environment["PGOPTIONS"] = "-c lock_timeout=5000 -c statement_timeout=60000"
-    result = subprocess.run(["bash", "-c", _documented_endpoint_proof()], cwd=str(API_DIR), env=environment,
-                            capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, result.stderr
-    assert "password" not in result.stdout.lower() and "postgresql://" not in result.stdout
-    return result.stdout
-
-
-def test_the_documented_endpoint_proof_confirms_the_same_server_and_lock_timeout(e9a_db: Tuple[str, Engine]) -> None:
-    output = _run_endpoint_proof(e9a_db[0], e9a_db[1])
-
-    assert "SAME SERVER, lock_timeout 5s" in output and "STOP" not in output
-
-
-def test_the_documented_endpoint_proof_stops_when_database_url_names_another_database(
-    e9a_db: Tuple[str, Engine], e6_db: Tuple[str, Engine],
-) -> None:
-    output = _run_endpoint_proof(e9a_db[0], e6_db[1])  # PG* -> one database, DATABASE_URL -> another
-
-    assert "SAME SERVER" not in output and output.strip().endswith("STOP")
-
-
 def test_the_wrapper_never_prints_connection_details_or_secrets_when_the_connection_fails(
     e9a_db: Tuple[str, Engine],
 ) -> None:
@@ -840,6 +808,323 @@ def test_the_wrapper_has_no_secret_in_its_arguments_and_no_trace_output() -> Non
     assert "set -x" not in source and "PGPASSWORD=" not in source and "--password" not in source
     assert "password" not in " ".join(re.findall(r'psql[^\n]*', source)).lower().replace("password[^", "")
     assert source.startswith("#!/usr/bin/env bash") and os.access(WRAPPER, os.X_OK)
+
+
+# ------------------------------------------------------------------
+# The fail-closed migration runner (docs/operations/sql/run_guarded_migration.sh)
+# ------------------------------------------------------------------
+
+GUARDED = SQL_DIR / "run_guarded_migration.sh"
+
+
+class _Guarded:
+    def __init__(self, tmp_path: Path) -> None:
+        self.log = tmp_path / "python-calls.log"
+        self.stub = tmp_path / "stub-python.sh"
+        self.stub.write_text(
+            "#!/bin/sh\n"
+            'echo "$@" >> "$STUB_LOG"\n'
+            'if [ -n "$STUB_FAIL_UPGRADE" ]; then case "$*" in *"alembic upgrade"*) exit 1;; esac; fi\n'
+            f'exec "{os.sys.executable}" "$@"\n'
+        )
+        self.stub.chmod(0o755)
+
+    def run(self, args: Tuple[str, ...], pg_database: str, url_engine: Optional[Engine],
+            env: Optional[Dict[str, Optional[str]]] = None) -> subprocess.CompletedProcess:
+        environment = _libpq_env(pg_database)
+        environment.update({"MIGRATION_PYTHON": str(self.stub), "STUB_LOG": str(self.log),
+                            "REQUIRE_DATA_API_ROLES": "no"})
+        if url_engine is not None:
+            environment["DATABASE_URL"] = _url_of(url_engine).render_as_string(hide_password=False)
+        for key, value in (env or {}).items():
+            if value is None:
+                environment.pop(key, None)
+            else:
+                environment[key] = value
+        return subprocess.run([str(GUARDED), *args], env=environment, capture_output=True, text=True,
+                              timeout=240, stdin=subprocess.DEVNULL)
+
+    def upgrade_calls(self) -> List[str]:
+        if not self.log.exists():
+            return []
+        return [line for line in self.log.read_text().splitlines() if "alembic upgrade" in line]
+
+
+@pytest.fixture
+def guarded(tmp_path: Path) -> _Guarded:
+    return _Guarded(tmp_path)
+
+
+def _assert_stopped_before_any_migration(
+    result: subprocess.CompletedProcess, guarded: _Guarded, databases: List[Tuple[str, Engine]],
+    before: List[str], revisions: List[str],
+) -> None:
+    assert result.returncode == 11, (result.returncode, result.stdout, result.stderr)
+    assert guarded.upgrade_calls() == []  # `alembic upgrade` was never invoked
+    assert [_revision(engine) for _name, engine in databases] == revisions
+    assert [_database_fingerprint(name, engine) for name, engine in databases] == before
+    assert "postgresql://" not in result.stdout + result.stderr
+
+
+def _snapshot(databases: List[Tuple[str, Engine]]) -> Tuple[List[str], List[str]]:
+    return ([_database_fingerprint(name, engine) for name, engine in databases],
+            [_revision(engine) for _name, engine in databases])
+
+
+def test_the_guarded_runner_applies_exactly_the_named_revisions_in_order_and_verifies_each(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+
+    first = guarded.run((E9A_REVISION, name), name, database_engine)
+    assert first.returncode == 0, (first.stdout, first.stderr)
+    assert _revision(database_engine) == E9A_REVISION and "MIGRATED AND VERIFIED" in first.stdout
+
+    second = guarded.run((E10_REVISION, name), name, database_engine)
+    assert second.returncode == 0, (second.stdout, second.stderr)
+    assert _revision(database_engine) == E10_REVISION
+
+    calls = guarded.upgrade_calls()
+    assert len(calls) == 2 and calls[0].endswith(f"upgrade {E9A_REVISION}") and calls[1].endswith(f"upgrade {E10_REVISION}")
+    assert not any("head" in call for call in calls)
+
+
+def test_a_mismatch_between_pg_variables_and_database_url_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], e9a_db: Tuple[str, Engine],
+) -> None:
+    databases = [e6_db, e9a_db]
+    before, revisions = _snapshot(databases)
+
+    # The preflight would PASS for the PG* database (at the parent revision); DATABASE_URL names another database.
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e9a_db[1])
+
+    _assert_stopped_before_any_migration(result, guarded, databases, before, revisions)
+    assert "same server" in result.stderr
+
+
+def test_a_database_url_that_drops_the_lock_timeout_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    url = _url_of(database_engine).render_as_string(hide_password=False) + "?options=-c%20lock_timeout%3D0"
+
+    result = guarded.run((E9A_REVISION, name), name, None, env={"DATABASE_URL": url})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+
+
+@pytest.mark.parametrize("fixture_name,target", [
+    ("e9a_db", E9A_REVISION),   # the target is already applied
+    ("e10_db", E9A_REVISION),   # the database is ahead of the target
+    ("e6_db", E10_REVISION),    # the parent of the target is missing
+])
+def test_an_unexpected_current_revision_stops_before_any_migration(
+    request: pytest.FixtureRequest, guarded: _Guarded, fixture_name: str, target: str,
+) -> None:
+    db = request.getfixturevalue(fixture_name)
+    before, revisions = _snapshot([db])
+
+    result = guarded.run((target, db[0]), db[0], db[1])
+
+    _assert_stopped_before_any_migration(result, guarded, [db], before, revisions)
+    assert "alembic current" in result.stderr
+
+
+def test_a_failed_preflight_prerequisite_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    _execute(e6_db[1], "CREATE SEQUENCE public.rule_alerts_orphan_seq")  # partial target object
+    before, revisions = _snapshot([e6_db])
+
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1])
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+    assert "e9a_preflight did not PASS" in result.stderr
+
+
+def test_a_conflicting_lock_stops_before_any_migration(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    holder = e6_db[1].connect()
+    try:
+        holder.execute(text("BEGIN"))
+        holder.execute(text("LOCK TABLE financial_rules IN ROW EXCLUSIVE MODE"))
+        before, revisions = _snapshot([e6_db])
+
+        result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1])
+    finally:
+        holder.rollback()
+        holder.close()
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+
+
+def test_an_unreachable_server_stops_before_any_migration(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1], env={"PGPORT": "1"})
+
+    assert result.returncode == 11 and guarded.upgrade_calls() == []
+    assert _revision(e6_db[1]) == E6_REVISION
+
+
+@pytest.mark.parametrize("args,env", [
+    (("head", "KEEP"), {}),
+    ((E9A_REVISION,), {}),
+    ((E9A_REVISION, "bad;name"), {}),
+    ((E9A_REVISION, "other_db"), {}),
+    ((E9A_REVISION, "KEEP"), {"DATABASE_URL": None}),
+    ((E9A_REVISION, "KEEP"), {"PGSERVICE": "staging"}),
+    ((E9A_REVISION, "KEEP"), {"PGHOSTADDR": "203.0.113.7"}),
+    ((E9A_REVISION, "KEEP"), {"PGHOST": None}),
+    ((E9A_REVISION, "KEEP"), {"PGSSLMODE": "prefer", "ALLOW_INSECURE_LOCAL_TEST": None}),
+    (("d4a1b2c3e5f6", "KEEP"), {}),
+])
+def test_the_guarded_runner_refuses_unsafe_invocations_without_running_anything(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], args: Tuple[str, ...], env: Dict[str, Optional[str]],
+) -> None:
+    resolved = tuple(e6_db[0] if value == "KEEP" else value for value in args)
+
+    result = guarded.run(resolved, e6_db[0], e6_db[1], env=env)
+
+    assert result.returncode == 64 and "REFUSED" in result.stderr
+    assert guarded.upgrade_calls() == [] and not guarded.log.exists()
+    assert _revision(e6_db[1]) == E6_REVISION
+
+
+def test_a_failing_alembic_upgrade_exits_nonzero_and_leaves_the_database_unchanged(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    before, revisions = _snapshot([e6_db])
+
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1], env={"STUB_FAIL_UPGRADE": "1"})
+
+    assert result.returncode == 12 and len(guarded.upgrade_calls()) == 1
+    assert _snapshot([e6_db]) == (before, revisions)
+
+
+def test_a_failing_post_check_exits_nonzero_after_the_upgrade(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    # The application role does not exist: the post-check fails although the migration itself succeeded.
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1], env={"APP_ROLE": "no_such_app_role"})
+
+    assert result.returncode == 13 and "did not PASS" in result.stderr
+    assert _revision(e6_db[1]) == E9A_REVISION  # reported as migrated-but-unverified, never silently OK
+
+
+def test_the_guarded_runner_source_orders_every_guard_before_the_upgrade() -> None:
+    source = GUARDED.read_text()
+    upgrade = source.index('alembic upgrade "$TARGET"')
+
+    for marker in ("endpoint proof", "alembic current", "run_readonly_check.sh\" \"$PREFLIGHT\""):
+        assert source.index(marker) < upgrade, marker
+    assert "set -x" not in source and "upgrade head" not in source and "--force" not in source
+    assert source.count('"$PY" -m alembic upgrade') == 1  # the single invocation
+    assert os.access(GUARDED, os.X_OK) and source.startswith("#!/usr/bin/env bash")
+
+
+# ------------------------------------------------------------------
+# Gate H stage 1b: the read-only Cron runtime connection and schema check
+# ------------------------------------------------------------------
+
+
+def _cron_runtime_check_command() -> str:
+    document = (SQL_DIR.parent / "financial-rules-production-release.md").read_text()
+    start = document.index("python -c 'import sys; from sqlalchemy")
+    end = document.index("\n", start)
+    return document[start:end].replace("python -c", f'"{os.sys.executable}" -c', 1)
+
+
+def _run_cron_runtime_check(database_url: str) -> subprocess.CompletedProcess:
+    environment = {key: value for key, value in os.environ.items() if key != "DATABASE_URL"}
+    environment["DATABASE_URL"] = database_url
+    return subprocess.run(["sh", "-c", _cron_runtime_check_command()], cwd=str(API_DIR), env=environment,
+                          capture_output=True, text=True, timeout=90)
+
+
+def test_the_cron_runtime_check_passes_on_a_fully_migrated_database_and_writes_nothing(
+    e10_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e10_db
+    before = _database_fingerprint(name, database_engine)
+
+    result = _run_cron_runtime_check(_url_of(database_engine).render_as_string(hide_password=False))
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "('c4d8a2f6e193', 1, True, True, 'on', True, True)" in result.stdout
+    assert "postgresql://" not in result.stdout + result.stderr
+    assert _database_fingerprint(name, database_engine) == before
+
+
+@pytest.mark.parametrize("fixture_name", ["e9a_db", "e6_db"])
+def test_the_cron_runtime_check_fails_when_the_schema_is_not_fully_migrated(
+    request: pytest.FixtureRequest, fixture_name: str,
+) -> None:
+    name, database_engine = request.getfixturevalue(fixture_name)
+
+    result = _run_cron_runtime_check(_url_of(database_engine).render_as_string(hide_password=False))
+
+    assert result.returncode != 0 and "('c4d8a2f6e193', 1, True, True, 'on', True, True)" not in result.stdout
+
+
+def test_the_cron_runtime_check_fails_without_a_reachable_database(e10_db: Tuple[str, Engine]) -> None:
+    url = _url_of(e10_db[1]).set(port=1).render_as_string(hide_password=False)
+
+    result = _run_cron_runtime_check(url)
+
+    assert result.returncode != 0 and "c4d8a2f6e193" not in result.stdout
+
+
+def test_the_cron_runtime_check_fails_when_the_connecting_role_lacks_access(
+    roles: Dict[str, str], e10_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e10_db
+    _execute(database_engine, f"ALTER ROLE \"{roles['viewer']}\" LOGIN PASSWORD 'viewer-pw'",
+             f'GRANT SELECT ON alembic_version TO "{roles["viewer"]}"')
+    url = _url_of(database_engine).set(username=roles["viewer"], password="viewer-pw")
+
+    result = _run_cron_runtime_check(url.render_as_string(hide_password=False))
+
+    assert result.returncode != 0 and "c4d8a2f6e193', 1, True, True, 'on', True, True" not in result.stdout
+
+
+@pytest.mark.parametrize("granted", ["SELECT", "SELECT, INSERT", "SELECT, INSERT, UPDATE"])
+def test_the_cron_runtime_check_needs_every_table_privilege_not_just_any_of_them(
+    roles: Dict[str, str], e10_db: Tuple[str, Engine], granted: str,
+) -> None:
+    name, database_engine = e10_db
+    _execute(database_engine, f"ALTER ROLE \"{roles['viewer']}\" LOGIN PASSWORD 'viewer-pw'",
+             f'GRANT SELECT ON alembic_version TO "{roles["viewer"]}"',
+             f'GRANT {granted} ON alert_dispatch_progress TO "{roles["viewer"]}"',
+             f'GRANT USAGE ON SEQUENCE alert_dispatch_service_seq TO "{roles["viewer"]}"')
+    url = _url_of(database_engine).set(username=roles["viewer"], password="viewer-pw")
+
+    result = _run_cron_runtime_check(url.render_as_string(hide_password=False))
+
+    assert result.returncode != 0 and "'on', True, True)" not in result.stdout
+
+
+def test_the_cron_runtime_check_passes_for_a_role_with_all_four_privileges_and_sequence_usage(
+    roles: Dict[str, str], e10_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e10_db
+    _execute(database_engine, f"ALTER ROLE \"{roles['viewer']}\" LOGIN PASSWORD 'viewer-pw'",
+             f'GRANT SELECT ON alembic_version TO "{roles["viewer"]}"',
+             f'GRANT SELECT, INSERT, UPDATE, DELETE ON alert_dispatch_progress TO "{roles["viewer"]}"',
+             f'GRANT USAGE ON SEQUENCE alert_dispatch_service_seq TO "{roles["viewer"]}"')
+    url = _url_of(database_engine).set(username=roles["viewer"], password="viewer-pw")
+
+    result = _run_cron_runtime_check(url.render_as_string(hide_password=False))
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def test_a_disabled_dispatcher_run_never_opens_a_database_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Why Gate H stage 1 cannot prove connectivity: the disabled path returns before any session factory call."""
+    from app.modules.financial_rules import dispatcher
+
+    def must_not_be_called():
+        raise AssertionError("a database session was opened")
+
+    summary = dispatcher.run_once(dispatcher.DispatcherConfig(enabled=False), session_factory=must_not_be_called)
+
+    assert summary.outcome == "disabled"
 
 
 # ------------------------------------------------------------------
