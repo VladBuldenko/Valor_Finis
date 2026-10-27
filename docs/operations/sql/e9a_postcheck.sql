@@ -1,9 +1,9 @@
 -- VF-020E9A (migration a7c3e91d5b24) READ-ONLY post-migration verification.
 --
--- Run it ONLY through run_readonly_check.sh, right after the E9A migration (Gate D),
--- while the database is still AT a7c3e91d5b24. After the E10 migration use
--- e10_postcheck.sql instead (its revision check is c4d8a2f6e193). Required psql
--- variables: expected_db, app_role, data_api_roles, require_roles.
+-- Run it ONLY through run_readonly_check.sh, right after the E9A migration (Gate D). It
+-- accepts the E9A revision a7c3e91d5b24 and the later E10 revision c4d8a2f6e193, because the
+-- rule_alerts table must stay correct and private after E10 too; any other revision is a STOP.
+-- Required psql variables: expected_db, app_role, data_api_roles, require_roles.
 --
 -- READ ONLY, rolled back, bounded timeouts, catalog metadata and counts only.
 -- Output: one row per check (OK / FAIL / INFO) and a final CLASSIFICATION row.
@@ -104,8 +104,8 @@ checks(ord, check_name, gating, ok, expected, actual) AS (
         current_database() = :'expected_db', :'expected_db', current_database()),
     (3, 'alembic_version_rows', true,
         (SELECT count(*) FROM alembic_version) = 1, '1', (SELECT count(*)::text FROM alembic_version)),
-    (4, 'alembic_revision_is_e9a', true,
-        (SELECT min(version_num) FROM alembic_version) = 'a7c3e91d5b24', 'a7c3e91d5b24',
+    (4, 'alembic_revision_is_e9a_or_e10', true,
+        (SELECT min(version_num) FROM alembic_version) IN ('a7c3e91d5b24', 'c4d8a2f6e193'), 'a7c3e91d5b24 or c4d8a2f6e193',
         coalesce((SELECT min(version_num) FROM alembic_version), '<none>')),
     (5, 'rule_alerts_exists_regular_permanent', true,
         (SELECT count(*) FROM pg_class WHERE oid = (SELECT oid FROM tbl) AND relkind = 'r' AND relpersistence = 'p') = 1,

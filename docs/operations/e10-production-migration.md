@@ -49,7 +49,8 @@ loaded from the secret store (no echo):
 
 ```bash
 export PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=60000'
-psql -X -Atc 'SHOW lock_timeout'                  # must print 5s, otherwise stop (endpoint dropped the options)
+# Run the endpoint proof of the E9A runbook section 5 here (FP_SQL / VIA_PG / VIA_URL): it must end with
+# `SAME SERVER, lock_timeout 5s`, otherwise stop.
 .venv/bin/alembic current                         # must print a7c3e91d5b24
 .venv/bin/alembic upgrade c4d8a2f6e193            # the EXACT revision
 ```
@@ -61,7 +62,11 @@ wait. A failure rolls the single transaction back; re-run the preflight, report 
 
 ```bash
 APP_ROLE=<the role in the production DATABASE_URL> ./run_readonly_check.sh e10_postcheck <production_database_name>
+APP_ROLE=<the same role> ./run_readonly_check.sh e9a_postcheck <production_database_name>   # rule_alerts must stay correct and private
 ```
+
+Both must PASS: `e10_postcheck` covers only the E10 objects, `e9a_postcheck` accepts the E10 revision and
+re-verifies `rule_alerts`.
 
 PASS means: revision exactly `c4d8a2f6e193`; the table is an ordinary permanent table with exactly the six
 expected columns, types, nullability and defaults; exactly the four expected validated constraints (primary key on

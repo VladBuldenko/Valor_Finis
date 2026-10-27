@@ -263,8 +263,29 @@ def test_e9a_postcheck_passes_on_a_correctly_migrated_database(e9a_db: Tuple[str
     assert _verdict(report) == "PASS", _failing(report)
 
 
-def test_e9a_postcheck_stops_at_the_wrong_revision(e10_db: Tuple[str, Engine]) -> None:
-    assert "alembic_revision_is_e9a" in _failing(_run_sql(e10_db[0], "e9a_postcheck"))
+def test_e9a_postcheck_stops_at_a_revision_before_e9a(e6_db: Tuple[str, Engine]) -> None:
+    report = _run_sql(e6_db[0], "e9a_postcheck")
+
+    assert _verdict(report) == "STOP" and "alembic_revision_is_e9a_or_e10" in _failing(report)
+
+
+def test_e9a_postcheck_stays_valid_after_e10_so_rule_alerts_is_still_verified(e10_db: Tuple[str, Engine]) -> None:
+    report = _run_sql(e10_db[0], "e9a_postcheck")
+
+    assert _verdict(report) == "PASS", _failing(report)
+    assert report["alembic_revision_is_e9a_or_e10"][1] == E10_REVISION
+
+
+def test_the_rule_alerts_privileges_are_verified_at_the_e10_revision_too(
+    roles: Dict[str, str], e10_db: Tuple[str, Engine],
+) -> None:
+    _execute(e10_db[1], f'GRANT SELECT, INSERT, UPDATE, DELETE ON rule_alerts TO "{roles["app"]}"',
+             f'GRANT SELECT ON rule_alerts TO "{roles["authenticated"]}"')
+
+    report = _run_sql(e10_db[0], "e9a_postcheck", app_role=roles["app"], data_api_roles=_roles_arg(roles),
+                      require_roles="yes")
+
+    assert _verdict(report) == "STOP" and "no_effective_data_api_access" in _failing(report)
 
 
 def test_e9a_postcheck_detects_a_missing_check_constraint(e9a_db: Tuple[str, Engine]) -> None:
@@ -704,6 +725,9 @@ def test_the_wrapper_defaults_demand_the_supabase_data_api_roles(e10_db: Tuple[s
     (("e10_preflight", "KEEP"), {"DATA_API_ROLES": "anon;drop table x"}),
     (("e10_preflight", "KEEP"), {"REQUIRE_DATA_API_ROLES": "maybe"}),
     (("e10_preflight", "KEEP"), {"PGHOST": None}),
+    (("e10_preflight", "KEEP"), {"PGSERVICE": "staging"}),
+    (("e10_preflight", "KEEP"), {"PGSERVICEFILE": "/tmp/pg_service.conf"}),
+    (("e10_preflight", "KEEP"), {"PGHOSTADDR": "203.0.113.7"}),
 ])
 def test_the_wrapper_refuses_unsafe_invocations_before_connecting(
     e9a_db: Tuple[str, Engine], arguments: Tuple[str, ...], overrides: Dict[str, Optional[str]],
@@ -739,6 +763,64 @@ def test_the_wrapper_refuses_to_weaken_the_privilege_checks_for_a_remote_host(
                             text=True, timeout=60, stdin=subprocess.DEVNULL)
 
     assert result.returncode == 64 and "local database" in result.stderr
+
+
+def test_the_wrapper_allows_weakened_checks_only_for_databases_named_like_test_databases(
+    e9a_db: Tuple[str, Engine],
+) -> None:
+    environment = _libpq_env("production_like_name")  # looks local (a tunnel), but is not a *_test database
+    environment["REQUIRE_DATA_API_ROLES"] = "no"
+
+    result = subprocess.run([str(WRAPPER), "e10_postcheck", "production_like_name"], env=environment,
+                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+    assert result.returncode == 64 and "_test" in result.stderr
+
+
+def test_the_wrapper_redacts_a_host_name_from_a_dns_failure() -> None:
+    environment = _libpq_env("some_db")
+    environment.update({"PGHOST": "secret-db-host.example.invalid", "PGSSLMODE": "require"})
+    environment.pop("ALLOW_INSECURE_LOCAL_TEST", None)
+    environment.pop("REQUIRE_DATA_API_ROLES", None)
+
+    result = subprocess.run([str(WRAPPER), "e10_preflight", "some_db"], env=environment, capture_output=True,
+                            text=True, timeout=60, stdin=subprocess.DEVNULL)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 10 and "RESULT: STOP" in combined
+    assert "secret-db-host" not in combined and "example.invalid" not in combined
+
+
+def _documented_endpoint_proof() -> str:
+    text_ = (SQL_DIR.parent / "e9a-production-migration.md").read_text()
+    start = text_.index("FP_SQL=")
+    end = text_.index("|| echo STOP\n", start) + len("|| echo STOP\n")
+    return text_[start:end].replace(".venv/bin/python", os.sys.executable)
+
+
+def _run_endpoint_proof(pg_database: str, url_database_engine: Engine) -> str:
+    environment = _libpq_env(pg_database)
+    environment["DATABASE_URL"] = _url_of(url_database_engine).render_as_string(hide_password=False)
+    environment["PGOPTIONS"] = "-c lock_timeout=5000 -c statement_timeout=60000"
+    result = subprocess.run(["bash", "-c", _documented_endpoint_proof()], cwd=str(API_DIR), env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "password" not in result.stdout.lower() and "postgresql://" not in result.stdout
+    return result.stdout
+
+
+def test_the_documented_endpoint_proof_confirms_the_same_server_and_lock_timeout(e9a_db: Tuple[str, Engine]) -> None:
+    output = _run_endpoint_proof(e9a_db[0], e9a_db[1])
+
+    assert "SAME SERVER, lock_timeout 5s" in output and "STOP" not in output
+
+
+def test_the_documented_endpoint_proof_stops_when_database_url_names_another_database(
+    e9a_db: Tuple[str, Engine], e6_db: Tuple[str, Engine],
+) -> None:
+    output = _run_endpoint_proof(e9a_db[0], e6_db[1])  # PG* -> one database, DATABASE_URL -> another
+
+    assert "SAME SERVER" not in output and output.strip().endswith("STOP")
 
 
 def test_the_wrapper_never_prints_connection_details_or_secrets_when_the_connection_fails(

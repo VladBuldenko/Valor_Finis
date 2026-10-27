@@ -45,7 +45,8 @@ git merge-base --is-ancestor f28818bc7e487c943df87ce384caad0e5eadfa71 <DEPLOYED_
 2. Credentials only through the libpq environment of the operator's own shell, loaded from the approved secret
    store; never in arguments, files in the repository, chat, tickets or logs. The AI assistant used for this
    repository has no standing access to production credentials and must not be given a way to read them
-   without an explicit, separate authorization of the method.
+   without an explicit, separate authorization of the method. `PGSERVICE`, `PGSERVICEFILE` and `PGHOSTADDR`
+   must not be set (libpq lets them override the validated host and TLS settings); the runner refuses them.
 6. The runner refuses to weaken its privilege checks (`REQUIRE_DATA_API_ROLES=no`, a changed role list) for any
    host other than a local test database, so a production PASS has always tested the Data API roles.
 3. Use the direct or session-mode database endpoint for the runner and for Alembic. A transaction pooler rejects
@@ -90,6 +91,7 @@ post-check must PASS** before moving on.
    ./run_readonly_check.sh e9a_preflight  <production_database_name>
    ./run_readonly_check.sh e10_preflight  <production_database_name>
    ./run_readonly_check.sh e10_postcheck  <production_database_name>
+   ./run_readonly_check.sh e9a_postcheck  <production_database_name>
    ```
 
    In Gate A a `STOP` is **information**: read the `alembic_revision_*`, `*_absent`, `*_exists` rows. Decode:
@@ -99,7 +101,8 @@ post-check must PASS** before moving on.
    | the run fails with a connection error | database inaccessible (see 4 below); nothing else is known |
    | `e9a_preflight` PASS | at `e0503e9ca9d3`, E9A **not** applied, no partial objects: Gate B is next |
    | `e9a_preflight` STOP, `alembic_revision_is_e6_parent` actual is `a7c3e91d5b24`, and `e10_preflight` PASS | E9A applied, E10 not: run `e9a_postcheck` as the Gate D check, then Gate E |
-   | `e10_postcheck` PASS | E9A and E10 both applied and healthy: go to Gate G's runtime checks |
+   | `e10_postcheck` PASS **and** `e9a_postcheck` PASS (it accepts the E10 revision) | E9A and E10 are both applied and their schema and privileges match the expectation; this is not a statement about runtime health. Go to Gate G's runtime checks |
+   | `e10_postcheck` PASS but `e9a_postcheck` STOP | E10 exists but `rule_alerts` does not match (or is exposed): STOP |
    | partial-object rows FAIL | a partial or foreign object exists: STOP, do not migrate, investigate |
    | revision is anything else, or more than one row | unexpected state: STOP |
 
@@ -133,7 +136,7 @@ the verified dump.
 **Entry:** Gate B PASS; a fresh `e9a_preflight` PASS in the same window; written authorization C naming revision
 `a7c3e91d5b24`; a maintenance moment with low write traffic on `financial_rules`.
 **Procedure:** [e9a-production-migration.md](e9a-production-migration.md) section 5
-(`PGOPTIONS` lock/statement timeouts, `alembic current`, `alembic upgrade a7c3e91d5b24`, never `head`).
+(`PGOPTIONS` lock/statement timeouts, an endpoint proof that `DATABASE_URL` and the preflighted `PG*` variables reach the same server and honour them, `alembic current`, `alembic upgrade a7c3e91d5b24`, never `head`).
 **PASS:** the command exits 0. **STOP:** any error or a lock timeout (nothing is committed; re-verify with the
 preflight and stop). **Recovery:** the migration is one transaction; see the E9A runbook section 8 for what a
 downgrade can and cannot do. **Authorization:** C.
@@ -171,7 +174,8 @@ section 6; a downgrade is safe only after the dispatcher is disabled or switched
 **Entry:** Gate F completed (or Gate A showed E10 already applied); written authorization G for the follow-up reads.
 **Evidence:**
 1. `APP_ROLE=<role> ./run_readonly_check.sh e10_postcheck <db>` PASS (schema, sequence, ownership, application
-   access, **effective** absence of Data API and `PUBLIC` access on table and sequence).
+   access, **effective** absence of Data API and `PUBLIC` access on table and sequence) **and**
+   `./run_readonly_check.sh e9a_postcheck <db>` PASS (it accepts the E10 revision and re-verifies `rule_alerts`).
 2. The ancestor rule for the web service **and** the cron build: `f28818b` must be an ancestor of each deployed
    SHA. If a deployed release build is not identical to `main`, the rule decides, not equality.
 3. External Data API probe for `alert_dispatch_progress` returns no data.

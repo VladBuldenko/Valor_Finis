@@ -5,8 +5,9 @@
 #
 # Run it ONLY for a gate the owner has authorized in writing. It never prints
 # credentials. Credentials come ONLY from the libpq environment of the calling shell
-# (PGHOST, PGPORT, PGUSER, PGDATABASE and PGPASSWORD or PGPASSFILE or PGSERVICE), which
-# the operator loads from the approved secret store. Nothing secret is ever an
+# (PGHOST, PGPORT, PGUSER, PGDATABASE and PGPASSWORD or PGPASSFILE), which
+# the operator loads from the approved secret store. PGSERVICE, PGSERVICEFILE and PGHOSTADDR
+# are refused: they can silently override the validated host, TLS mode and options. Nothing secret is ever an
 # argument of this script or of psql, so nothing appears in `ps` output or shell history.
 #
 # Optional environment:
@@ -46,6 +47,11 @@ esac
 [[ "$EXPECTED_DB" =~ ^[A-Za-z0-9_]+$ ]] || refuse "expected database name must match [A-Za-z0-9_]+"
 [ -n "${PGHOST:-}" ] && [ -n "${PGUSER:-}" ] && [ -n "${PGDATABASE:-}" ] || refuse "PGHOST, PGUSER and PGDATABASE must be set in the environment"
 [ "$PGDATABASE" = "$EXPECTED_DB" ] || refuse "PGDATABASE does not equal the expected database name"
+# libpq lets a service file or a numeric host address override the validated PG* variables, which
+# would defeat the host, TLS and option checks below. Refuse them instead of trusting them.
+for forbidden in PGSERVICE PGSERVICEFILE PGHOSTADDR; do
+    [ -z "${!forbidden:-}" ] || refuse "unset $forbidden: it can override the validated connection settings"
+done
 [ -z "${DATABASE_URL:-}" ] || refuse "unset DATABASE_URL: this runner uses the libpq PG* variables only"
 
 case "${PGSSLMODE:-require}" in
@@ -69,6 +75,9 @@ case "$PGHOST" in localhost|127.0.0.1|/*) LOCAL_HOST=yes ;; esac
 if [ "$LOCAL_HOST" != "yes" ]; then
     [ "$REQUIRE_ROLES" = "yes" ] || refuse "REQUIRE_DATA_API_ROLES=no is allowed only for a local database"
     [ "$DATA_API_ROLES" = "anon,authenticated,service_role" ] || refuse "DATA_API_ROLES may be changed only for a local database"
+elif [ "$REQUIRE_ROLES" = "no" ] || [ "$DATA_API_ROLES" != "anon,authenticated,service_role" ]; then
+    # A tunnel to production also looks local: weakening the checks needs a *_test database.
+    [[ "$EXPECTED_DB" == *_test ]] || refuse "weakened privilege checks are allowed only for a database whose name ends in _test"
 fi
 [[ "$DATA_API_ROLES" =~ ^[a-z_]+(,[a-z_]+)*$ ]] || refuse "DATA_API_ROLES must be a comma separated list of role names"
 [[ "$APP_ROLE" =~ ^[A-Za-z0-9_.-]+$ ]] || refuse "APP_ROLE contains unexpected characters"
@@ -93,10 +102,8 @@ STATUS=$?
 if [ "$STATUS" -ne 0 ]; then
     # Only the first error line, with connection details removed.
     FIRST="$(head -n 1 "$ERR_FILE" | sed -E \
-        -e 's/host "[^"]*"/host "<host>"/g' -e 's/at "[^"]*"/at "<addr>"/g' \
-        -e 's/\(([0-9a-fA-F:.]+)\)/(<ip>)/g' -e 's/port [0-9]+/port <port>/g' \
-        -e 's/user "[^"]*"/user "<user>"/g' -e 's/database "[^"]*"/database "<db>"/g' \
-        -e 's/password[^"]*"[^"]*"/password <redacted>/g' | cut -c1-200)"
+        -e 's/"[^"]*"/"<redacted>"/g' -e "s/'[^']*'/'<redacted>'/g" \
+        -e 's/\(([0-9a-fA-F:.]+)\)/(<ip>)/g' -e 's/port [0-9]+/port <port>/g' | cut -c1-200)"
     echo "$CHECK: the run did not complete (psql exit $STATUS): ${FIRST:-no message}"
     echo "RESULT: STOP"
     exit 10

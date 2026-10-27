@@ -25,7 +25,9 @@ newer writer then queues behind it. An unbounded wait can therefore stall the ap
 ## 2. Operator conventions (all gates)
 
 - Credentials come only from the libpq environment (`PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, and `PGPASSWORD`
-  or `PGPASSFILE` or `PGSERVICE`) loaded from the owner's approved secret store into the operator's own shell.
+  or `PGPASSFILE`) loaded from the owner's approved secret store into the operator's own shell.
+  `PGSERVICE`, `PGSERVICEFILE` and `PGHOSTADDR` must not be set: libpq lets them override the host, TLS mode and
+  options that the runner validates (the runner refuses to start with any of them).
   Never put a secret in an argument, a command line, a file inside the repository, a chat message, a ticket or a
   log. Do not enable shell tracing. Do not paste raw error output that may contain a host name.
 - Use the **direct or session-mode** database endpoint (port 5432) for the checks and for Alembic. A transaction
@@ -83,14 +85,21 @@ Restore validation on a **throwaway local database whose name ends in `_test`** 
 server by accident (`createdb` and `pg_restore` write to whatever server the variables name):
 
 ```bash
-( unset PGPASSWORD PGPASSFILE PGSERVICE PGSERVICEFILE PGOPTIONS PGSSLMODE PGSSLROOTCERT PGUSER PGDATABASE DATABASE_URL
-  export PGHOST=localhost PGPORT=5432                       # the LOCAL server, with its own local credentials
-  [ "$PGHOST" = localhost ] || exit 1
-  createdb -h localhost vf_restore_verify_test
-  pg_restore -h localhost --no-owner --no-acl --dbname=vf_restore_verify_test "$FILE"
-  REQUIRE_DATA_API_ROLES=no PGSSLMODE=disable ALLOW_INSECURE_LOCAL_TEST=1 PGDATABASE=vf_restore_verify_test \
-    ./run_readonly_check.sh e9a_preflight vf_restore_verify_test
-  dropdb -h localhost vf_restore_verify_test )
+( set -e
+  unset PGPASSWORD PGPASSFILE PGPASSCOMMAND PGSERVICE PGSERVICEFILE PGHOSTADDR PGOPTIONS PGSSLMODE PGSSLROOTCERT \
+        PGSSLCERT PGSSLKEY PGTARGETSESSIONATTRS PGDATABASE DATABASE_URL
+  export PGHOST=localhost PGPORT=5432 PGUSER="<local superuser name>"      # the LOCAL server and its own credentials
+  # Prove the target really is this machine before anything is created or restored:
+  case "$(psql -X -Atc "SELECT coalesce(host(inet_server_addr()), 'socket')" postgres)" in
+      127.0.0.1|::1|socket) ;;
+      *) echo "not a local server: aborting" >&2; exit 1 ;;
+  esac
+  createdb vf_restore_verify_test
+  trap 'dropdb --if-exists vf_restore_verify_test' EXIT      # the throwaway copy never outlives this subshell
+  # --clean --if-exists: the new database already has an empty `public` schema that the dump recreates
+  pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error --dbname=vf_restore_verify_test "$FILE"
+  PGDATABASE=vf_restore_verify_test REQUIRE_DATA_API_ROLES=no PGSSLMODE=disable ALLOW_INSECURE_LOCAL_TEST=1 \
+    ./run_readonly_check.sh e9a_preflight vf_restore_verify_test )
 ```
 
 The local server must be at least as new as the dump's server major version (a PG 17 dump can fail to restore on
@@ -114,13 +123,27 @@ with the Alembic environment loaded from the secret store (no echo):
 
 ```bash
 export PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=60000'
-psql -X -Atc 'SHOW lock_timeout'                  # must print 5s: proves THIS endpoint honours the options
+# Endpoint proof. The preflight used the PG* variables, Alembic uses DATABASE_URL: both must reach the SAME
+# server, and that server must honour the lock timeout. Neither command prints a URL or a password.
+FP_SQL="SELECT (SELECT oid FROM pg_database WHERE datname = current_database()), extract(epoch FROM pg_postmaster_start_time())::bigint, current_database(), current_user, current_setting('lock_timeout')"
+VIA_PG="$(psql -X -Atc "$FP_SQL")"
+VIA_URL="$(.venv/bin/python - "$FP_SQL" <<'PY'
+import os, sys
+from sqlalchemy import create_engine, text
+with create_engine(os.environ["DATABASE_URL"]).connect() as connection:
+    print("|".join(str(value) for value in connection.execute(text(sys.argv[1])).one()))
+PY
+)"
+echo "PG*: $VIA_PG"; echo "URL: $VIA_URL"
+[ "$VIA_PG" = "$VIA_URL" ] && case "$VIA_URL" in *"|5s") echo "SAME SERVER, lock_timeout 5s" ;; *) echo STOP ;; esac || echo STOP
 .venv/bin/alembic current                         # must print e0503e9ca9d3
 .venv/bin/alembic upgrade a7c3e91d5b24            # the EXACT revision; never `head`
 ```
 
-If `SHOW lock_timeout` does not print `5s` the endpoint dropped the options (some poolers do): **stop** and use
-the direct or session endpoint that honours them. Whether a given Supabase endpoint honours startup options is
+The proof must end with `SAME SERVER, lock_timeout 5s`. Anything else means **stop**: the two paths reach different
+servers or databases, or the endpoint dropped the startup options (some poolers do). Use the direct or session
+endpoint that honours the options and make `DATABASE_URL` and the `PG*` variables name the same server; never run
+the upgrade against a server that was not preflighted and backed up. Whether a given Supabase endpoint honours startup options is
 not verified here. `DATABASE_URL` must be set in that shell's environment only (the Alembic environment reads it); do not echo it.
 `PGOPTIONS` is honoured by libpq for every connection Alembic opens, so each statement runs under the lock
 timeout. This exact form was exercised locally: with another session holding `ROW EXCLUSIVE` on `financial_rules`
@@ -138,7 +161,7 @@ the upgrade fails with a lock timeout, commits nothing and leaves revision `e050
 ./run_readonly_check.sh e9a_postcheck <production_database_name>
 ```
 
-PASS means: revision exactly `a7c3e91d5b24`; `rule_alerts` is an ordinary permanent table with exactly the 11
+PASS means: revision `a7c3e91d5b24` (or the later `c4d8a2f6e193`, which this check also accepts so `rule_alerts` stays verifiable after E10); `rule_alerts` is an ordinary permanent table with exactly the 11
 columns, types, nullability and defaults; exactly the 9 expected validated constraints; the foreign key nulls
 only `rule_id`; exactly the 5 expected valid indexes; no `rule_alert*` sequence; the owner is not a Data API
 role; the application role can SELECT/INSERT/UPDATE/DELETE; **no effective** privilege for `anon`,
@@ -189,6 +212,7 @@ and a wrong database; the post-check passes after the real migration and detects
 foreign-key action, a dropped index and four kinds of effective Data API exposure (direct, inherited through role
 membership, `PUBLIC`, column-level); the scripts contain no write statement, run in a read-only rolled-back
 transaction and leave the schema, rows, ACLs and sequence values unchanged; the documented upgrade command fails
-cleanly under a lock conflict and succeeds when idle. PostgreSQL 18.1 locally; the same tests run on PostgreSQL 16
+cleanly under a lock conflict and succeeds when idle. The restore-verification block above was executed as written against a locally made dump (restore, preflight PASS,
+throwaway database removed). PostgreSQL 18.1 locally; the same tests run on PostgreSQL 16
 in CI after merge. PostgreSQL 17 (production) has not been exercised: its constraint text could differ, which
 would produce a **false STOP**, never a false PASS.
