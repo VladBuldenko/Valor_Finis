@@ -13,14 +13,16 @@
 #
 #   1. input and environment validation (libpq PG* variables for the checks, DATABASE_URL for
 #      Alembic; PGSERVICE / PGSERVICEFILE / PGHOSTADDR refused);
-#   1b. backup evidence: BACKUP_EVIDENCE_FILE must be a strict receipt bound to THIS target, database and
-#      source revision; the dump it names must exist, match its SHA-256, list the required tables, and the
-#      dump and the restore verification must be younger than 24 h (see the E9A runbook section 4);
+#   1b. backup evidence: BACKUP_EVIDENCE_FILE must be a receipt SEALED by verify_backup_restore.sh (which performed a real
+#      restore and the read-only preflight on a disposable database), bound to THIS target, database and source
+#      revision; backup_evidence.py re-inspects the dump (archive database name, alembic_version data, required tables,
+#      SHA-256, age < 24 h, server major equals the live server's);
 #   2. endpoint proof: the PG* path and the DATABASE_URL path must reach the SAME database
 #      server (same database oid, same postmaster start time, same database name = the expected
 #      one, same role) and BOTH must honour lock_timeout = 5s and statement_timeout = 1min;
 #   3. `alembic current` must report exactly the parent revision;
 #   4. the read-only preflight of the target must PASS;
+#   2b. a session-level advisory lock (never waited for) serializes concurrent runs; held until this process exits;
 #   4b. immediately before the upgrade the endpoint proof is repeated and must be identical to the first one
 #      (same server instance), and `alembic current` is read again (narrows the time-of-check window);
 #   5. only then: `alembic upgrade <revision>` under lock_timeout 5s / statement_timeout 60s;
@@ -32,8 +34,8 @@
 # 64 = refused to start (usage or unsafe environment).
 #
 # Credentials come only from the environment (never arguments); nothing here prints a URL.
-# MIGRATION_PYTHON (the interpreter used for the proof and for Alembic) exists for the disposable-database
-# tests only and is refused for any other database; production use leaves it unset.
+# MIGRATION_PYTHON (the interpreter used for the proof and for Alembic) exists for the disposable-database tests only
+# and is refused unless the whole local test mode holds (flag, local hosts, a *_test database); production leaves it unset.
 set -u
 set -o pipefail
 umask 077
@@ -41,6 +43,15 @@ umask 077
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$(cd "$DIR/../../../services/api" && pwd)"
 PY="${MIGRATION_PYTHON:-$API_DIR/.venv/bin/python}"
+
+LOCK_PID=""; ERR_FILE=""; LOCK_STATUS=""
+cleanup() {
+    # Stopping the holder closes its connection, which releases the advisory lock; wait so the lock is gone at exit.
+    [ -z "$LOCK_PID" ] || { kill "$LOCK_PID" >/dev/null 2>&1; wait "$LOCK_PID" >/dev/null 2>&1; }
+    [ -z "$ERR_FILE" ] || rm -f "$ERR_FILE"
+    [ -z "$LOCK_STATUS" ] || rm -f "$LOCK_STATUS" "$LOCK_STATUS.tmp"
+}
+trap cleanup EXIT
 
 refuse() { echo "REFUSED: $1" >&2; exit 64; }
 stop() { echo "STOP (before any migration): $1" >&2; exit 11; }
@@ -62,13 +73,19 @@ esac
 for forbidden in PGSERVICE PGSERVICEFILE PGHOSTADDR; do
     [ -z "${!forbidden:-}" ] || refuse "unset $forbidden: it can override the validated connection settings"
 done
+# Disposable local test mode (it relaxes TLS and allows the MIGRATION_PYTHON test double). EVERY condition must hold:
+# the explicit flag, a local PG* host, a local DATABASE_URL host, and an expected database whose name ends in `_test`.
+# Merely being on localhost is never enough (SR-03).
 LOCAL_TEST_MODE=no
-if [ "${ALLOW_INSECURE_LOCAL_TEST:-}" = "1" ] && { [ "$PGHOST" = "localhost" ] || [ "$PGHOST" = "127.0.0.1" ]; }; then
+URL_HOST="${DATABASE_URL#*://}"; URL_HOST="${URL_HOST#*@}"; URL_HOST="${URL_HOST%%[/?:]*}"
+if [ "${ALLOW_INSECURE_LOCAL_TEST:-}" = "1" ] \
+   && { [ "$PGHOST" = "localhost" ] || [ "$PGHOST" = "127.0.0.1" ]; } \
+   && { [ "$URL_HOST" = "localhost" ] || [ "$URL_HOST" = "127.0.0.1" ]; } \
+   && [[ "$EXPECTED_DB" =~ ^[A-Za-z0-9_]*_test$ ]]; then
     LOCAL_TEST_MODE=yes
+    echo "WARNING: disposable local TEST MODE (relaxed TLS, interpreter override allowed). Never use for a real database." >&2
 fi
-# MIGRATION_PYTHON replaces the interpreter that runs the evidence check, the endpoint proof and Alembic, so it would
-# bypass every guard: it is honoured only in the disposable local test mode, never for a real database.
-[ -z "${MIGRATION_PYTHON:-}" ] || [ "$LOCAL_TEST_MODE" = "yes" ] || refuse "MIGRATION_PYTHON is only accepted for disposable local test databases"
+[ -z "${MIGRATION_PYTHON:-}" ] || [ "$LOCAL_TEST_MODE" = "yes" ] || refuse "MIGRATION_PYTHON is only accepted in the disposable local test mode (local hosts and a *_test database)"
 case "$DATABASE_URL" in
     *[Ss][Ss][Ll][Mm][Oo][Dd][Ee]=disable*|*[Ss][Ss][Ll][Mm][Oo][Dd][Ee]=allow*|*[Ss][Ss][Ll][Mm][Oo][Dd][Ee]=prefer*)
         [ "$LOCAL_TEST_MODE" = "yes" ] || refuse "DATABASE_URL must not weaken TLS (sslmode disable, allow or prefer)" ;;
@@ -83,7 +100,7 @@ command -v pg_restore >/dev/null 2>&1 || refuse "pg_restore is required (it veri
 case "${PGSSLMODE:-require}" in
     require|verify-ca|verify-full) ;;
     *)
-        [ "$LOCAL_TEST_MODE" = "yes" ] || refuse "PGSSLMODE must be require, verify-ca or verify-full"
+        [ "$LOCAL_TEST_MODE" = "yes" ] || refuse "PGSSLMODE must be require, verify-ca or verify-full (relaxed TLS only in the disposable local test mode)"
         ;;
 esac
 export PGSSLMODE="${PGSSLMODE:-require}"
@@ -93,97 +110,18 @@ export PGAPPNAME="vf-guarded-migration-$TARGET"
 export PGOPTIONS="-c lock_timeout=5000 -c statement_timeout=60000"
 
 # --- 1b. backup evidence (local files only; no database is contacted) --------------------------
+# The receipt must have been produced by verify_backup_restore.sh (sealed, performed restore + preflight on a
+# disposable database) and backup_evidence.py re-inspects the dump itself: archive header database, alembic_version
+# data, required tables, SHA-256, age. It prints DUMP_SERVER_MAJOR on success.
 case "$TARGET" in
     a7c3e91d5b24) REQUIRED_TABLES="alembic_version,financial_rules,rule_executions" ;;
     c4d8a2f6e193) REQUIRED_TABLES="alembic_version,financial_rules,rule_executions,rule_alerts" ;;
 esac
-EVIDENCE_ERROR="$("$PY" - "$BACKUP_EVIDENCE_FILE" "$TARGET" "$EXPECTED_DB" "$PARENT" "$REQUIRED_TABLES" <<'PY' 2>&1 >/dev/null
-import hashlib, os, re, stat, subprocess, sys, time
-from datetime import datetime, timezone
-
-sys.excepthook = lambda *_: (print("unexpected error while verifying the evidence", file=sys.stderr), os._exit(1))
-path, target, database, source, tables = sys.argv[1:6]
-MAX_AGE, SKEW = 24 * 3600, 300
-KEYS = ("GATE_TARGET", "DATABASE", "SOURCE_REVISION", "DUMP_FILE", "DUMP_SHA256", "DUMP_TAKEN_AT_UTC",
-        "RESTORE_VERIFIED", "RESTORE_DATABASE", "RESTORE_PREFLIGHT", "RESTORE_VERIFIED_AT_UTC")
-
-
-def fail(reason):
-    print(reason, file=sys.stderr)
-    sys.exit(1)
-
-
-def regular_own_file(candidate, what, private):
-    try:
-        info = os.lstat(candidate)
-    except OSError:
-        fail("%s is missing or unreadable" % what)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-        fail("%s must be a regular file owned by the operator (no symlink)" % what)
-    if info.st_mode & (0o077 if private else 0o022):
-        fail("%s has unsafe permissions" % what)
-    return info
-
-
-def moment(value, name):
-    try:
-        return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timestamp()
-    except ValueError:
-        fail("%s is not a UTC timestamp like 20261028T101500Z" % name)
-
-
-now = time.time()
-receipt = regular_own_file(path, "the evidence receipt", False)
-if not 0 < receipt.st_size <= 4096:
-    fail("the evidence receipt is empty or too large")
-fields = {}
-for line in os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8").read().splitlines():
-    if not line.strip():
-        continue
-    key, separator, value = line.partition("=")
-    if not separator or key not in KEYS or key in fields or value != value.strip() or not value:
-        fail("the evidence receipt has an unknown, duplicate or malformed line")
-    fields[key] = value
-if sorted(fields) != sorted(KEYS):
-    fail("the evidence receipt does not contain exactly the required fields")
-
-if fields["GATE_TARGET"] != target or fields["DATABASE"] != database or fields["SOURCE_REVISION"] != source:
-    fail("the receipt is not bound to this target, database and source revision")
-if fields["RESTORE_VERIFIED"] != "PASS" or fields["RESTORE_PREFLIGHT"] != "PASS":
-    fail("the receipt does not record a PASSed restore verification")
-restore_database = fields["RESTORE_DATABASE"]
-if not re.fullmatch(r"[A-Za-z0-9_]+_test", restore_database) or restore_database == database:
-    fail("the restore must have been verified on a throwaway *_test database, never the target")
-
-taken, verified = moment(fields["DUMP_TAKEN_AT_UTC"], "DUMP_TAKEN_AT_UTC"), moment(fields["RESTORE_VERIFIED_AT_UTC"], "RESTORE_VERIFIED_AT_UTC")
-if taken > now + SKEW or verified > now + SKEW or verified < taken:
-    fail("the receipt timestamps are inconsistent")
-if now - taken > MAX_AGE or now - verified > MAX_AGE:
-    fail("the backup evidence is older than 24 hours: take and verify a fresh backup")
-
-dump = fields["DUMP_FILE"]
-if not os.path.isabs(dump):
-    fail("DUMP_FILE must be an absolute path")
-info = regular_own_file(dump, "the dump file", True)
-if info.st_size < 4096:
-    fail("the dump file is trivially small")
-if now - info.st_mtime > MAX_AGE or info.st_mtime > now + SKEW:
-    fail("the dump file is not from the last 24 hours")
-digest = hashlib.sha256()
-with os.fdopen(os.open(dump, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
-    for chunk in iter(lambda: handle.read(1 << 20), b""):
-        digest.update(chunk)
-if digest.hexdigest() != fields["DUMP_SHA256"].lower():
-    fail("the dump file does not match its recorded SHA-256")
-listing = subprocess.run(["pg_restore", "--list", dump], capture_output=True, text=True)
-if listing.returncode != 0:
-    fail("pg_restore cannot read the dump file")
-present = set(re.findall(r"\bTABLE public (\w+) ", listing.stdout))
-missing = [name for name in tables.split(",") if name not in present]
-if missing:
-    fail("the dump does not list the required tables: " + ",".join(missing))
-PY
-)" || stop "backup evidence rejected: ${EVIDENCE_ERROR:-unspecified}"
+ERR_FILE="$(mktemp)" || stop "cannot create a private temporary file"
+EVIDENCE_OUT="$("$PY" "$DIR/backup_evidence.py" check-receipt "$BACKUP_EVIDENCE_FILE" "$TARGET" "$EXPECTED_DB" "$PARENT" "$REQUIRED_TABLES" 2>"$ERR_FILE")" \
+    || stop "backup evidence rejected: $(head -c 200 "$ERR_FILE" | head -n 1)"
+DUMP_MAJOR="$(printf '%s\n' "$EVIDENCE_OUT" | sed -n 's/^DUMP_SERVER_MAJOR=//p')"
+[[ "$DUMP_MAJOR" =~ ^[0-9]+$ ]] || stop "backup evidence rejected: unreadable server version"
 
 # --- 2. endpoint proof -------------------------------------------------------------------------
 FP_SQL="SELECT (SELECT oid FROM pg_database WHERE datname = current_database()), extract(epoch FROM pg_postmaster_start_time())::bigint, current_database(), current_user, current_setting('lock_timeout'), current_setting('statement_timeout')"
@@ -216,6 +154,22 @@ check_current() {
 
 take_proof
 FIRST_PROOF="$VIA_URL"
+
+# The dump must come from a server of the same major version as the live one (a cheap server-identity cross-check).
+LIVE_MAJOR="$(psql -X -q -At -v ON_ERROR_STOP=1 -c "SELECT current_setting('server_version_num')::int / 10000" </dev/null 2>/dev/null)" || stop "cannot read the server version"
+[ "$LIVE_MAJOR" = "$DUMP_MAJOR" ] || stop "the dump was taken from a different PostgreSQL major version than this server"
+
+# --- 2b. serialize concurrent runs (SR-04): one session-level advisory lock held until this process exits ----------
+LOCK_STATUS="$(mktemp)" || stop "cannot create a private temporary file"
+rm -f "$LOCK_STATUS"
+( cd "$API_DIR" && exec "$PY" "$DIR/hold_migration_lock.py" "$LOCK_STATUS" ) >/dev/null 2>&1 &
+LOCK_PID=$!
+for _wait in $(seq 1 75); do [ -s "$LOCK_STATUS" ] && break; sleep 0.2; done
+case "$(cat "$LOCK_STATUS" 2>/dev/null)" in
+    LOCKED) ;;
+    BUSY)   stop "another guarded migration run holds the lock on this database" ;;
+    *)      stop "cannot take the migration lock" ;;
+esac
 check_current
 
 # --- 4. read-only preflight (the runner refuses DATABASE_URL, so it is removed for the checks only) ---
@@ -225,17 +179,22 @@ env -u DATABASE_URL "$DIR/run_readonly_check.sh" "$PREFLIGHT" "$EXPECTED_DB" || 
 take_proof
 [ "$VIA_URL" = "$FIRST_PROOF" ] || stop "the endpoint changed between the checks and the upgrade (different server instance)"
 check_current
+kill -0 "$LOCK_PID" 2>/dev/null || stop "the migration lock holder is gone"
 
 # --- 5. the exact upgrade ----------------------------------------------------------------------
 echo "applying exactly $TARGET"
-ERR_FILE="$(mktemp)" || stop "cannot create a private temporary file"
-trap 'rm -f "$ERR_FILE"' EXIT
 ( cd "$API_DIR" && "$PY" -m alembic upgrade "$TARGET" ) >/dev/null 2>"$ERR_FILE"
 UPGRADE_STATUS=$?
 if [ "$UPGRADE_STATUS" -ne 0 ]; then
-    # first line only, quoted strings removed (they can name hosts, roles or databases)
-    head -n 1 "$ERR_FILE" | sed -E -e 's/"[^"]*"/"<redacted>"/g' -e "s/'[^']*'/'<redacted>'/g" | cut -c1-200 >&2
-    echo "alembic upgrade failed (exit $UPGRADE_STATUS); one transaction: nothing was committed. Verify with the preflight." >&2
+    # Only FIXED text is printed: Alembic/SQLAlchemy messages can contain hosts, roles, databases or a full URL, so
+    # the captured stderr is classified by keyword and never echoed.
+    if grep -qiE 'lock timeout' "$ERR_FILE"; then CAUSE="a lock timeout (the table was busy)"
+    elif grep -qiE 'statement timeout' "$ERR_FILE"; then CAUSE="a statement timeout"
+    elif grep -qiE 'permission denied' "$ERR_FILE"; then CAUSE="a permission error"
+    elif grep -qiE 'already exists' "$ERR_FILE"; then CAUSE="an object that already exists"
+    elif grep -qiE 'could not (connect|translate)|connection (refused|reset|timed out)|server closed' "$ERR_FILE"; then CAUSE="a connection failure"
+    else CAUSE="an unclassified error"; fi
+    echo "alembic upgrade failed (exit $UPGRADE_STATUS): $CAUSE. One transaction: nothing was committed. Verify with the preflight." >&2
     exit 12
 fi
 

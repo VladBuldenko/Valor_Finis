@@ -108,33 +108,31 @@ PG 16). `--schema=public` covers the application tables and `alembic_version`; i
 real disaster recovery needs those from the provider's own backups. This dump is a verified application-data
 backup, not a full-project backup.
 
-**Receipt for the runner.** Only after the restore verification above PASSed (in the same shell session, so `FILE` and
-`STAMP` are still set), write the receipt the guarded runner demands. It holds identifiers, hashes and timestamps, no
-secret. Write `PASS` only for things you actually did; the runner re-verifies the dump itself (existence, SHA-256, readable
-`pg_restore --list` with the required tables, age) but **cannot** re-perform the restore, so the `RESTORE_*` fields are
-your attestation:
+**Verified restore and receipt (replaces any hand-written evidence).** Do not type a receipt. Run the verifier on your
+LOCAL machine against a LOCAL disposable PostgreSQL server (never production); it performs the restore and the read-only
+preflight itself and writes the sealed receipt only when everything passed:
 
 ```bash
-RECEIPT="$BACKUP_DIR/vf_e9a_pre_${STAMP}.receipt.env"
-cat > "$RECEIPT" <<EOF
-GATE_TARGET=a7c3e91d5b24
-DATABASE=<production_database_name>
-SOURCE_REVISION=e0503e9ca9d3
-DUMP_FILE=$FILE
-DUMP_SHA256=$(shasum -a 256 "$FILE" | cut -d' ' -f1)
-DUMP_TAKEN_AT_UTC=$STAMP
-RESTORE_VERIFIED=PASS
-RESTORE_DATABASE=vf_restore_verify_test
-RESTORE_PREFLIGHT=PASS
-RESTORE_VERIFIED_AT_UTC=$(date -u +%Y%m%dT%H%M%SZ)
-EOF
-chmod 600 "$RECEIPT"
+RESTORE_PGHOST=localhost RESTORE_PGUSER=<local role allowed to CREATE DATABASE> \
+  ./verify_backup_restore.sh a7c3e91d5b24 <production_database_name> "$FILE" "$BACKUP_DIR/vf_e9a_pre_${STAMP}.receipt.env"
 ```
 
-The runner accepts the receipt only if every field is present exactly once, it is bound to this target, database and
-source revision, the restore database is a throwaway `*_test` database other than the target, the dump is a private
-(mode 600) regular file owned by the operator, and both the dump and the restore verification are **younger than 24
-hours** (otherwise take and verify a fresh backup).
+It (1) inspects the dump: the archive header must name the expected database, its `alembic_version` DATA must hold
+exactly `e0503e9ca9d3`, the required tables must be listed, the SHA-256 is computed; (2) creates a throwaway
+`vf_restore_*_test` database on the local server, using only `RESTORE_PG*` (every `PG*` and `DATABASE_URL` variable of
+your shell is dropped, so production cannot be reached by accident); (3) restores into it with `pg_restore --clean --if-exists --exit-on-error`;
+(4) reads the restored revision back; (5) runs `e9a_preflight` on the restored copy, which must PASS; (6) writes the receipt
+(mode 600) and drops the throwaway database, also on failure (no receipt exists after a failure).
+
+**What is machine-verified, and what is not.** Verified: the dump is intact, belongs to the expected database name
+(archive metadata), holds the required source revision, restores completely, and the restored copy passes the
+preflight; the runner re-inspects the dump at migration time and refuses an unsealed, edited, hand-written, stale
+(older than 24 h), wrong-gate or wrong-database receipt. **Not verifiable by software:** that the dump came from the
+*production server* rather than another server holding a same-named database at the same revision (PostgreSQL archives
+record the database name, not the server), and the receipt seal is a checksum, not a signature: a dishonest operator can
+forge it. The owner's written authorization for Gate B/E must therefore accept this residual risk explicitly; until it
+does, the release stays BLOCKED. This procedure gives no automated guarantee that a restore of *production* succeeded:
+it proves a restore of **this file** works.
 
 **PASS:** the dump is non-trivial, the checksum verifies, the restore completes without errors, and the restored
 copy passes `e9a_preflight`, and its `row_count:*` rows equal the production counts **at dump time**. Production is
@@ -159,10 +157,11 @@ database is refused) and staging databases are built by the separate staging-onl
 (`docs/mvp/mvp-ops03-and-staging-prerequisites.md` section 2.5). The runner applies exactly the named revision and **never reaches `alembic upgrade` unless every guard passed**.
 There is no override flag. In this order it requires:
 
-1. a valid environment (`PGSERVICE`, `PGSERVICEFILE`, `PGHOSTADDR` refused; `PGDATABASE` equal to the expected name; `psql`, `pg_restore` and `BACKUP_EVIDENCE_FILE` present; TLS required for both connection paths, so a `DATABASE_URL` with `sslmode` disable, allow or prefer is refused; `MIGRATION_PYTHON` is refused: it exists only for disposable local test databases);
-2. **backup evidence** (section 4 receipt): bound to this target, database and source revision, the dump re-verified
-   by SHA-256 and `pg_restore --list`, dump and restore verification younger than 24 hours (no database is contacted
-   for this check);
+1. a valid environment (`PGSERVICE`, `PGSERVICEFILE`, `PGHOSTADDR` refused; `PGDATABASE` equal to the expected name; `psql`, `pg_restore` and `BACKUP_EVIDENCE_FILE` present; TLS required for both connection paths, so a `DATABASE_URL` with `sslmode` disable, allow or prefer is refused; `MIGRATION_PYTHON` and weakened TLS are refused unless every test-mode condition holds: `ALLOW_INSECURE_LOCAL_TEST=1`, local `PGHOST` and `DATABASE_URL` hosts, and an expected database whose name ends in `_test`: a real database never qualifies);
+2. **backup evidence** (section 4): a receipt produced by `verify_backup_restore.sh` (seal valid, bound to this target,
+   database and source revision), the dump re-inspected (archive database name, `alembic_version` data, required tables,
+   SHA-256), dump and restore verification younger than 24 hours, and the dump's server major version equal to the live
+   server's (no database is contacted for the file checks);
 3. an **endpoint proof**: the `PG*` path and the `DATABASE_URL` path must return the identical fingerprint (database
    oid, postmaster start time, database name, role) and both must report `lock_timeout = 5s` and
    `statement_timeout = 1min`. A different server or database, or an endpoint that dropped the startup options (some
@@ -170,6 +169,10 @@ There is no override flag. In this order it requires:
 4. `alembic current` reporting exactly the parent revision `e0503e9ca9d3` (the target already applied, a database
    ahead of it, or no output all stop the run);
 5. the read-only `e9a_preflight` returning PASS (so every prerequisite, absence, lock and session check passed);
+   a **concurrency lock**: one session-level PostgreSQL advisory lock, taken (never waited for) right after the first
+   endpoint proof and held until the runner exits, so a second run against the same database stops with exit 11 before
+   any check that could lead to an upgrade; PostgreSQL releases the lock when the holder's connection closes, and the
+   holder exits when the runner dies (also after `kill -9`) or after 15 minutes at most;
 6. the endpoint proof and `alembic current` **repeated immediately before the upgrade**: the proof must equal the first
    one (same server instance) and the revision must still be exactly the parent (this narrows, but cannot remove, the
    window between check and change; the upgrade is a single transaction);
@@ -180,7 +183,7 @@ There is no override flag. In this order it requires:
 |---|---|---|
 | 0 | migrated and verified | continue with Gate D evidence |
 | 11 | **stopped before any migration; nothing changed** (a guard failed, the cause is printed) | fix the cause, re-run from the preflight |
-| 12 | `alembic upgrade` itself failed (one transaction: nothing committed) | verify with the preflight, report, stop |
+| 12 | `alembic upgrade` itself failed (one transaction: nothing committed); the runner prints only a fixed cause (lock timeout, statement timeout, permission, already exists, connection or unclassified), never Alembic's own message | verify with the preflight, report, stop |
 | 13 | migrated, but a post-check did not PASS | report; do not retry; see section 8 |
 | 64 | refused to start (usage or unsafe environment) | fix the invocation |
 

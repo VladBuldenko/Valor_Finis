@@ -40,8 +40,9 @@ post-check instead. STOP with revision `e0503e9ca9d3` means E9A is missing: E10 
 `vf_e10_pre_<UTC>_rev_a7c3e91d5b24.dump`). Do not reuse the pre-E9A dump: after E9A the E9B runtime may have
 written alerts, which that dump does not contain. Restore-verify it into a throwaway `*_test` database; the
 restored copy must pass `e10_preflight` (`alembic_revision_is_e9a` OK; the table absent checks OK) with
-`REQUIRE_DATA_API_ROLES=no` locally. Then write the receipt for the runner (E9A runbook section 4, with
-`GATE_TARGET=c4d8a2f6e193` and `SOURCE_REVISION=a7c3e91d5b24`).
+`REQUIRE_DATA_API_ROLES=no` locally. Then produce the receipt with the verifier, never by hand (E9A runbook section 4):
+`./verify_backup_restore.sh c4d8a2f6e193 <production_database_name> <dump> <receipt_out>`; it restores the dump, requires the
+E9A revision and `rule_alerts` in it, and runs `e10_preflight` on the restored copy.
 
 ## 3. Gate F - the exact upgrade (authorization naming `c4d8a2f6e193`)
 
@@ -52,8 +53,8 @@ exit codes). Do not type `alembic upgrade` by hand.
 BACKUP_EVIDENCE_FILE="$RECEIPT" ./run_guarded_migration.sh c4d8a2f6e193 <production_database_name>
 ```
 
-`$RECEIPT` is the receipt of the **fresh pre-E10 backup** (the format and rules are in the E9A runbook section 4, with
-`GATE_TARGET=c4d8a2f6e193`, `SOURCE_REVISION=a7c3e91d5b24`, file name `vf_e10_pre_<UTC>_rev_a7c3e91d5b24`). The runner
+`$RECEIPT` is the verifier-produced receipt of the **fresh pre-E10 backup** (E9A runbook section 4; file name
+`vf_e10_pre_<UTC>_rev_a7c3e91d5b24`). The runner
 refuses the pre-E9A receipt (wrong source revision), a dump without `rule_alerts`, and any evidence older than 24 hours.
 Like every use of this runner it is never a bootstrap and never used for staging builds.
 
