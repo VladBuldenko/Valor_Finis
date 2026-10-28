@@ -133,9 +133,28 @@ Dashboard Inbox entry carries an **attention indicator**, never a numeric unread
 
 | Indicator state | Condition | Presentation rule |
 |---|---|---|
-| `attention` | At least one **loaded** item needs the user: a proposal that awaits a decision (non-terminal status and not past its expiry) or an alert not yet acknowledged | Non-numeric marker plus accessible text "Inbox: needs your attention". Existence proof only; a partially loaded source can still raise it |
-| `clear` | **Every** source loaded without error **and** pagination of each source ended (no next page) **and** nothing is actionable | Entry without marker. Text may say "Nothing needs your attention" |
-| `unknown` | Any source is loading, failed, or not fully loaded | Neutral entry; never shown as `clear`; Inbox screen shows which source failed with Retry |
+| `attention` | At least one **loaded** item is demonstrably actionable: a proposal that awaits a decision (non-terminal status and not past its expiry) or an alert not yet acknowledged | Non-numeric marker plus accessible text "Inbox: needs your attention" |
+| `unknown` | No actionable item is loaded **and** a necessary source is failed, incomplete or loading | Neutral entry; never shown as `clear`; the Inbox screen names the source and offers Retry |
+| `clear` | No actionable item is loaded **and** every necessary source is authoritatively complete | Entry without marker; text may say "Nothing needs your attention" |
+
+**Precedence (first match wins, evaluated in this order):**
+
+1. `attention` if any loaded item is demonstrably actionable. A failed, incomplete or loading source elsewhere does not
+   weaken this: an actionable item that was loaded is an existence proof.
+2. Otherwise `unknown` if a necessary source is failed, incomplete or loading.
+3. Otherwise `clear`, only if all relevant sources are authoritatively complete and no actionable item exists.
+
+Necessary sources: the proposals source, the alerts source and, when it was attempted in this session, the `evaluate`
+call. Executions are not a source for the indicator. A source is **authoritatively complete** only when its response
+was received without error, did not report further pages (nothing remains beyond what was loaded), and, for alerts,
+reported `available:true`. Alerts with `available:false` therefore keep the indicator at `unknown` (shown with "Alerts are
+not available yet"), never `clear`.
+
+Bounded cost: the client never fetches unbounded historical pages to manufacture `clear`. It requests the actionable
+subset where the API provides a status filter, otherwise the first page only, and follows at most a small fixed number of
+further pages (constant set in F-4, initial value 2). If completeness is not established within that bound, or the
+bound is reached with more pages remaining and nothing actionable loaded, the state stays `unknown`. Staying `unknown`
+is always acceptable; claiming `clear` falsely is not.
 
 Rules: no number on the Dashboard entry; no word "unread" anywhere (there is no read-state; acknowledging an alert or
 deciding a proposal is the only way an item leaves `attention`); inside the Inbox, per-source lists may show

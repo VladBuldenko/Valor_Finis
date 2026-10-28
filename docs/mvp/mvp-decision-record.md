@@ -34,8 +34,6 @@ Status vocabulary: APPROVED (owner), with the approved option letter as defined 
 
 C7 and C8 were added by review correction VF-MVP-ENG-003-R1; they restate consequences of Q9 and Q3 and change no decision.
 
-C7 and C8 were added by review correction VF-MVP-ENG-003-R1; they restate consequences of Q9 and Q3 and change no decision.
-
 - **C1 AUTO copy:** allowed: "Rules are checked when you open or refresh the app and after you record income."
   Forbidden: any wording implying execution while the app is closed, until Gate I is passed and recorded.
 - **C2 Reservation semantics:** a reservation is an earmark inside an Account; it is never described as a transfer,

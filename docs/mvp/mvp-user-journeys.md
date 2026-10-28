@@ -242,7 +242,7 @@ Summary:
   2. *Activity-triggered best-effort:* a drain scheduled after each Income write in the web process.
   3. *Unattended scheduled:* the dispatcher Cron. **Not deployed; never observed; do not claim.**
 - **Acceptance (when built):** AUTO copy never promises background execution until Gate I; CONFIRM is the default
-  safe path; preview (if approved, Q3) writes nothing.
+  safe path; preview (approved, Q3 A; endpoint MISSING, task BE-2) writes nothing.
 
 ## J15 — Inspect and confirm or reject a proposal
 - **Mobile: NOT POSSIBLE.** **Entry (proposed):** Inbox.

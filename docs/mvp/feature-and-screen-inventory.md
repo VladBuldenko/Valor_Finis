@@ -168,7 +168,7 @@ unless marked.
 | Rule create/edit (floor) | Set `floor_amount` for an Account | Account | same | MISSING |
 | Rule create/edit (alerts) | Overcommitment for an Account; Budget alert for a Budget | Accounts, Budgets | same | MISSING |
 | Rule detail / lifecycle | Enable, pause, disable, delete (draft/disabled with no history only) | rule, executions filtered by `rule_id` | `POST …/enable|pause|disable`, `DELETE`, `GET /rule-executions?rule_id` | MISSING |
-| **Rule preview** | See what a rule would do for a sample income before enabling | dry-run result | **none: `POST /financial-rules/{id}/preview` is specified but not implemented** | **BLOCKED** (Q3) |
+| **Rule preview** | See what a rule would do for a sample income before enabling | dry-run result | **none: `POST /financial-rules/{id}/preview` is specified but not implemented** | **MISSING** (approved Q3 A; endpoint scheduled BE-2) |
 | Evaluation trigger (no screen) | Foreground/Inbox-open drain | summary counters | `POST /financial-rules/evaluate` | MISSING |
 | Inbox | One place for open proposals and unacknowledged alerts | proposals (`awaiting_confirmation`), alerts (`acknowledged=false`), recent failures/blocked executions | `GET /rule-proposals`, `GET /rule-alerts`, `GET /rule-executions` (no composed endpoint) | MISSING |
 | Proposal detail | Review planned items, expiry, confirm capacity; confirm or reject | `RuleProposalResponse` incl. `items`, `expires_at`, `confirm_capacity`, `partial` | `GET /rule-proposals/{id}`, `POST …/confirm`, `POST …/reject` | MISSING |

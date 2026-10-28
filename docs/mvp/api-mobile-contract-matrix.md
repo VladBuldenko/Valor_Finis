@@ -198,7 +198,7 @@ Query keys for not-yet-built rule screens are marked *proposed*; they are sugges
 | Edit rule | `PATCH /financial-rules/{id}` | `FinancialRuleUpdate` | 422, 409 subject archived, 404 | none | n/a | — | rules, proposals (material edit supersedes open proposals) | MISSING |
 | Enable / pause / disable | `POST …/enable\|pause\|disable` | → rule | 409 invalid transition, 409 `This rule type cannot be enabled yet.`, 409 subject archived, 422 currency mismatch | not idempotent: repeat → 409 | n/a | — | rules, proposals (pause/disable cancels open proposals), accounts (floor change) | MISSING |
 | Delete rule | `DELETE /financial-rules/{id}` | 204 | 409 `Only draft or disabled rules can be deleted.` (**same text also when the rule has execution history**) | n/a | n/a | — | rules | MISSING |
-| **Preview** | **none** | — | — | — | — | — | — | **BLOCKED** (does not exist) |
+| **Preview** | **none** | — | — | — | — | — | — | **MISSING** (approved Q3 A; endpoint does not exist yet, scheduled BE-2) |
 | Evaluate (drain) | `POST /financial-rules/evaluate?limit` (1–`MAX_DRAIN_LIMIT`) | `RuleEvaluationResponse` | — | idempotent | n/a | — | proposals, executions, alerts, goals, goal-progress, accounts | MISSING |
 | List proposals | `GET /rule-proposals?status&limit&offset` | `RuleProposalListResponse`; lazily expires due proposals (a read that writes) | — | n/a | **limit/offset/total** | `["rule-proposals",uid,filters]` | n/a | MISSING |
 | Read proposal | `GET /rule-proposals/{id}` | `RuleProposalResponse` | 404 | n/a | n/a | `["rule-proposals",uid,id]` | n/a | MISSING |

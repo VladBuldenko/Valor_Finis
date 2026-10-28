@@ -52,8 +52,12 @@ actually provides. A state marked "n/a" does not apply to that surface.
 | Loading / loaded | Per-section loaders; month summary, Income/Expenses/Net, category spend, budget status, goals | Navigate | — | 7 queries | YES |
 | Section error | Per-section message | Retry that section | Refetch that query | — | PARTIAL (message, no retry) |
 | Empty (new user) | "No budgets yet", "No goals yet" | One primary next step | — | `[]` | PARTIAL |
-| Rules signal | Open proposals count, unacknowledged alerts, "rules evaluated at <time>" | Open Inbox | — | proposals, alerts, `evaluate` | **NO** (M06) |
+| Inbox entry: `attention` | Non-numeric attention marker on the Inbox entry; optional "rules evaluated at <time>" | Open Inbox | — | proposals (awaiting), alerts (unacknowledged), `evaluate` | **NO** (M06) |
+| Inbox entry: `unknown` | Neutral entry (no marker, no "all clear" text); "Couldn't check your Inbox" or "Alerts are not available yet" | Open Inbox, Retry | Refetch the failed or incomplete source | same | **NO** (M06) |
+| Inbox entry: `clear` | Entry without marker; "Nothing needs your attention" | Open Inbox | — | same; every necessary source authoritatively complete | **NO** (M06) |
 | Stale month | Date used for "this month" | — | — | device month vs server date | NO (known follow-up) |
+
+Precedence for these three states is `attention` > `unknown` > `clear` ([scope v1.1, M06 definition](mvp-scope-v1.1.md)); the Dashboard shows no count and never the word "unread" (rule C7).
 
 The Dashboard must not present an aggregate "total balance" or "safe to spend" (decision Q10).
 
@@ -152,16 +156,18 @@ AUTO versus CONFIRM wording must make two things explicit: both create **interna
 until Gate I is passed, execution happens "when the app evaluates (app open, refresh, or after you record income)",
 not "automatically while the app is closed".
 
-### 2.12 Rule preview (BLOCKED)
-No backend dry run exists. Until decision Q3 is made, the design must not show a preview result. If approved, the
-state set is: loading, result (planned items, capacity used, partial/skip reasons), "nothing would happen" (with
-reason), failure, and "preview is not a promise: figures can change before income arrives".
+### 2.12 Rule preview (approved, Q3 A; backend endpoint MISSING, scheduled BE-2)
+Decision Q3 is approved: a backend dry-run endpoint. The endpoint does not exist yet (status MISSING; task BE-2), so
+mobile implementation (F-5) waits for BE-2, but design is not blocked: wireframes and specifications use the planned contract
+and the state set below (the full state list is in the R-07 section of the addendum). States: loading, result (planned
+items, capacity used, partial/skip reasons), "nothing would happen" (with reason), failure, and "preview is an example, not a
+promise: figures can change before income arrives" (rule C8).
 
 ### 2.13 Inbox, proposals, alerts, executions (MISSING in client)
 | Surface / state | Show | Actions | Recovery | Backend data |
 |---|---|---|---|---|
-| Inbox empty | "Nothing needs your attention" | — | — | `[]` from three endpoints |
-| Inbox loaded | Open proposals (soonest `expires_at` first is a design choice), unacknowledged alerts, recent failures | Open, confirm, reject, acknowledge | Refresh = call `POST /evaluate` then refetch | proposals, alerts, executions |
+| Inbox empty | "Nothing needs your attention" shown **only** when the derived state is `clear` (all necessary sources authoritatively complete and empty). If any source failed, is incomplete or `available:false`, show that source's own state instead and keep the Dashboard indicator at `unknown` | — | — | `[]` from the sources |
+| Inbox loaded | Proposals awaiting a decision (soonest `expires_at` first is a design choice), unacknowledged alerts, recent failures; "N shown" / "more available" only when the source reports further pages; the Dashboard indicator is `attention` whenever an actionable item is listed | Open, confirm, reject, acknowledge | Refresh = call `POST /evaluate` then refetch | proposals, alerts, executions |
 | Alerts unavailable | "Alerts are not available yet" (`available:false`) — **not** "no alerts" | — | — | `RuleAlertListResponse.available` |
 | Evaluating | "Checking your rules" | — | — | `evaluate` summary |
 | Evaluate partial | `alerts_failed:true` or `blocked:true` shown as "Some checks could not run; they will retry" only when `failed_retryable` > 0 | Retry later | — | counters |

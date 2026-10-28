@@ -80,7 +80,6 @@ deferred; a different meaning for reservation, release, transfer, reservable amo
 | Net (Financial Overview) | Recorded Income minus recorded Expenses | cash flow, balance |
 | Proposal | A CONFIRM rule's suggested reservations awaiting the user; holds capacity until it expires (168 h) or is decided | — |
 | Attention indicator | Non-numeric Dashboard marker: `attention` / `clear` / `unknown` (C7) | unread count, N new |
-| Attention indicator | Non-numeric Dashboard marker: `attention` / `clear` / `unknown` (C7) | unread count, N new |
 | Alert | A rule-detected condition: floor breached, overcommitted, budget watch/at risk/exceeded | — |
 
 Binding rules (from the decision record): **C1** rules are checked when the app opens or refreshes and after income is
