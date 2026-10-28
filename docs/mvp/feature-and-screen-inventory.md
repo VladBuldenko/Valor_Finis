@@ -65,7 +65,7 @@ Not present: rules, proposals, alerts, inbox, executions, settings/profile, rece
 | Cache | Reads `["analytics","monthly-summary"|"financial-overview"|"budget-status"|"goal-progress", uid, …]`, `["budgets", uid]`, `["goals", uid]`. Refreshed only by invalidation from mutations or remount; no focus or pull refresh. |
 | Loading / error | Per-section spinner and per-section static error line. |
 | Empty | "No budgets yet.", "No goals yet." / "No current goals." |
-| Limitations | No Account balances, no rules/alerts/proposals signal, no unread badge; month taken from the device calendar (`use-local-calendar-month.ts`) while "today" on the server is server date. |
+| Limitations | No Account balances, no rules/alerts/proposals signal, no Inbox attention indicator; month taken from the device calendar (`use-local-calendar-month.ts`) while "today" on the server is server date. |
 | Status / MVP | PARTIAL / R (needs Inbox/alert entry, M06). |
 
 ### Accounts
@@ -195,7 +195,7 @@ unless marked.
 | R-05 | Rule editor: budget alert | P0 | M01 |
 | R-06 | Rule detail / lifecycle (enable, pause, disable, delete) | P0 | M01 |
 | R-07 | Rule preview | P0 | M03 (Q3) |
-| R-08 | Inbox (client-composed) with Dashboard entry/badge | P0 | M06 (Q9) |
+| R-08 | Inbox (client-composed) with Dashboard entry and attention indicator (no count) | P0 | M06 (Q9) |
 | R-09 | Proposal detail (confirm/reject, expiry, outcomes) | P0 | M04 |
 | R-10 | Alerts list/detail (acknowledge) | P0 | M05 |
 | R-11 | Execution history | P1 | M07 |

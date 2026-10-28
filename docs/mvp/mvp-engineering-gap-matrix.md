@@ -16,7 +16,7 @@ mobile, QA, DOC); **Task** = closing task in [mvp-engineering-qa-roadmap.md](mvp
 | GAP-02 | Gate H stage 1 claims connectivity it cannot prove (`financial-rules-production-release.md` §11) | S2 | **P0** | OPS | GAP-01 | OPS3-1 | Stage 1 text is smoke-only; stage 1b read-only check present and tested |
 | GAP-03 | Stale release/roadmap docs (audit D1–D8, ops R3–R7) | — | P1 | DOC | none | OPS3-2 / DOC-1 | Zero statements contradicting `git log`/`alembic heads` (checked by the DOC-1 script list) |
 | GAP-04 | No machine-readable error codes (66 domain errors, `{"detail": text}`) | M15 | **P0** | BE | none | BE-1 | Every handler response has `code`; test enumerates `DOMAIN_ERROR_RESPONSES` and asserts unique, snake_case, stable snapshot |
-| GAP-05 | No rule preview endpoint (`/financial-rules/{id}/preview` absent from OpenAPI) | M03 | **P0** | BE | GAP-04 (codes for its errors) | BE-2 | Endpoint in OpenAPI; parity test (preview == executed plan on identical state); no-write test (row counts and `financial_events` unchanged); ownership test |
+| GAP-05 | No rule preview endpoint (`/financial-rules/{id}/preview` absent from OpenAPI) | M03 | **P0** | BE | GAP-04 (codes for its errors) | BE-2 | Endpoint in OpenAPI; parity test (preview == executed plan on identical state); **full-content state-snapshot no-write proof** (rows, `financial_events`, idempotency, sequences) on success and every error path; read-only-transaction boundary test; concurrency test (vs real execution, vs second preview); response carries `hypothetical`, `sample_income`, `as_of_date`, `computed_at`; ownership test |
 | GAP-06 | Expenses and Income lists unpaginated | M16 | P1 | BE | GAP-04 | BE-3 | `limit/offset/total` contract; backward-compatibility test for the shipped client; boundary tests; seeded 5k perf record |
 | GAP-07 | Mobile has no CI | M19 | **P0** | MF | none | MF-1 | Workflow runs `npm ci`, `tsc --noEmit`, `npm run lint`, Node tests on PR; required status on `main` |
 | GAP-08 | No request timeout, no typed API error, no 401 handling, no cache clear on sign-out | M11 | **P0** | MF | GAP-07 | MF-2 | Node tests for the pure policy helpers; staging drill: expired token → sign-out + sign-in prompt in one request; hung request ends at the timeout |
@@ -29,14 +29,14 @@ mobile, QA, DOC); **Task** = closing task in [mvp-engineering-qa-roadmap.md](mvp
 | GAP-15 | Manual floor warning not shown; `warnings[]` untyped | M08 | **P0** | F | F-1 | F-2 | Type includes `warnings`; device case: reservation below floor shows warning and still succeeds; replay case renders what the response carries |
 | GAP-16 | Account floor/holds/rule-capacity not typed or shown | M09 | P1 | F | F-1 | F-2 | Fields typed; Account screens show them with the approved copy |
 | GAP-17 | Rules list/editor (four types) | M01/M02 | **P0** | F | F-1, designs | F-3 | Device journeys J13, J14 (CONFIRM path) pass; copy checks C1–C3 |
-| GAP-18 | Inbox, proposals, alerts | M04–M06 | **P0** | F | F-1, F-3 | F-4 | Journeys J15, J16 pass; proposal result read from `status`; `available:false` states distinct |
+| GAP-18 | Inbox, proposals, alerts | M04–M06 | **P0** | F | F-1, F-3 | F-4 | Journeys J15, J16 pass; proposal result read from `status`; `available:false` states distinct; Inbox entry shows the C7 attention indicator (all three states tested with a failing source), no count |
 | GAP-19 | Preview UI and AUTO enable gating | M03 | **P0** | F | BE-2, F-3 | F-5 | AUTO enable disabled until a preview for the current rule version was shown; journey J14 passes |
 | GAP-20 | Execution history UI and reason-code mapping | M07 | P1 | F | F-1 | F-6 | Every known `reason_code` has copy; unknown code uses fallback (unit test) |
-| GAP-21 | No staging environment | M22 | **P0** | QA | owner inputs | QA-1 | Staging backend + DB + Supabase project documented, migrated, seeded; reset command guard test; no production credentials present |
+| GAP-21 | No staging environment | M22 | **P0** | QA | owner inputs | QA-1 | Staging backend + DB + Supabase project documented, built to head by the staging-only bootstrap, seeded; bootstrap/reset identity guard (allowlist, production denylist, empty-DB check, environment flag; suffix alone refused) has negative tests |
 | GAP-22 | Device matrix undefined/unrun; Android UNKNOWN | M22 | **P0** | QA | QA-1 | QA-0, QA-4 | Floors pinned (iOS 15.1 / API 24 unless Expo floor higher); checklist executed on ≥1 physical iOS and ≥1 physical Android; results stored |
 | GAP-23 | Backend CI PG16 only; JWT verification path not in CI | — | P1 | QA | none | QA-2 | CI matrix includes PG17; test with locally signed token against the verification path |
 | GAP-24 | No migration-with-data upgrade test | — | P1 | QA | none | QA-2 | Representative rows at each revision upgrade to head with invariants asserted |
-| GAP-25 | No performance baseline; unbounded lists | M16 | P1 | QA | BE-3 | QA-3 | Seeded 5k expenses + 5k income baseline recorded; later runs compared |
+| GAP-25 | No performance baseline or budget; unbounded lists | M16 | P1 | QA | BE-3, owner acceptance | QA-3 | Baseline recorded **and** every absolute budget of gates §2.2 met under both profiles; regression thresholds applied to later runs |
 | GAP-26 | Accessibility only partly labeled | M20 | P1 | MF/F | designs | MF-5 / each F task | Script counts accessible name+role on all interactive elements of P0 screens = 100%; manual screen-reader pass recorded |
 | GAP-27 | Server-date label missing | M18 | P1 | MF | none | MF-5 | Labels present on transfers, goal transactions, overview, budget dates |
 | GAP-28 | Unattended execution unverified (no Cron) | M17 | P1 (only if claimed) | OPS | GAP-01, GAP-02 | OPS Gates H/I | Gate I evidence, or UI strings contain no unattended claim (grep check) |
@@ -47,8 +47,8 @@ mobile, QA, DOC); **Task** = closing task in [mvp-engineering-qa-roadmap.md](mvp
 
 ## 2. Counts (for gate BR-1)
 
-Open P0 gaps today: GAP-01, 02, 04, 05, 07, 08, 09, 10, 11, 12, 13, 14, 15, 17, 18, 19, 21, 22, 29, 30 = **20**.
-(GAP-29 and GAP-30 are P0 for Beta, not for MVP functional completeness.) Open P1: 03, 06, 16, 20, 23, 24, 25,
+Classification into functional completeness and production readiness, and the P1 closure rule, are in [mvp-readiness-gates.md](mvp-readiness-gates.md) §2.1. Open P0 gaps today: GAP-01, 02, 04, 05, 07, 08, 09, 10, 11, 12, 13, 14, 15, 17, 18, 19, 21, 22, 29, 30 = **20**.
+(GAP-29 and GAP-30 are P0 for Beta, not for MVP functional completeness.) Open P1 (all required for Beta unless an owner-signed waiver is recorded): 03, 06, 16, 20, 23, 24, 25,
 26, 27, 28, 31, 32 = **12**. P2 items live in the scope register (M13 and others); they have no gap rows.
 
 ## 3. Intentionally unused API endpoints (not gaps)

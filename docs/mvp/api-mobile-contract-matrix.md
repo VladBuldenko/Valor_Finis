@@ -214,7 +214,7 @@ Query keys for not-yet-built rule screens are marked *proposed*; they are sugges
 | # | Contract statement | Real behavior | Impact |
 |---|---|---|---|
 | X1 | `POST /financial-rules/{id}/preview` dry run (smart-goals-rules §20.4, §10, §21) | **Endpoint absent.** | AUTO "preview before enable" cannot be implemented; blocks M03. |
-| X2 | "backend Inbox read model" / "composed backend Inbox" (E9B) | No Inbox endpoint, no unread count. "Composed" means the client calls three endpoints. | Client must compose, poll, and compute any badge. |
+| X2 | "backend Inbox read model" / "composed backend Inbox" (E9B) | No Inbox endpoint, no unread count. "Composed" means the client calls three endpoints. | Client must compose and poll; the Dashboard entry is a non-numeric attention indicator (no count, scope v1.1 M06 definition). |
 | X3 | Proposal read model exposes `planned_amount` (§20.4) | Proposal has `planned_total`; `planned_amount` exists per item (`items[].planned_amount`). | Naming differs; types must follow OpenAPI. |
 | X4 | `POST/GET/PATCH/DELETE /api/v1/financial-rules` | No collection-level DELETE; item DELETE only. | Shorthand only. |
 | X5 | Confirm / reject of a terminal proposal "is idempotent" | True, and it returns **HTTP 200 with a non-success `status`** (`expired`, `rejected`, `cancelled`). | A 200 is not confirmation; client must branch on `status`. |

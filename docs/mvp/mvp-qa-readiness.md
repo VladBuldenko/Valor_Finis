@@ -55,7 +55,7 @@ Priority: P0 = blocks Beta or financial trust; P1 = needed before MVP acceptance
 | G10 | No physical-device acceptance artifacts; Android UNKNOWN | Cannot claim cross-platform | P0 | Written device checklist (section 4) executed on one iOS and one Android device; store results |
 | G11 | No accessibility audit | Excludes users; store review risk | P1 | Screen-reader pass per surface using the state document |
 | G12 | No offline/network recovery tests | Dropped responses are the idempotency use case | P1 | Manual matrix: airplane mode mid-submit for each idempotent action; automated for attempt-key helpers |
-| G13 | No performance baseline | Unbounded lists | P1 | Seed 5k expenses/income on a disposable DB, record endpoint timings and Dashboard load |
+| G13 | No performance baseline or budget | Unbounded lists | P1 | Seed 5k expenses/income on a disposable DB, record endpoint timings and Dashboard load, and judge them against the absolute budgets of [mvp-readiness-gates.md](mvp-readiness-gates.md) §2.2 as well as the baseline |
 | G14 | No staging environment documented | Device testing risks real data | P0 | Define a disposable/staging backend + DB with seeded users; forbid production for QA |
 | G15 | Pagination absent for most lists | Performance and memory | P1 | Q7 decision then contract tests |
 | G16 | Financial Overview refresh device acceptance pending | Recorded open item | P2 | Verify on first suitable real transaction |
@@ -83,9 +83,12 @@ no production credential is placed in any test configuration.
 ```
 
 Rules:
-1. **Reset strategy:** staging reset = recreate database from `alembic upgrade head` plus a seed script that creates
-   named test users, Accounts, Goals, Budgets and rules. Seeds contain no real data. A reset command refuses any
-   database whose name does not end in `_test` or `_staging`.
+1. **Reset strategy:** staging reset = recreate database from `alembic upgrade head` (the staging-only bootstrap, not the guarded
+   production runner) plus a seed script that creates named test users, Accounts, Goals, Budgets and rules. Seeds contain no
+   real data. Bootstrap and reset refuse any target that fails the identity guard in
+   [mvp-ops03-and-staging-prerequisites.md](mvp-ops03-and-staging-prerequisites.md) §2.5 (allowlist, production denylist,
+   empty-database check, explicit environment flag); a `_test`/`_staging` suffix alone is never enough. The guarded E9A/E10
+   runner is rehearsed separately from the exact prerequisite revisions (QA-2).
 2. **Test users:** at least two users per scenario to prove ownership isolation (cross-user 404).
 3. **Time:** server "today" is the unit of truth; scenarios that depend on dates (planned transfers, expiry 168 h,
    budget periods) need a controllable clock in backend tests (already used) and a documented manual procedure on

@@ -9,7 +9,7 @@ documents and states, per surface, what is ready and what each surface depends o
 | # | Document | Use it for |
 |---|---|---|
 | 1 | [mvp-scope-v1.1.md](mvp-scope-v1.1.md) | What is in the MVP, priorities (P0/P1/P2), blockers |
-| 2 | [mvp-decision-record.md](mvp-decision-record.md) | The 12 approved decisions and binding copy/semantic rules C1–C6 |
+| 2 | [mvp-decision-record.md](mvp-decision-record.md) | The 12 approved decisions and binding copy/semantic rules C1–C8 |
 | 3 | [mvp-user-journeys.md](mvp-user-journeys.md) | J01–J20, what each user does, errors, acceptance (read the v1.1 addendum too) |
 | 4 | [feature-and-screen-inventory.md](feature-and-screen-inventory.md) | Every existing screen and its data; planned surface IDs A-xx, R-xx (addendum) |
 | 5 | [screen-state-and-design-requirements.md](screen-state-and-design-requirements.md) | States each surface must handle (read the addendum too) |
@@ -31,7 +31,7 @@ engineering must deliver before the surface can be implemented (not before it ca
 | Surface | Priority | Journeys | WF | HF | Eng. dependency / note |
 |---|---|---|---|---|---|
 | Sign-in | P0 | J01 | Ready | After DR-1/DR-9 | M11 (session expiry) |
-| Dashboard | P0 | J12 | Ready | After DR-1/DR-9 | Inbox entry (F-4); **no aggregate balance** |
+| Dashboard | P0 | J12 | Ready | After DR-1/DR-9 | Inbox entry with attention indicator, no count (F-4); **no aggregate balance** |
 | Accounts list/detail/create/edit | P0 | J02, J04 | Ready | After DR-1/DR-9 | F-2 adds floor/holds display (P1) |
 | Income list/create/edit | P0 | J03 | Ready | After DR-1/DR-9 | BE-3 pagination |
 | Expenses list/detail | P0 | J04 | Ready | After DR-1/DR-9 | BE-3 pagination |
@@ -79,12 +79,14 @@ deferred; a different meaning for reservation, release, transfer, reservable amo
 | Transfer | Money moved between two owned Accounts, same currency; planned changes nothing until posted | — |
 | Net (Financial Overview) | Recorded Income minus recorded Expenses | cash flow, balance |
 | Proposal | A CONFIRM rule's suggested reservations awaiting the user; holds capacity until it expires (168 h) or is decided | — |
+| Attention indicator | Non-numeric Dashboard marker: `attention` / `clear` / `unknown` (C7) | unread count, N new |
+| Attention indicator | Non-numeric Dashboard marker: `attention` / `clear` / `unknown` (C7) | unread count, N new |
 | Alert | A rule-detected condition: floor breached, overcommitted, budget watch/at risk/exceeded | — |
 
 Binding rules (from the decision record): **C1** rules are checked when the app opens or refreshes and after income is
 recorded, never promised "while the app is closed"; **C2** reservation is not a transfer; **C3** no invented
 balances; **C4** state the server date where "today" matters; **C5** proposal outcome comes from `status`, not the HTTP
-result; **C6** sign-up and recovery messages never reveal whether an email exists.
+result; **C6** sign-up and recovery messages never reveal whether an email exists; **C7** the Inbox entry is a non-numeric attention indicator, `unknown` is never shown as `clear`; **C8** a preview is an example from a sample income, never a promise.
 
 ## 5. Data and behavior facts designers must know
 

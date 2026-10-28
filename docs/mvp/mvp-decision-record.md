@@ -25,12 +25,16 @@ Status vocabulary: APPROVED (owner), with the approved option letter as defined 
 | Q6 | Receipts list/manage screen in MVP? | **A. Deferred.** Receipt upload and confirm only. | M13 moves to P2 (deferred). `GET/PATCH/DELETE /receipts` stay backend-only by decision. | A list screen is added to scope. |
 | Q7 | Pagination for Expenses/Income/Transfers lists before Beta? | **A. Yes for Expenses and Income** before Beta; Transfers may follow later. Rule lists already paginated must be consumed paginated. | Backend task BE-3; mobile list changes; Beta gate item. | No pagination work; performance risk accepted. |
 | Q8 | Timezone: server date vs device date for "today"? | **A. Server date for the MVP;** screens that depend on "today" display the date used. | Copy/label requirement; no contract change. | Device-date contract change across every effective-date rule. |
-| Q9 | Inbox: client-composed, or add a backend summary/unread-count endpoint? | **A. Client-composed** from proposals, alerts and executions. A count endpoint is added only if composition is measured to be a problem. | Inbox is a mobile composition task (F-4); no backend work now. | Backend summary and unread-count endpoint added to BE workstream. |
+| Q9 | Inbox: client-composed, or add a backend summary/unread-count endpoint? | **A. Client-composed** from proposals, alerts and executions. A count endpoint is added only if composition is measured to be a problem. | Inbox is a mobile composition task (F-4); no backend work now. **R1 clarification (decision unchanged):** the Dashboard entry shows an attention indicator, not a numeric unread count (no read-state exists); see scope v1.1, M06 definition. **R1 clarification (decision unchanged):** the Dashboard entry shows an attention indicator, not a numeric unread count (no read-state exists); see scope v1.1, M06 definition. | Backend summary and unread-count endpoint added to BE workstream. |
 | Q10 | Any aggregate "total across accounts" on the Dashboard? | **A. No aggregate.** Per-Account figures only; currencies are never summed. | Dashboard shows no total; no backend work. | A definition (per currency, labelled) and backend support are required first. |
 | Q11 | Which rule types ship in v1? | **A. All four:** `INCOME_ALLOCATION` (AUTO or CONFIRM, CONFIRM presented first), `MINIMUM_UNALLOCATED_FLOOR`, `OVERCOMMITMENT_ALERT`, `BUDGET_ALERT`. Alert rules are enabled only where the E9A table exists in the target environment. | Four editors; alert behavior in production depends on E9A (OPS). | Subset ships; editors removed. |
 | Q12 | Minimum supported OS versions and device matrix. | **A. Defined matrix:** floors **iOS 15.1** and **Android API 24 (minSdk)** taken from the installed React Native 0.86.3 (`react-native/scripts/cocoapods/helpers.rb`, `gradle/libs.versions.toml`); plus the latest stable OS on each platform at test time. Physical devices: at least one iOS and one Android. The Expo SDK 57 documented floor, if higher, replaces these floors (task QA-0 confirms and pins). | QA matrix and Beta gate BR-5. | Matrix revised; Android may be re-scoped only by explicit owner decision. |
 
 ## Derived rules (binding on design and implementation)
+
+C7 and C8 were added by review correction VF-MVP-ENG-003-R1; they restate consequences of Q9 and Q3 and change no decision.
+
+C7 and C8 were added by review correction VF-MVP-ENG-003-R1; they restate consequences of Q9 and Q3 and change no decision.
 
 - **C1 AUTO copy:** allowed: "Rules are checked when you open or refresh the app and after you record income."
   Forbidden: any wording implying execution while the app is closed, until Gate I is passed and recorded.
@@ -41,3 +45,18 @@ Status vocabulary: APPROVED (owner), with the approved option letter as defined 
 - **C5 Proposal result:** the outcome shown after confirm/reject is read from the returned `status`, never from the HTTP code.
 - **C6 Registration messaging:** sign-up and recovery messages must not reveal whether an email already exists
   (behavior also depends on Supabase project settings, verified on staging).
+
+- **C7 Inbox indicator:** the Dashboard Inbox entry shows an attention indicator (`attention` / `clear` / `unknown`), never a
+  numeric count and never the word "unread". `unknown` (a source failed or is not fully loaded) is never shown as `clear`.
+- **C8 Preview is hypothetical:** a rule preview is labelled as an example computed from the current balances and a
+  sample income; it never reads as a promise, a reservation or a record of what happened (see BE-2 labelling requirements).
+
+## Acceptance parameters awaiting owner confirmation (review correction VF-MVP-ENG-003-R1)
+
+These are numeric targets proposed by engineering for gate BR-9. They are not product decisions Q1–Q12 and change none
+of them. Gate BR-9 cannot pass until the owner records acceptance (or edited values) here.
+
+| Parameter | Proposed value | Owner status |
+|---|---|---|
+| Performance budgets and conditions | Exactly as in [mvp-readiness-gates.md](mvp-readiness-gates.md), BR-9 and §2.2 | **PENDING owner acceptance** |
+| Reference device per platform | The lowest-specification physical device of the owner-approved Q12 matrix | **PENDING** (matrix model names not yet recorded) |

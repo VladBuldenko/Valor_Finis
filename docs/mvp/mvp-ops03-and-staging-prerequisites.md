@@ -53,9 +53,9 @@ performance baselines **without touching production**. It is a separate environm
 | 2 | Auth settings on that project **[owner/QA-1]** | Email confirmation setting recorded (on/off); SMTP for confirmation and recovery emails; redirect URL allowlist containing the app's unique scheme; password policy recorded; rate limits recorded; behavior for sign-up with an existing email observed and recorded (supports copy rule C6). **All currently UNKNOWN** |
 | 3 | PostgreSQL for the API **[owner]** | Separate database, PG17 preferred (production engine major per ops notes), name ending `_staging` |
 | 4 | Backend instance **[owner]** | Own deployment or local container pointed at the staging DB; `AUTH_MODE` set to the Supabase mode (not development); staging Supabase URL/key; receipt storage separate from production |
-| 5 | Migration | Applied with the **guarded runner** (after OPS3-1) so the runner is rehearsed on staging before production |
+| 5 | Schema | Two separate procedures (§2.5): (a) a **staging-only bootstrap** builds the empty staging database to head with `alembic upgrade head`; it is not the guarded runner and is refused anywhere else; (b) **guarded upgrade rehearsals** run the E9A and E10 runner steps from their exact prerequisite revisions on a disposable database that holds data |
 | 6 | Data API hardening parity | The read-only OPS SQL checks (role privileges revoked for the Data API roles) pass on staging |
-| 7 | Seed and reset (QA-1) | Scripts create named test users, Accounts, Goals, Budgets, rules; no real data. Reset drops/recreates only a database whose name ends `_test` or `_staging` (guard tested). Seeds contain no secrets |
+| 7 | Seed and reset (QA-1) | Scripts create named test users, Accounts, Goals, Budgets, rules; no real data. Bootstrap and reset obey the **identity guard of §2.5**: a `_test`/`_staging` name suffix is necessary but never sufficient. Seeds contain no secrets |
 | 8 | Mobile build channel | Environment variables `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` point only at staging; the build used for QA cannot reach production |
 | 9 | URL scheme | `apps/mobile/app.json` currently has the generic scheme `mobile`; an app-unique scheme is required before recovery deep links are enabled (task MF-4) |
 | 10 | Devices | At least one physical iOS and one physical Android device; simulators/emulators at the floors (iOS 15.1, API 24) per QA-0 |
@@ -80,6 +80,32 @@ performance baselines **without touching production**. It is a separate environm
 
 ### 2.4 Exit criteria for QA-1 (staging ready)
 
-Staging migrated to head by the guarded runner; OPS SQL checks PASS; seed and reset work and the reset name guard has a
-negative test; Auth settings recorded in the runbook; one end-to-end sign-in from a device build works against
-staging only; a scan shows no production identifiers in the repository's staging configuration.
+Staging built to head by the staging-only bootstrap (§2.5) with its identity guard and negative tests passing; OPS SQL
+checks PASS; seed and reset work; Auth settings recorded in the runbook; one end-to-end sign-in from a device build works
+against staging only; a scan shows no production identifiers in the repository's staging configuration. The guarded
+runner is **not** an exit criterion of QA-1; it is rehearsed under QA-2 (§2.5).
+
+### 2.5 Staging bootstrap versus guarded upgrade rehearsal (review correction VF-MVP-ENG-003-R1)
+
+The guarded runner moves one database between **exact** revisions (E9A: `e0503e9ca9d3` → `a7c3e91d5b24`; E10:
+`a7c3e91d5b24` → `c4d8a2f6e193`). It cannot build an empty database, and bootstrapping must not be done by loosening
+it or by a hand-typed upgrade. Hence two procedures with different guards and different owners:
+
+**(a) Staging-only bootstrap and reset (QA-1).** Builds an empty database to head with `alembic upgrade head`, then
+asserts `alembic current` equals `alembic heads`. It STOPs unless **all** hold: (1) the target (host, port, database
+name) equals an entry of an owner-recorded **staging allowlist** (identifiers only, held in the runbook or secret store,
+never secret values); (2) the target equals no entry of an owner-recorded **production denylist** (host and Supabase
+project reference); (3) the name ends `_staging` (necessary, not sufficient); (4) bootstrap requires the database to be
+empty, and reset requires the operator to type the target identity back; (5) an explicit `--environment staging`
+argument is passed and the configured Supabase URL equals the staging project. Negative tests are mandatory:
+`_staging` suffix on a non-allowlisted host is refused; an allowlisted host with a production-like name is refused;
+bootstrap of a non-empty database is refused; a suffix-only match is refused.
+
+**(b) Guarded upgrade rehearsals (QA-2).** On a disposable rehearsal database that also passes the identity guard: build
+it to `e0503e9ca9d3` with the bootstrap's explicit-revision mode, load representative data (including rows the E9A
+and E10 checks inspect), run the guarded runner for E9A and its post-check, then for E10 and its post-check, each on PG16 and
+PG17. Include negative rehearsals: a wrong `alembic current` and a failed preflight both refuse **without invoking**
+`alembic upgrade`. Staging itself may instead be built to `e0503e9ca9d3` and advanced by the runner; it then counts as a
+rehearsal. Either way the runner is not considered rehearsed until a run from the exact prerequisite revision, with
+data, is stored. The runner's interface is fixed by OPS3-1; if it cannot target a rehearsal database without a code
+change, that is a finding returned to OPS3-1, never a reason to use a hand-typed command.

@@ -312,11 +312,11 @@ Approved decisions change or add the following. Everything above remains the aud
 | Journey | v1.1 change |
 |---|---|
 | J01 | Sign-in now has links to registration (J19) and recovery (J20). The expired-session recovery is **P0** (M11): a 401 signs the user out, clears the query cache and returns them to sign-in with a "session ended" message. |
-| J03 | After a successful Income create the app calls `POST /financial-rules/evaluate` (debounced) when the user has enabled rules (M10); an Inbox badge may appear. |
+| J03 | After a successful Income create the app calls `POST /financial-rules/evaluate` (debounced) when the user has enabled rules (M10); the Inbox attention indicator may switch to `attention` (no count, rule C7). |
 | J07 | The safety-floor warning is **P0** (M08): success plus warning, never an error; an idempotent replay renders whatever warnings the response carries. |
 | J12 | Dashboard shows no aggregate balance (Q10). Date-dependent labels state the server date (Q8). |
 | J13 | Four rule types ship (Q11). CONFIRM is presented first. Alert rules show "not available yet" until the alerts table exists in that environment. |
-| J14 | Preview is an approved backend capability (BE-2). **Enabling AUTO requires a preview of the current rule version**; editing a rule invalidates its preview. Copy rule C1 binds all AUTO text. |
+| J14 | Preview is an approved backend capability (BE-2). **Enabling AUTO requires a preview of the current rule version**; editing a rule invalidates its preview. The preview is hypothetical (C8): labelled as an example from a sample income, no side effect, never listed as an outcome. Copy rule C1 binds all AUTO text. |
 | J15 | Inbox is client-composed (Q9): proposals (`awaiting_confirmation`), unacknowledged alerts, recent failed/blocked executions; opening it calls evaluate first. Outcome is read from `status` (C5). |
 | J16 | Unchanged; `available:false` is a distinct state. |
 | J18 | Execution history is **P1** (M07). No recovery endpoint exists; the UI explains counters only. |

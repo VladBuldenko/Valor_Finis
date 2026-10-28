@@ -8,7 +8,7 @@ What changed from v1: every open question (Q1–Q12) is decided; registration an
 (M14 split into M14a/M14b); the rule preview becomes in-scope backend work; error codes, pagination and the device
 matrix are committed; the receipts list is deferred; priorities (P0/P1/P2) are assigned. Product objectives, target
 users, canonical semantics and the deferred list are unchanged from v1 (§1–§3 and §6 there remain authoritative);
-binding derived rules are in the decision record (C1–C6).
+binding derived rules are in the decision record (C1–C8).
 
 Status vocabulary: IMPLEMENTED, PARTIAL, MISSING, BLOCKED, UNKNOWN, DEFERRED (as defined in the audit).
 Priority: **P0** required for MVP functional completeness; **P1** required for high-quality Beta readiness;
@@ -19,7 +19,7 @@ Priority: **P0** required for MVP functional completeness; **P1** required for h
 | Domain | Backend | Mobile | v1.1 position |
 |---|---|---|---|
 | Authentication and session | IMPLEMENTED (Supabase JWT, verified per request) | PARTIAL (sign-in/out only) | In scope; adds registration, recovery, session expiry |
-| Dashboard | IMPLEMENTED | IMPLEMENTED (limited) | In scope; adds Inbox entry/badge; **no balance aggregate** (Q10) |
+| Dashboard | IMPLEMENTED | IMPLEMENTED (limited) | In scope; adds Inbox entry with attention indicator (no count); **no balance aggregate** (Q10) |
 | Accounts and balances | IMPLEMENTED | IMPLEMENTED | In scope; adds floor/holds/rule-capacity display (P1) |
 | Income, Expenses, Categories, Budgets | IMPLEMENTED | IMPLEMENTED | In scope; Expenses/Income paginated (Q7) |
 | Account transfers | IMPLEMENTED | IMPLEMENTED | In scope |
@@ -43,7 +43,7 @@ IDs M01–M17 continue from v1. New or changed entries are marked **(v1.1)**.
 | M03 | Rule preview: backend dry-run endpoint + mobile preview, required before AUTO enable **(v1.1: approved as (a))** | Backend + mobile | **P0** | MISSING |
 | M04 | Proposals: list, detail, confirm, reject, expiry, terminal states (C5) | Mobile | **P0** | MISSING |
 | M05 | Alerts: list, acknowledge, `available:false` handling | Mobile | **P0** UI; live behavior needs E9A (P1 ops) | MISSING |
-| M06 | Inbox composed client-side from proposals, alerts and executions; entry point and badge **(v1.1: Q9 A)** | Mobile | **P0** | MISSING |
+| M06 | Inbox composed client-side from proposals, alerts and executions; Dashboard entry shows an attention indicator, **not a count** (rules in §M06 definition below) **(v1.1: Q9 A)** | Mobile | **P0** | MISSING |
 | M07 | Execution history with plain-language reason codes | Mobile | **P1** | MISSING |
 | M08 | Manual-reservation safety-floor warning display | Mobile | **P0** | MISSING |
 | M09 | Account floor, holds, rule-capacity display and typing | Mobile | **P1** | MISSING |
@@ -125,3 +125,21 @@ The v1 acceptance list (§8 there) stands, with these v1.1 additions:
 None. Q1–Q12 are decided (see the decision record). Engineering-level open items (contract details of the
 preview endpoint, the pagination compatibility strategy, timeout values) are owned by the tasks that deliver them
 and are listed in the roadmap with their requirement sheets.
+
+## M06 definition: Inbox attention indicator (review correction VF-MVP-ENG-003-R1)
+
+Q9 stays decided as client-composed with no backend unread count. Consequence, binding for design and F-4: the
+Dashboard Inbox entry carries an **attention indicator**, never a numeric unread count: the app has no read-state, the backend has no unread-count endpoint (Q9 A) and the rule lists are paginated, so any number would be partial or invented.
+
+| Indicator state | Condition | Presentation rule |
+|---|---|---|
+| `attention` | At least one **loaded** item needs the user: a proposal that awaits a decision (non-terminal status and not past its expiry) or an alert not yet acknowledged | Non-numeric marker plus accessible text "Inbox: needs your attention". Existence proof only; a partially loaded source can still raise it |
+| `clear` | **Every** source loaded without error **and** pagination of each source ended (no next page) **and** nothing is actionable | Entry without marker. Text may say "Nothing needs your attention" |
+| `unknown` | Any source is loading, failed, or not fully loaded | Neutral entry; never shown as `clear`; Inbox screen shows which source failed with Retry |
+
+Rules: no number on the Dashboard entry; no word "unread" anywhere (there is no read-state; acknowledging an alert or
+deciding a proposal is the only way an item leaves `attention`); inside the Inbox, per-source lists may show
+"N shown" and "more available" but never a total that was not returned by the backend; failed executions are listed in
+the Inbox history but do not drive the indicator (they have no user action in P0). The indicator is a presentation of
+already loaded server data: the client does not compute financial values. An exact count would need a backend
+endpoint and is not part of this MVP; adding one is a new decision (Q9 "if changed").

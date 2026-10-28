@@ -243,8 +243,14 @@ States: loading; result (planned amount per target Goal, partial/skip reasons ma
 reservable, floor, holds, rule capacity); "nothing would happen" with reason; stale (rule edited after preview, must
 re-preview); failure (code-mapped); not previewable (rule status/type). Copy: "Preview uses your current balances; actual results can
 differ when income arrives." Enabling AUTO is disabled until a current preview was shown.
+Hypothetical presentation (rule C8): the result is headed as an example ("If you received <sample income>"), shows the sample
+income and the server date it was computed for, never uses the words "reserved", "done" or "will" for its amounts, and
+never appears in the Inbox, history or any list that holds real outcomes. A preview is not stored on the server; the "current
+preview shown" flag for AUTO gating is client state tied to the rule version. A shown preview is not a guarantee of a later
+execution and AUTO enabling copy says so (rule C1).
 
 ### Inbox composition states (R-08)
 Opening the Inbox triggers evaluate then loads the three sources independently. Each source has its own loading,
-empty, error-with-retry state; one failing source does not blank the others. Badge counts only what was loaded and says
-so when a source failed.
+empty, error-with-retry state; one failing source does not blank the others. The Dashboard entry shows the attention
+indicator (`attention` / `clear` / `unknown`, rule C7): no number, no word "unread"; `clear` only when every source loaded
+completely; any failed or partial source gives `unknown`, never `clear`. Design all three states.
