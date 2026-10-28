@@ -1,6 +1,9 @@
+import hashlib
 import os
 import re
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple
 from uuid import uuid4
@@ -817,6 +820,36 @@ def test_the_wrapper_has_no_secret_in_its_arguments_and_no_trace_output() -> Non
 GUARDED = SQL_DIR / "run_guarded_migration.sh"
 
 
+_PARENT_OF = {E9A_REVISION: E6_REVISION, E10_REVISION: E9A_REVISION}
+_evidence_counter = [0]
+
+
+def _utc(seconds_ago: float) -> str:
+    return datetime.fromtimestamp(time.time() - seconds_ago, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _make_evidence(directory: Path, dump_database: str, target: str, expected_db: str,
+                   taken_ago: float = 600, verified_ago: float = 300, **overrides: Optional[str]) -> Path:
+    """A real logical dump of a disposable test database plus a receipt in the documented format."""
+    _evidence_counter[0] += 1
+    dump = directory / f"dump-{_evidence_counter[0]}.dump"
+    subprocess.run(["pg_dump", "--format=custom", "--schema=public", f"--file={dump}"],
+                   env=_libpq_env(dump_database), check=True, capture_output=True, timeout=120)
+    dump.chmod(0o600)
+    fields: Dict[str, Optional[str]] = {
+        "GATE_TARGET": target, "DATABASE": expected_db, "SOURCE_REVISION": _PARENT_OF[target],
+        "DUMP_FILE": str(dump), "DUMP_SHA256": hashlib.sha256(dump.read_bytes()).hexdigest(),
+        "DUMP_TAKEN_AT_UTC": _utc(taken_ago), "RESTORE_VERIFIED": "PASS",
+        "RESTORE_DATABASE": "vf_restore_verify_test", "RESTORE_PREFLIGHT": "PASS",
+        "RESTORE_VERIFIED_AT_UTC": _utc(verified_ago),
+    }
+    fields.update(overrides)
+    receipt = directory / f"receipt-{_evidence_counter[0]}.env"
+    receipt.write_text("".join(f"{key}={value}\n" for key, value in fields.items() if value is not None))
+    receipt.chmod(0o600)
+    return receipt
+
+
 class _Guarded:
     def __init__(self, tmp_path: Path) -> None:
         self.log = tmp_path / "python-calls.log"
@@ -825,15 +858,33 @@ class _Guarded:
             "#!/bin/sh\n"
             'echo "$@" >> "$STUB_LOG"\n'
             'if [ -n "$STUB_FAIL_UPGRADE" ]; then case "$*" in *"alembic upgrade"*) exit 1;; esac; fi\n'
+            # Simulated drift between the first checks and the pre-upgrade re-check (counts per kind of call).
+            'case "$*" in\n'
+            '  *pg_postmaster_start_time*) k=proof;;\n'
+            '  *"alembic current"*) k=current;;\n'
+            '  *) k=;;\n'
+            'esac\n'
+            'if [ -n "$k" ]; then\n'
+            '  n=$(cat "$STUB_COUNTS.$k" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$STUB_COUNTS.$k"\n'
+            '  if [ "$n" -ge 2 ] && [ "$STUB_DRIFT" = "$k" ]; then\n'
+            '    if [ "$k" = proof ]; then echo "1|1|x|x|5s|1min"; else echo "ffffffffffff (head)"; fi\n'
+            '    exit 0\n'
+            '  fi\n'
+            'fi\n'
             f'exec "{os.sys.executable}" "$@"\n'
         )
         self.stub.chmod(0o755)
 
     def run(self, args: Tuple[str, ...], pg_database: str, url_engine: Optional[Engine],
-            env: Optional[Dict[str, Optional[str]]] = None) -> subprocess.CompletedProcess:
+            env: Optional[Dict[str, Optional[str]]] = None, evidence: Optional[Dict[str, Optional[str]]] = None,
+            evidence_dump_from: Optional[str] = None) -> subprocess.CompletedProcess:
         environment = _libpq_env(pg_database)
         environment.update({"MIGRATION_PYTHON": str(self.stub), "STUB_LOG": str(self.log),
-                            "REQUIRE_DATA_API_ROLES": "no"})
+                            "STUB_COUNTS": str(self.log.parent / "stub-count"), "REQUIRE_DATA_API_ROLES": "no"})
+        if len(args) == 2 and args[0] in (E9A_REVISION, E10_REVISION):
+            environment["BACKUP_EVIDENCE_FILE"] = str(
+                _make_evidence(self.log.parent, evidence_dump_from or pg_database, args[0], args[1],
+                               **(evidence or {})))
         if url_engine is not None:
             environment["DATABASE_URL"] = _url_of(url_engine).render_as_string(hide_password=False)
         for key, value in (env or {}).items():
@@ -924,8 +975,10 @@ def test_an_unexpected_current_revision_stops_before_any_migration(
 ) -> None:
     db = request.getfixturevalue(fixture_name)
     before, revisions = _snapshot([db])
+    # Give the receipt a valid dump (one that lists rule_alerts for gate F) so that the revision guard is what stops the run.
+    dump_from = request.getfixturevalue("e9a_db")[0] if target == E10_REVISION else db[0]
 
-    result = guarded.run((target, db[0]), db[0], db[1])
+    result = guarded.run((target, db[0]), db[0], db[1], evidence_dump_from=dump_from)
 
     _assert_stopped_before_any_migration(result, guarded, [db], before, revisions)
     assert "alembic current" in result.stderr
@@ -974,6 +1027,14 @@ def test_an_unreachable_server_stops_before_any_migration(guarded: _Guarded, e6_
     ((E9A_REVISION, "KEEP"), {"PGSERVICE": "staging"}),
     ((E9A_REVISION, "KEEP"), {"PGHOSTADDR": "203.0.113.7"}),
     ((E9A_REVISION, "KEEP"), {"PGHOST": None}),
+    ((E9A_REVISION, "KEEP"), {"PGUSER": None}),
+    ((E9A_REVISION, "KEEP"), {"PGDATABASE": None}),
+    ((E9A_REVISION, "KEEP"), {"BACKUP_EVIDENCE_FILE": None}),
+    ((E9A_REVISION, "KEEP"), {"MIGRATION_PYTHON": "/nonexistent/python"}),
+    ((E9A_REVISION, "KEEP"), {"ALLOW_INSECURE_LOCAL_TEST": None}),                  # the stub interpreter is test-only
+    ((E9A_REVISION, "KEEP"), {"PGHOST": "db.example.invalid"}),                      # ... and local-only
+    ((E9A_REVISION, "KEEP"), {"DATABASE_URL": "postgresql://u:p@localhost/x?sslmode=disable",
+                              "ALLOW_INSECURE_LOCAL_TEST": None, "MIGRATION_PYTHON": None, "PGSSLMODE": "require"}),
     ((E9A_REVISION, "KEEP"), {"PGSSLMODE": "prefer", "ALLOW_INSECURE_LOCAL_TEST": None}),
     (("d4a1b2c3e5f6", "KEEP"), {}),
 ])
@@ -1008,11 +1069,168 @@ def test_a_failing_post_check_exits_nonzero_after_the_upgrade(guarded: _Guarded,
     assert _revision(e6_db[1]) == E9A_REVISION  # reported as migrated-but-unverified, never silently OK
 
 
+def test_a_missing_receipt_file_stops_before_any_migration(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    before, revisions = _snapshot([e6_db])
+
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1],
+                         env={"BACKUP_EVIDENCE_FILE": str(guarded.log.parent / "no-such-receipt.env")})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+    assert "backup evidence rejected" in result.stderr
+
+
+@pytest.mark.parametrize("overrides,expected", [
+    ({"GATE_TARGET": E10_REVISION}, "not bound"),
+    ({"DATABASE": "some_other_db"}, "not bound"),
+    ({"SOURCE_REVISION": E9A_REVISION}, "not bound"),                          # e.g. the wrong gate's receipt
+    ({"RESTORE_VERIFIED": "FAIL"}, "PASSed restore"),
+    ({"RESTORE_PREFLIGHT": "FAIL"}, "PASSed restore"),
+    ({"RESTORE_VERIFIED": None}, "exactly the required fields"),
+    ({"RESTORE_DATABASE": "production_db"}, "*_test"),                          # restore not on a throwaway database
+    ({"DUMP_SHA256": "0" * 64}, "SHA-256"),
+    ({"DUMP_FILE": "relative.dump"}, "absolute"),
+    ({"DUMP_FILE": "/nonexistent/missing.dump"}, "missing or unreadable"),
+    ({"DUMP_TAKEN_AT_UTC": "not-a-time"}, "UTC timestamp"),
+    ({"DUMP_TAKEN_AT_UTC": "STALE", "RESTORE_VERIFIED_AT_UTC": "STALE"}, "older than 24 hours"),
+    ({"DUMP_TAKEN_AT_UTC": "FUTURE", "RESTORE_VERIFIED_AT_UTC": "FUTURE"}, "inconsistent"),
+    ({"RESTORE_VERIFIED_AT_UTC": "BEFORE_DUMP"}, "inconsistent"),
+    ({"UNKNOWN_FIELD": "x"}, "unknown, duplicate or malformed"),
+])
+def test_invalid_backup_or_restore_evidence_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], overrides: Dict[str, Optional[str]], expected: str,
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    resolved: Dict[str, Optional[str]] = {}
+    for key, value in overrides.items():
+        resolved[key] = {"STALE": _utc(3 * 24 * 3600), "FUTURE": _utc(-2 * 3600), "BEFORE_DUMP": _utc(2 * 3600)}.get(
+            value or "", value)
+    receipt = _make_evidence(guarded.log.parent, name, E9A_REVISION, name, **resolved)
+
+    result = guarded.run((E9A_REVISION, name), name, database_engine, env={"BACKUP_EVIDENCE_FILE": str(receipt)})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+    assert expected in result.stderr, result.stderr
+
+
+def test_a_duplicated_receipt_field_stops_before_any_migration(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    receipt = _make_evidence(guarded.log.parent, name, E9A_REVISION, name)
+    receipt.write_text(receipt.read_text() + "RESTORE_VERIFIED=PASS\n")
+
+    result = guarded.run((E9A_REVISION, name), name, database_engine, env={"BACKUP_EVIDENCE_FILE": str(receipt)})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+
+
+def test_a_dump_changed_after_its_checksum_was_recorded_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    receipt = _make_evidence(guarded.log.parent, name, E9A_REVISION, name)
+    dump = Path(dict(line.split("=", 1) for line in receipt.read_text().splitlines())["DUMP_FILE"])
+    with open(dump, "ab") as handle:
+        handle.write(b"tampered")
+
+    result = guarded.run((E9A_REVISION, name), name, database_engine, env={"BACKUP_EVIDENCE_FILE": str(receipt)})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+    assert "SHA-256" in result.stderr
+
+
+def test_a_dump_that_lacks_a_required_table_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], e9a_db: Tuple[str, Engine],
+) -> None:
+    # Gate F on the E9A database, but the "backup" was taken from an E6 database: it has no rule_alerts.
+    before, revisions = _snapshot([e9a_db])
+
+    result = guarded.run((E10_REVISION, e9a_db[0]), e9a_db[0], e9a_db[1], evidence_dump_from=e6_db[0])
+
+    _assert_stopped_before_any_migration(result, guarded, [e9a_db], before, revisions)
+    assert "required tables" in result.stderr and "rule_alerts" in result.stderr
+
+
+@pytest.mark.parametrize("unsafe", ["group_writable", "symlink", "dump_world_readable"])
+def test_unsafe_evidence_files_stop_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], unsafe: str,
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    receipt = _make_evidence(guarded.log.parent, name, E9A_REVISION, name)
+    if unsafe == "group_writable":
+        receipt.chmod(0o666)
+    elif unsafe == "symlink":
+        link = guarded.log.parent / "receipt-link.env"
+        link.symlink_to(receipt)
+        receipt = link
+    else:
+        Path(dict(line.split("=", 1) for line in receipt.read_text().splitlines())["DUMP_FILE"]).chmod(0o644)
+
+    result = guarded.run((E9A_REVISION, name), name, database_engine, env={"BACKUP_EVIDENCE_FILE": str(receipt)})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+
+
+def test_a_database_url_that_drops_the_statement_timeout_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    url = _url_of(database_engine).render_as_string(hide_password=False) + "?options=-c%20statement_timeout%3D0"
+
+    result = guarded.run((E9A_REVISION, name), name, None, env={"DATABASE_URL": url})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+
+
+@pytest.mark.parametrize("drift", ["proof", "current"])
+def test_a_change_between_the_first_checks_and_the_upgrade_stops_before_any_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], drift: str,
+) -> None:
+    before, revisions = _snapshot([e6_db])
+
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1], env={"STUB_DRIFT": drift})
+
+    _assert_stopped_before_any_migration(result, guarded, [e6_db], before, revisions)
+    counts = guarded.log.parent / f"stub-count.{drift}"
+    assert counts.read_text().strip() == "2"  # the proof really was repeated right before the upgrade
+
+
+def test_the_runner_refuses_an_empty_database_it_is_not_a_bootstrap(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    empty = f"vfops_{uuid4().hex[:10]}_test"
+    url = _create_database(empty)
+    empty_engine = create_engine(url)
+    try:
+        result = guarded.run((E9A_REVISION, empty), empty, empty_engine, evidence_dump_from=e6_db[0])
+
+        assert result.returncode == 11 and guarded.upgrade_calls() == []
+        assert "alembic current" in result.stderr
+        with empty_engine.connect() as connection:
+            assert connection.execute(text("SELECT to_regclass('public.alembic_version')")).scalar() is None
+    finally:
+        empty_engine.dispose()
+        _drop_database(empty)
+
+
+def test_the_release_documents_contain_no_unguarded_migration_command() -> None:
+    root = API_DIR.parents[1] / "docs"
+    fenced = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+    for document in sorted((root / "operations").glob("*.md")):
+        for block in fenced.findall(document.read_text()):
+            assert "alembic upgrade" not in block, f"{document.name} contains a hand-typed alembic upgrade"
+    development = (root / "development.md").read_text()
+    for revision in (E9A_REVISION, E10_REVISION):
+        assert f"alembic upgrade {revision}" not in development, "development.md still shows a hand-typed release upgrade"
+
+
 def test_the_guarded_runner_source_orders_every_guard_before_the_upgrade() -> None:
     source = GUARDED.read_text()
     upgrade = source.index('alembic upgrade "$TARGET"')
 
-    for marker in ("endpoint proof", "alembic current", "run_readonly_check.sh\" \"$PREFLIGHT\""):
+    for marker in ("1b. backup evidence", "endpoint proof", "alembic current", "run_readonly_check.sh\" \"$PREFLIGHT\"",
+                   "4b. repeat the identity"):
         assert source.index(marker) < upgrade, marker
     assert "set -x" not in source and "upgrade head" not in source and "--force" not in source
     assert source.count('"$PY" -m alembic upgrade') == 1  # the single invocation

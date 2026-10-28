@@ -108,6 +108,34 @@ PG 16). `--schema=public` covers the application tables and `alembic_version`; i
 real disaster recovery needs those from the provider's own backups. This dump is a verified application-data
 backup, not a full-project backup.
 
+**Receipt for the runner.** Only after the restore verification above PASSed (in the same shell session, so `FILE` and
+`STAMP` are still set), write the receipt the guarded runner demands. It holds identifiers, hashes and timestamps, no
+secret. Write `PASS` only for things you actually did; the runner re-verifies the dump itself (existence, SHA-256, readable
+`pg_restore --list` with the required tables, age) but **cannot** re-perform the restore, so the `RESTORE_*` fields are
+your attestation:
+
+```bash
+RECEIPT="$BACKUP_DIR/vf_e9a_pre_${STAMP}.receipt.env"
+cat > "$RECEIPT" <<EOF
+GATE_TARGET=a7c3e91d5b24
+DATABASE=<production_database_name>
+SOURCE_REVISION=e0503e9ca9d3
+DUMP_FILE=$FILE
+DUMP_SHA256=$(shasum -a 256 "$FILE" | cut -d' ' -f1)
+DUMP_TAKEN_AT_UTC=$STAMP
+RESTORE_VERIFIED=PASS
+RESTORE_DATABASE=vf_restore_verify_test
+RESTORE_PREFLIGHT=PASS
+RESTORE_VERIFIED_AT_UTC=$(date -u +%Y%m%dT%H%M%SZ)
+EOF
+chmod 600 "$RECEIPT"
+```
+
+The runner accepts the receipt only if every field is present exactly once, it is bound to this target, database and
+source revision, the restore database is a throwaway `*_test` database other than the target, the dump is a private
+(mode 600) regular file owned by the operator, and both the dump and the restore verification are **younger than 24
+hours** (otherwise take and verify a fresh backup).
+
 **PASS:** the dump is non-trivial, the checksum verifies, the restore completes without errors, and the restored
 copy passes `e9a_preflight`, and its `row_count:*` rows equal the production counts **at dump time**. Production is
 live: if users wrote between the preflight and the dump, small differences are expected. Take the production
@@ -123,21 +151,30 @@ With the libpq `PG*` variables (the same ones the preflight used) and `DATABASE_
 into the operator's shell (no echo), from `docs/operations/sql`:
 
 ```bash
-./run_guarded_migration.sh a7c3e91d5b24 <production_database_name>
+BACKUP_EVIDENCE_FILE="$RECEIPT" ./run_guarded_migration.sh a7c3e91d5b24 <production_database_name>
 ```
 
-The runner applies exactly the named revision and **never reaches `alembic upgrade` unless every guard passed**.
+The runner moves one existing database between two exact revisions; it is **never a bootstrap** (an empty or unmigrated
+database is refused) and staging databases are built by the separate staging-only procedure
+(`docs/mvp/mvp-ops03-and-staging-prerequisites.md` section 2.5). The runner applies exactly the named revision and **never reaches `alembic upgrade` unless every guard passed**.
 There is no override flag. In this order it requires:
 
-1. a valid environment (`PGSERVICE`, `PGSERVICEFILE`, `PGHOSTADDR` refused; `PGDATABASE` equal to the expected name);
-2. an **endpoint proof**: the `PG*` path and the `DATABASE_URL` path must return the identical fingerprint (database
-   oid, postmaster start time, database name, role) and both must report `lock_timeout = 5s`. A different server or
-   database, or an endpoint that dropped the startup options (some poolers do), stops the run;
-3. `alembic current` reporting exactly the parent revision `e0503e9ca9d3` (the target already applied, a database
+1. a valid environment (`PGSERVICE`, `PGSERVICEFILE`, `PGHOSTADDR` refused; `PGDATABASE` equal to the expected name; `psql`, `pg_restore` and `BACKUP_EVIDENCE_FILE` present; TLS required for both connection paths, so a `DATABASE_URL` with `sslmode` disable, allow or prefer is refused; `MIGRATION_PYTHON` is refused: it exists only for disposable local test databases);
+2. **backup evidence** (section 4 receipt): bound to this target, database and source revision, the dump re-verified
+   by SHA-256 and `pg_restore --list`, dump and restore verification younger than 24 hours (no database is contacted
+   for this check);
+3. an **endpoint proof**: the `PG*` path and the `DATABASE_URL` path must return the identical fingerprint (database
+   oid, postmaster start time, database name, role) and both must report `lock_timeout = 5s` and
+   `statement_timeout = 1min`. A different server or database, or an endpoint that dropped the startup options (some
+   poolers do), stops the run;
+4. `alembic current` reporting exactly the parent revision `e0503e9ca9d3` (the target already applied, a database
    ahead of it, or no output all stop the run);
-4. the read-only `e9a_preflight` returning PASS (so every prerequisite, absence, lock and session check passed);
-5. only then `alembic upgrade a7c3e91d5b24` under `lock_timeout` 5 s and `statement_timeout` 60 s;
-6. the read-only `e9a_postcheck` returning PASS.
+5. the read-only `e9a_preflight` returning PASS (so every prerequisite, absence, lock and session check passed);
+6. the endpoint proof and `alembic current` **repeated immediately before the upgrade**: the proof must equal the first
+   one (same server instance) and the revision must still be exactly the parent (this narrows, but cannot remove, the
+   window between check and change; the upgrade is a single transaction);
+7. only then `alembic upgrade a7c3e91d5b24` under `lock_timeout` 5 s and `statement_timeout` 60 s;
+8. the read-only `e9a_postcheck` returning PASS.
 
 | Exit | Meaning | Action |
 |---|---|---|

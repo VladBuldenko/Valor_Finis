@@ -125,7 +125,8 @@ classified. **STOP:** connectivity fails or the cause is unexplained: fix that f
 
 **Entry:** Gate A PASS with `e9a_preflight` PASS; written authorization B.
 **Procedure and evidence:** [e9a-production-migration.md](e9a-production-migration.md) section 4: logical dump,
-SHA-256, `pg_restore --list`, restore into a throwaway `*_test` database, `e9a_preflight` on the restored copy.
+SHA-256, `pg_restore --list`, restore into a throwaway `*_test` database, `e9a_preflight` on the restored copy, and
+the receipt the guarded runner requires (same section).
 **PASS:** the checksum verifies, the restore completes, and the restored `row_count:*` rows equal production's.
 **STOP:** any mismatch or error. **Recovery:** delete the local copies per the owner's retention rule; nothing in
 production changed. **Notes:** provider snapshots/PITR are additional, UNKNOWN until checked, and do not replace
@@ -136,8 +137,9 @@ the verified dump.
 **Entry:** Gate B PASS; a fresh `e9a_preflight` PASS in the same window; written authorization C naming revision
 `a7c3e91d5b24`; a maintenance moment with low write traffic on `financial_rules`.
 **Procedure:** [e9a-production-migration.md](e9a-production-migration.md) section 5: only
-`./run_guarded_migration.sh a7c3e91d5b24 <db>`, which fails closed (endpoint proof, `alembic current`, preflight)
-before the exact-revision upgrade and verifies afterwards; never a hand-typed `alembic upgrade`, never `head`.
+`BACKUP_EVIDENCE_FILE=<receipt> ./run_guarded_migration.sh a7c3e91d5b24 <db>`, which fails closed (backup evidence,
+endpoint proof, `alembic current`, preflight, and a repeat of the proof and revision) before the exact-revision upgrade
+and verifies afterwards; never a hand-typed `alembic upgrade`, never `head`.
 **PASS:** the runner exits 0. **STOP:** exit 11 (nothing changed), 12 (upgrade failed, nothing committed) or 13
 (migrated but a post-check failed: report); re-verify with the preflight and stop. **Recovery:** the migration is one transaction; see the E9A runbook section 8 for what a
 downgrade can and cannot do. **Authorization:** C.
@@ -157,7 +159,7 @@ grant together with C but must name; a later re-run needs A.
 
 **Entry:** Gate D PASS; written authorization E.
 **Procedure:** [e10-production-migration.md](e10-production-migration.md) section 2: `e10_preflight` PASS and a
-**fresh** restore-verified dump (not the pre-E9A one).
+**fresh** restore-verified dump (not the pre-E9A one) with its receipt (the runner refuses the pre-E9A receipt).
 **PASS / STOP:** as in that section. **Recovery:** none needed (nothing changed in production).
 
 ## 9. Gate F - exact E10 migration
@@ -165,7 +167,7 @@ grant together with C but must name; a later re-run needs A.
 **Entry:** Gate E PASS; a fresh `e10_preflight` PASS immediately before; written authorization F naming revision
 `c4d8a2f6e193`.
 **Procedure:** [e10-production-migration.md](e10-production-migration.md) section 3
-only `./run_guarded_migration.sh c4d8a2f6e193 <db>` (same guards and exit codes). No lock on an existing table is taken.
+only `BACKUP_EVIDENCE_FILE=<pre-E10 receipt> ./run_guarded_migration.sh c4d8a2f6e193 <db>` (same guards and exit codes). No lock on an existing table is taken.
 **PASS:** the runner exits 0. **STOP:** exit 11, 12 or 13; verify with the preflight and stop. **Recovery:** see the E10 runbook
 section 6; a downgrade is safe only after the dispatcher is disabled or switched to
 `RULE_DISPATCHER_ALERT_PROGRESS=off` and no run is active.

@@ -432,7 +432,7 @@ and needs its own explicit authorization:
 4. Lock-timeout policy: the migration takes only SHARE ROW EXCLUSIVE on `financial_rules`; run it
    in one transaction with a transaction-local `lock_timeout` of about 5 seconds (injected by the
    operator wrapper, never stored in the revision) and abort rather than wait.
-5. Exact-revision migration: `alembic upgrade a7c3e91d5b24` (never `head`), one transaction.
+5. Exact-revision migration: only through the fail-closed runner `docs/operations/sql/run_guarded_migration.sh` (see `docs/operations/e9a-production-migration.md` section 5); never a hand-typed Alembic command, never `head`, one transaction.
 6. Post-migration verification: `alembic current` = `a7c3e91d5b24`; the table, its six CHECKs, the
    foreign key (`ON DELETE SET NULL (rule_id)`), the unique constraint and the three indexes exist
    with the documented predicates; `anon`, `authenticated` and `service_role` hold no privilege on
