@@ -888,6 +888,30 @@ def _receipt_fields(receipt: Path) -> Dict[str, str]:
     return dict(line.split("=", 1) for line in receipt.read_text().splitlines() if line)
 
 
+def _advisory_lock_objects(database_engine: Engine) -> List[int]:
+    """objid of every advisory lock (class 7165) held in this database: 1 = runner session lock, 2 = migration transaction."""
+    with database_engine.connect() as connection:
+        return sorted(row[0] for row in connection.execute(text(
+            "SELECT objid FROM pg_locks WHERE locktype = 'advisory' AND classid = 7165 AND granted "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())")))
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _direct_guarded_alembic(url, source: str, *args: str) -> subprocess.CompletedProcess:
+    """What the runner executes for the upgrade (same environment variable), without the runner's own guards."""
+    environment = dict(os.environ)
+    environment.update({"DATABASE_URL": url.render_as_string(hide_password=False), "VF_GUARDED_MIGRATION_FROM": source})
+    return subprocess.run([sys.executable, "-m", "alembic", *args], cwd=str(API_DIR), env=environment,
+                          capture_output=True, text=True, timeout=180)
+
+
 def _locks_released(database_engine: Engine, seconds: float = 5.0) -> bool:
     """PostgreSQL drops a session's advisory lock when its backend notices the closed connection (a moment later)."""
     deadline = time.time() + seconds
@@ -919,6 +943,9 @@ class _Guarded:
             # Hold an in-flight upgrade open until the test releases it (concurrency tests).
             'case "$*" in *"alembic upgrade"*) if [ -n "$STUB_PAUSE_DIR" ]; then touch "$STUB_PAUSE_DIR/started.$$";'
             ' n=0; while [ ! -e "$STUB_PAUSE_DIR/release" ] && [ "$n" -lt 300 ]; do sleep 0.2; n=$((n+1)); done; fi;; esac\n'
+            # Real Alembic, paused INSIDE its migration transaction (after env.py took the database-level lock).
+            'case "$*" in *"alembic upgrade"*) if [ -n "$STUB_PAUSE_IN_TXN_DIR" ]; then for last; do :; done;'
+            f' exec "{os.sys.executable}" "$STUB_PATCH_SCRIPT" "$last"; fi;; esac\n'
             # Simulated drift between the first checks and the pre-upgrade re-check (counts per kind of call).
             'case "$*" in\n'
             '  *pg_postmaster_start_time*) k=proof;;\n'
@@ -935,13 +962,30 @@ class _Guarded:
             f'exec "{os.sys.executable}" "$@"\n'
         )
         self.stub.chmod(0o755)
+        self.patch_script = tmp_path / "alembic-paused-in-transaction.py"
+        self.patch_script.write_text(
+            "import os, sys, time\n"
+            "from alembic.runtime import migration\n"
+            "original = migration.MigrationContext.run_migrations\n"
+            "def paused(self, **kw):\n"
+            "    directory = os.environ['STUB_PAUSE_IN_TXN_DIR']\n"
+            "    open(os.path.join(directory, 'in-txn.%d' % os.getpid()), 'w').close()\n"
+            "    waited = 0\n"
+            "    while not os.path.exists(os.path.join(directory, 'release')) and waited < 600:\n"
+            "        time.sleep(0.1); waited += 1\n"
+            "    return original(self, **kw)\n"
+            "migration.MigrationContext.run_migrations = paused\n"
+            "from alembic.config import main\n"
+            "main(argv=['upgrade', sys.argv[1]])\n"
+        )
 
     def environment(self, args: Tuple[str, ...], pg_database: str, url_engine: Optional[Engine],
                     env: Optional[Dict[str, Optional[str]]] = None, evidence: Optional[Dict[str, Optional[str]]] = None,
                     evidence_dump_from: Optional[str] = None) -> Dict[str, str]:
         environment = _libpq_env(pg_database)
         environment.update({"MIGRATION_PYTHON": str(self.stub), "STUB_LOG": str(self.log),
-                            "STUB_COUNTS": str(self.dir / "stub-count"), "REQUIRE_DATA_API_ROLES": "no"})
+                            "STUB_COUNTS": str(self.dir / "stub-count"), "REQUIRE_DATA_API_ROLES": "no",
+                            "STUB_PATCH_SCRIPT": str(self.patch_script)})
         if len(args) == 2 and args[0] in (E9A_REVISION, E10_REVISION):
             environment["BACKUP_EVIDENCE_FILE"] = str(
                 _make_evidence(self.dir, evidence_dump_from or pg_database, args[0], args[1], **(evidence or {})))
@@ -1856,6 +1900,142 @@ def test_sr04_the_lock_is_released_even_when_the_runner_is_killed(guarded: _Guar
         assert _advisory_locks(database_engine) == 0                      # the holder noticed the dead parent
     finally:
         os.killpg(runner.pid, signal.SIGKILL)
+
+
+# ---- SR-09: the migration's own connection holds the database-level lock, so killing the runner cannot unprotect it ----
+
+def test_sr09_after_sigkill_of_the_runner_the_orphaned_migration_is_still_serialized_by_the_database(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    pause = guarded.dir / "txn-pause"
+    pause.mkdir()
+    runner_a = guarded.start((E9A_REVISION, name), name, database_engine, env={"STUB_PAUSE_IN_TXN_DIR": str(pause)})
+    try:
+        assert _wait_for(pause, "in-txn.*"), "runner A never reached the inside of the migration transaction"
+        migration_pid = int(next(pause.glob("in-txn.*")).name.split(".")[1])
+        # Both locks exist: the runner's session lock (1) and the migration transaction's own lock (2).
+        assert _advisory_lock_objects(database_engine) == [1, 2]
+
+        os.kill(runner_a.pid, signal.SIGKILL)                        # ONLY the supervising shell: no trap, no cleanup
+        runner_a.wait(timeout=30)
+        for _ in range(100):                                         # the holder notices the dead parent and exits
+            if _advisory_lock_objects(database_engine) == [2]:
+                break
+            time.sleep(0.1)
+        assert _advisory_lock_objects(database_engine) == [2]        # the session lock is gone, the migration's lock is NOT
+        assert _process_alive(migration_pid)                         # the orphaned Alembic is still running ...
+        assert _revision(database_engine) == E6_REVISION             # ... and has not committed anything yet
+
+        # (a) a complete second runner cannot perform an overlapping upgrade
+        second = guarded.run((E9A_REVISION, name), name, database_engine)
+        assert second.returncode in (11, 12), (second.returncode, second.stderr)
+        assert _revision(database_engine) == E6_REVISION
+        # (b) the database-level invariant itself, with every runner guard out of the way: a second Alembic is refused
+        overlapping = _direct_guarded_alembic(_url_of(database_engine), E6_REVISION, "upgrade", E9A_REVISION)
+        assert overlapping.returncode != 0 and "VF_MIGRATION_LOCK_BUSY" in overlapping.stderr
+        assert _revision(database_engine) == E6_REVISION
+
+        (pause / "release").write_text("go")                         # let the orphan finish on its own
+        for _ in range(300):
+            if not _process_alive(migration_pid):
+                break
+            time.sleep(0.1)
+        assert not _process_alive(migration_pid)
+    finally:
+        try:
+            os.killpg(runner_a.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    assert _revision(database_engine) == E9A_REVISION                # exactly one upgrade happened
+    assert _wrapper("e9a_postcheck", name).returncode == 0           # schema consistent (post-check PASS)
+    assert _locks_released(database_engine) and _advisory_lock_objects(database_engine) == []
+
+
+def test_sr09_sigterm_of_the_runner_stops_the_running_migration_and_releases_everything(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    pause = guarded.dir / "txn-pause"
+    pause.mkdir()
+    runner = guarded.start((E9A_REVISION, name), name, database_engine, env={"STUB_PAUSE_IN_TXN_DIR": str(pause)})
+    try:
+        assert _wait_for(pause, "in-txn.*")
+        migration_pid = int(next(pause.glob("in-txn.*")).name.split(".")[1])
+        os.kill(runner.pid, signal.SIGTERM)                          # only the runner: its trap must stop the child
+        runner.communicate(timeout=60)
+        for _ in range(100):
+            if not _process_alive(migration_pid):
+                break
+            time.sleep(0.1)
+        assert not _process_alive(migration_pid)
+    finally:
+        try:
+            os.killpg(runner.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    assert runner.returncode in (143, -signal.SIGTERM)
+    assert _snapshot([e6_db]) == (before, revisions)                 # rolled back: nothing changed
+    assert _locks_released(database_engine) and _advisory_lock_objects(database_engine) == []
+
+
+def test_sr09_a_failing_migration_rolls_back_and_releases_the_database_lock(e6_db: Tuple[str, Engine]) -> None:
+    name, database_engine = e6_db
+    _execute(database_engine, "CREATE TABLE public.rule_alerts (id integer)")   # makes the E9A DDL fail inside the transaction
+    before, revisions = _snapshot([e6_db])
+
+    result = _direct_guarded_alembic(_url_of(database_engine), E6_REVISION, "upgrade", E9A_REVISION)
+
+    assert result.returncode != 0 and _snapshot([e6_db]) == (before, revisions)
+    assert _locks_released(database_engine) and _advisory_lock_objects(database_engine) == []
+
+
+def test_sr09_the_lock_holder_loss_still_stops_a_running_migration_and_leaves_no_lock(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    name, database_engine = e6_db
+    pause = guarded.dir / "txn-pause"
+    pause.mkdir()
+    runner = guarded.start((E9A_REVISION, name), name, database_engine, env={"STUB_PAUSE_IN_TXN_DIR": str(pause)})
+    try:
+        assert _wait_for(pause, "in-txn.*")
+        migration_pid = int(next(pause.glob("in-txn.*")).name.split(".")[1])
+        for pid in _holder_pids():
+            os.kill(pid, signal.SIGKILL)
+        out, err = runner.communicate(timeout=60)
+        for _ in range(100):
+            if not _process_alive(migration_pid):
+                break
+            time.sleep(0.1)
+        assert runner.returncode == 14 and not _process_alive(migration_pid)
+    finally:
+        try:
+            os.killpg(runner.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    assert _revision(database_engine) == E6_REVISION
+    assert _locks_released(database_engine) and _advisory_lock_objects(database_engine) == []
+
+
+def test_sr09_ordinary_alembic_commands_are_unchanged_and_the_guard_checks_the_revision_under_the_lock(
+    e6_db: Tuple[str, Engine],
+) -> None:
+    url = _url_of(e6_db[1])
+    ordinary = _alembic(url, "current")                              # no environment variable: no lock, no new behavior
+    assert ordinary.returncode == 0 and E6_REVISION in ordinary.stdout
+
+    wrong_source = _direct_guarded_alembic(url, E9A_REVISION, "upgrade", E9A_REVISION)   # the database is NOT at that source
+    assert wrong_source.returncode != 0 and "VF_MIGRATION_REVISION_CHANGED" in wrong_source.stderr
+    assert _revision(e6_db[1]) == E6_REVISION
+
+    correct = _direct_guarded_alembic(url, E6_REVISION, "upgrade", E9A_REVISION)
+    assert correct.returncode == 0 and _revision(e6_db[1]) == E9A_REVISION
+    assert _locks_released(e6_db[1]) and _advisory_lock_objects(e6_db[1]) == []
+
+    again = _alembic(url, "upgrade", E10_REVISION)                   # an ordinary command still works afterwards
+    assert again.returncode == 0 and _revision(e6_db[1]) == E10_REVISION
 
 
 # ---- Alembic error redaction ----------------------------------------------------------------------------------------

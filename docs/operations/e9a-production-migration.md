@@ -193,7 +193,15 @@ There is no override flag. In this order it requires:
 6. the endpoint proof and `alembic current` **repeated immediately before the upgrade**: the proof must equal the first
    one (same server instance) and the revision must still be exactly the parent (this narrows, but cannot remove, the
    window between check and change; the upgrade is a single transaction);
-7. only then `alembic upgrade a7c3e91d5b24` under `lock_timeout` 5 s and `statement_timeout` 60 s;
+7. only then `alembic upgrade a7c3e91d5b24` under `lock_timeout` 5 s and `statement_timeout` 60 s. **The real mutual
+   exclusion is database-level:** the runner sets `VF_GUARDED_MIGRATION_FROM` for this one command, and `alembic/env.py`
+   then takes a **transaction-scoped advisory lock on the migration's own connection** and re-checks, under that lock, that the
+   database is still at `e0503e9ca9d3`. The lock lives exactly as long as the migration transaction, so it survives a `kill -9`
+   of the runner (the shell, its trap and the session-lock holder are not what protects the migration). A second migration
+   gets `VF_MIGRATION_LOCK_BUSY` (exit 12 with a fixed cause) and one that lost the race gets `VF_MIGRATION_REVISION_CHANGED`.
+   **After a runner was killed**, an orphaned Alembic may still be finishing: before anything else check `pg_stat_activity`
+   for the migration session and run the read-only preflight/post-check; do not start another run until it has ended.
+   Ordinary Alembic commands (without the variable) are unchanged. Hand-run Alembic is not serialized: it is forbidden;
 8. the read-only `e9a_postcheck` returning PASS.
 
 | Exit | Meaning | Action |

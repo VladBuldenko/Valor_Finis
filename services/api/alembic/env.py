@@ -1,7 +1,8 @@
+import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from app.core.app_config import settings
 from app.db.database_base import Base
@@ -22,6 +23,26 @@ import_database_models()
 
 
 target_metadata = Base.metadata
+
+
+def serialize_guarded_migration(connection) -> None:
+    """
+    Database-level serialization for the guarded release runner (VF-OPS03-1 SR-09).
+
+    Only active when run_guarded_migration.sh sets VF_GUARDED_MIGRATION_FROM; every other Alembic command is unchanged.
+    Inside the migration transaction it takes a transaction-scoped advisory lock and then re-checks that the database is
+    still at the expected source revision. The lock belongs to THIS migration connection, so it exists exactly as long as
+    the migration transaction does, even if the supervising shell is killed: a second migration can never run in
+    parallel, and a run that lost the race refuses instead of re-applying. Fixed messages only (no connection details).
+    """
+
+    expected_from = os.environ.get("VF_GUARDED_MIGRATION_FROM")
+    if not expected_from:
+        return
+    if not connection.execute(text("SELECT pg_try_advisory_xact_lock(7165, 2)")).scalar():
+        raise RuntimeError("VF_MIGRATION_LOCK_BUSY")
+    if tuple(context.get_context().get_current_heads()) != (expected_from,):
+        raise RuntimeError("VF_MIGRATION_REVISION_CHANGED")
 
 
 def run_migrations_offline() -> None:
@@ -79,6 +100,7 @@ def run_migrations_online() -> None:
         )
 
         with context.begin_transaction():
+            serialize_guarded_migration(connection)
             context.run_migrations()
 
 

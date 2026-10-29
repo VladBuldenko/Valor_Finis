@@ -25,7 +25,9 @@
 #   2b. a session-level advisory lock (never waited for) serializes concurrent runs; held until this process exits;
 #   4b. immediately before the upgrade the endpoint proof is repeated and must be identical to the first one
 #      (same server instance), and `alembic current` is read again (narrows the time-of-check window);
-#   5. only then: `alembic upgrade <revision>` under lock_timeout 5s / statement_timeout 60s;
+#   5. only then: `alembic upgrade <revision>` under lock_timeout 5s / statement_timeout 60s. The real mutual exclusion is
+#      DATABASE-LEVEL: with VF_GUARDED_MIGRATION_FROM set, alembic/env.py takes a transaction-scoped advisory lock on the
+#      migration's own connection and re-checks the source revision under it (SR-09), so it survives SIGKILL of this shell;
 #   6. the read-only post-check(s) must PASS.
 #
 # Exit status: 0 = migrated and verified; 11 = STOPPED BEFORE any migration (nothing changed);
@@ -198,7 +200,7 @@ kill -0 "$LOCK_PID" 2>/dev/null || stop "the migration lock holder is gone"
 echo "applying exactly $TARGET"
 # The upgrade runs as a child that is watched: if the lock holder disappears (connection lost, backend terminated, pooler
 # surprise) the upgrade is terminated instead of continuing without the lock (one transaction: it rolls back).
-( cd "$API_DIR" && exec "$PY" -m alembic upgrade "$TARGET" ) >/dev/null 2>"$ERR_FILE" &
+( cd "$API_DIR" && VF_GUARDED_MIGRATION_FROM="$PARENT" exec "$PY" -m alembic upgrade "$TARGET" ) >/dev/null 2>"$ERR_FILE" &
 UPG_PID=$!
 LOCK_LOST=no
 while kill -0 "$UPG_PID" 2>/dev/null; do
@@ -214,7 +216,9 @@ fi
 if [ "$UPGRADE_STATUS" -ne 0 ]; then
     # Only FIXED text is printed: Alembic/SQLAlchemy messages can contain hosts, roles, databases or a full URL, so
     # the captured stderr is classified by keyword and never echoed.
-    if grep -qiE 'lock timeout' "$ERR_FILE"; then CAUSE="a lock timeout (the table was busy)"
+    if grep -q 'VF_MIGRATION_LOCK_BUSY' "$ERR_FILE"; then CAUSE="a database-level migration lock held by another migration (an earlier run may still be finishing: check the preflight and pg_stat_activity before any retry)"
+    elif grep -q 'VF_MIGRATION_REVISION_CHANGED' "$ERR_FILE"; then CAUSE="a revision that changed after the checks (another migration finished first)"
+    elif grep -qiE 'lock timeout' "$ERR_FILE"; then CAUSE="a lock timeout (the table was busy)"
     elif grep -qiE 'statement timeout' "$ERR_FILE"; then CAUSE="a statement timeout"
     elif grep -qiE 'permission denied' "$ERR_FILE"; then CAUSE="a permission error"
     elif grep -qiE 'already exists' "$ERR_FILE"; then CAUSE="an object that already exists"
