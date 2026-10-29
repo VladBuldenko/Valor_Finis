@@ -1,6 +1,7 @@
 import hashlib
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1382,22 +1383,67 @@ def test_the_release_documents_contain_no_unguarded_migration_command() -> None:
 VERIFIER = SQL_DIR / "verify_backup_restore.sh"
 
 
+def _local_server() -> Tuple[Path, Optional[str]]:
+    """Data directory (and socket directory) of the local PostgreSQL the tests use; skip when it is not on this machine."""
+    admin = _admin_engine()
+    try:
+        with admin.connect() as connection:
+            data_dir = Path(connection.execute(text("SHOW data_directory")).scalar_one())
+            sockets = connection.execute(text("SHOW unix_socket_directories")).scalar_one().split(",")[0].strip()
+    except Exception:
+        pytest.skip("cannot read data_directory (the verifier tests need a local server and a superuser test role)")
+    finally:
+        admin.dispose()
+    if not (data_dir / "postmaster.pid").is_file():
+        pytest.skip("the test database server is not running on this machine (no local postmaster.pid)")
+    return data_dir, (sockets if sockets.startswith("/") else None)
+
+
+def _shims(directory: Path, **scripts: str) -> Path:
+    """PATH shims for createdb/dropdb/pg_restore that log every call (SHIM_LOG) and then run `body`."""
+    shim_dir = directory / "shims"
+    shim_dir.mkdir(exist_ok=True)
+    for name in ("createdb", "dropdb", "pg_restore"):
+        real = shutil.which(name)
+        assert real, name
+        body = scripts.get(name, f'exec "{real}" "$@"')
+        # The log lives next to the shim: the verifier runs its tools under `env -i`, so no test variable reaches them.
+        (shim_dir / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "$(dirname "$0")/calls.log"\nREAL="{real}"\n{body}\n')
+        (shim_dir / name).chmod(0o755)
+    return shim_dir
+
+
 def _verify(directory: Path, dump: Path, gate: str, expected_db: str, receipt: Path,
-            env: Optional[Dict[str, Optional[str]]] = None) -> subprocess.CompletedProcess:
+            env: Optional[Dict[str, Optional[str]]] = None, shims: Optional[Path] = None,
+            socket_mode: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run([str(VERIFIER), gate, expected_db, str(dump), str(receipt)],
+                          env=_verifier_environment(directory, env, shims, socket_mode), capture_output=True, text=True,
+                          timeout=240, stdin=subprocess.DEVNULL)
+
+
+def _verifier_environment(directory: Path, env: Optional[Dict[str, Optional[str]]] = None, shims: Optional[Path] = None,
+                          socket_mode: bool = False) -> Dict[str, str]:
+    data_dir, sockets = _local_server()
     base = _libpq_env("postgres")
     environment = {key: value for key, value in base.items() if not key.startswith("PG")}
     environment.update({"RESTORE_PGHOST": base["PGHOST"], "RESTORE_PGPORT": base["PGPORT"],
                         "RESTORE_PGUSER": base["PGUSER"], "RESTORE_PGPASSWORD": base["PGPASSWORD"],
-                        "RESTORE_PGSSLMODE": "disable",
+                        "RESTORE_PGSSLMODE": "disable", "RESTORE_PGDATA": str(data_dir),
+                        "RESTORE_ALLOW_LOOPBACK_TCP": "1", "SHIM_LOG": str(directory / "shim.log"),
                         # What an operator's shell holds while verifying: production variables that must be ignored.
                         "PGHOST": "db.production.invalid", "DATABASE_URL": "postgresql://u:p@db.production.invalid/x"})
+    if socket_mode:
+        if not sockets or not os.path.exists(os.path.join(sockets, f".s.PGSQL.{base['PGPORT']}")):
+            pytest.skip("no Unix socket for the test server")
+        environment.update({"RESTORE_PGHOST": sockets, "RESTORE_ALLOW_LOOPBACK_TCP": ""})
+    if shims is not None:
+        environment["PATH"] = f"{shims}:{environment.get('PATH', os.environ['PATH'])}"
     for key, value in (env or {}).items():
         if value is None:
             environment.pop(key, None)
         else:
             environment[key] = value
-    return subprocess.run([str(VERIFIER), gate, expected_db, str(dump), str(receipt)], env=environment,
-                          capture_output=True, text=True, timeout=240, stdin=subprocess.DEVNULL)
+    return environment
 
 
 def _throwaway_databases() -> int:
@@ -1480,6 +1526,233 @@ def test_sr02_the_verifier_refuses_a_non_local_restore_server(
     result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, env=env)
 
     assert result.returncode == 64 and "REFUSED" in result.stderr and not receipt.exists()
+
+
+# ---- SR-05 / SR-06: cleanup of the throwaway database ----------------------------------------------------------
+
+def _shim_calls(directory: Path, tool: str) -> List[str]:
+    log = directory / "shims" / "calls.log"
+    return [line for line in log.read_text().splitlines() if line.startswith(tool + " ")] if log.exists() else []
+
+
+def test_sr05_a_failed_createdb_never_leads_to_a_dropdb_and_spares_an_existing_database(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    # createdb "fails because the name already exists": the shim creates the database first (another process's database),
+    # then runs the real createdb, which fails with `database ... already exists`.
+    real = shutil.which("createdb")
+    shims = _shims(guarded.dir, createdb=f'"$REAL" "$@" || exit 1; exec "$REAL" "$@"')
+    receipt = guarded.dir / "no-receipt.env"
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, shims=shims)
+
+    assert real and result.returncode == 1 and "cannot create the throwaway database" in result.stderr
+    assert len(_shim_calls(guarded.dir, "createdb")) == 1
+    assert _shim_calls(guarded.dir, "dropdb") == []                # no dropdb invocation at all
+    assert not receipt.exists() and not list(guarded.dir.glob("*.pending.*"))
+    admin = _admin_engine()
+    try:
+        with admin.connect() as connection:
+            survivors = [row[0] for row in connection.execute(text("SELECT datname FROM pg_database WHERE datname LIKE 'vf_restore_%'"))]
+    finally:
+        admin.dispose()
+    assert len(survivors) == 1                                       # the pre-existing database was not deleted
+    _drop_database(survivors[0])
+
+
+def test_sr06_a_failing_dropdb_prevents_success_and_invalidates_the_receipt(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    shims = _shims(guarded.dir, dropdb="exit 1")
+    receipt = guarded.dir / "receipt.env"
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, shims=shims)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1 and "CLEANUP FAILED" in result.stderr and "manual investigation" in result.stderr
+    assert "RECEIPT WRITTEN" not in combined
+    assert not receipt.exists() and not list(guarded.dir.glob("*.pending.*"))   # nothing usable is left behind
+    assert "postgres" not in combined.replace("PostgreSQL", "") or "password" not in combined.lower()
+    leftover = re.search(r"vf_restore_\d+_\d+_test", result.stderr)
+    assert leftover                                                  # the operator is told which database to inspect
+    _drop_database(leftover.group(0))                                # the test cleans up what the shim refused to drop
+
+
+def test_sr06_normal_cleanup_drops_exactly_once_and_then_writes_the_receipt(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    shims = _shims(guarded.dir)
+    receipt = guarded.dir / "receipt.env"
+    leftovers = _throwaway_databases()
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, shims=shims)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert len(_shim_calls(guarded.dir, "createdb")) == 1 and len(_shim_calls(guarded.dir, "dropdb")) == 1
+    assert receipt.exists() and _throwaway_databases() == leftovers
+
+
+def test_sr05_an_interrupted_verifier_still_drops_the_database_it_created(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    shims = _shims(guarded.dir, pg_restore='case "$*" in *--dbname*) touch "$(dirname "$0")/restoring"; sleep 60;; *) exec "$REAL" "$@";; esac')
+    receipt = guarded.dir / "receipt.env"
+    leftovers = _throwaway_databases()
+    process = subprocess.Popen(
+        [str(VERIFIER), E9A_REVISION, e6_db[0], str(_dump_of(guarded.dir, e6_db[0])), str(receipt)],
+        env=_verifier_environment(guarded.dir, shims=shims), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        for _ in range(150):
+            if (guarded.dir / "shims" / "restoring").exists():
+                break
+            time.sleep(0.2)
+        assert (guarded.dir / "shims" / "restoring").exists()
+        os.killpg(process.pid, signal.SIGTERM)                       # what Ctrl-C / a terminal hangup does
+        process.communicate(timeout=60)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+    assert process.returncode in (143, -signal.SIGTERM) and not receipt.exists()
+    assert len(_shim_calls(guarded.dir, "dropdb")) == 1 and _throwaway_databases() == leftovers
+
+
+# ---- SR-08: the restore server must be provably local ------------------------------------------------------------
+
+def _pid_file_copy(directory: Path, **changes: str) -> Path:
+    """A copy of the local postmaster.pid (with the directory line pointing at the copy) and some lines changed."""
+    data_dir, _sockets = _local_server()
+    lines = (data_dir / "postmaster.pid").read_text().splitlines()
+    fake = directory / "fake-pgdata"
+    fake.mkdir(exist_ok=True)
+    lines[1] = str(fake)
+    for index, key in ((0, "pid"), (2, "start"), (3, "port")):
+        if key in changes:
+            lines[index] = changes[key]
+    (fake / "postmaster.pid").write_text("\n".join(lines) + "\n")
+    return fake
+
+
+@pytest.mark.parametrize("env", [
+    {"RESTORE_ALLOW_LOOPBACK_TCP": ""},                 # loopback TCP can be a tunnel: needs the explicit flag
+    {"RESTORE_PGDATA": None},                           # no data directory to prove the server against
+    {"RESTORE_PGDATA": "relative/path"},
+    {"RESTORE_PGDATA": "/nonexistent/pgdata"},
+    {"RESTORE_PGHOST": "/nonexistent/socket-dir", "RESTORE_ALLOW_LOOPBACK_TCP": ""},
+    {"RESTORE_PGPORT": "54x2"},
+])
+def test_sr08_unverified_or_unsafe_connection_configurations_are_refused_before_anything_is_created(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], env: Dict[str, Optional[str]],
+) -> None:
+    receipt = guarded.dir / "no-receipt.env"
+    shims = _shims(guarded.dir)
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, env=env, shims=shims)
+
+    assert result.returncode == 64 and "REFUSED" in result.stderr and not receipt.exists()
+    assert _shim_calls(guarded.dir, "createdb") == []
+
+
+@pytest.mark.parametrize("change,message", [
+    ({"start": "1000000000"}, "start times differ"),                 # a server with another start time: a tunnel to elsewhere
+    ({"pid": "999999"}, "not a running local process"),
+    ({"port": "1"}, "different port"),
+])
+def test_sr08_a_server_that_is_not_the_local_postmaster_is_rejected_before_createdb(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], change: Dict[str, str], message: str,
+) -> None:
+    fake = _pid_file_copy(guarded.dir, **change)
+    receipt = guarded.dir / "no-receipt.env"
+    shims = _shims(guarded.dir)
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt,
+                     env={"RESTORE_PGDATA": str(fake)}, shims=shims)
+
+    assert result.returncode == 1 and message in result.stderr and not receipt.exists()
+    assert _shim_calls(guarded.dir, "createdb") == [] and _shim_calls(guarded.dir, "dropdb") == []
+
+
+def test_sr08_a_unix_socket_connection_to_the_local_server_is_accepted(guarded: _Guarded, e6_db: Tuple[str, Engine]) -> None:
+    receipt = guarded.dir / "receipt.env"
+
+    result = _verify(guarded.dir, _dump_of(guarded.dir, e6_db[0]), E9A_REVISION, e6_db[0], receipt, socket_mode=True)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert receipt.exists()
+
+
+# ---- SR-07: lock lifetime, loss of the holder, poolers ------------------------------------------------------------------
+
+def _wait_for(path_glob: Path, pattern: str, seconds: float = 30.0) -> bool:
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if list(path_glob.glob(pattern)):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _holder_pids() -> List[int]:
+    output = subprocess.run(["pgrep", "-f", "hold_migration_lock.py"], capture_output=True, text=True).stdout
+    return [int(value) for value in output.split()]
+
+
+def test_sr07_the_holder_has_no_time_cap_and_a_long_migration_keeps_the_lock_throughout(
+    guarded: _Guarded, e6_db: Tuple[str, Engine],
+) -> None:
+    assert "MAX_SECONDS" not in (SQL_DIR / "hold_migration_lock.py").read_text()
+    name, database_engine = e6_db
+    pause = guarded.dir / "pause"
+    pause.mkdir()
+    runner = guarded.start((E9A_REVISION, name), name, database_engine, env={"STUB_PAUSE_DIR": str(pause)})
+    try:
+        assert _wait_for(pause, "started.*")
+        for _ in range(8):                                        # a "long" upgrade: the lock is re-verified every second
+            assert _advisory_locks(database_engine) == 1 and runner.poll() is None
+            time.sleep(1.0)
+        (pause / "release").write_text("go")
+        out, err = runner.communicate(timeout=120)
+        assert runner.returncode == 0, (out, err)
+    finally:
+        if runner.poll() is None:
+            os.killpg(runner.pid, signal.SIGKILL)
+    assert _revision(database_engine) == E9A_REVISION
+
+
+@pytest.mark.parametrize("how", ["process_killed", "backend_terminated"])
+def test_sr07_losing_the_lock_holder_terminates_the_upgrade_instead_of_continuing(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], how: str,
+) -> None:
+    name, database_engine = e6_db
+    before, revisions = _snapshot([e6_db])
+    pause = guarded.dir / "pause"
+    pause.mkdir()
+    runner = guarded.start((E9A_REVISION, name), name, database_engine, env={"STUB_PAUSE_DIR": str(pause)})
+    try:
+        assert _wait_for(pause, "started.*")
+        if how == "process_killed":
+            for pid in _holder_pids():
+                os.kill(pid, signal.SIGKILL)
+        else:                                                       # the server (or a pooler) drops the holder's connection
+            with database_engine.connect() as connection:
+                connection.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 7165 "
+                    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"))
+        out, err = runner.communicate(timeout=60)
+    finally:
+        if runner.poll() is None:
+            os.killpg(runner.pid, signal.SIGKILL)
+    assert runner.returncode == 14 and "migration lock was lost" in err, (runner.returncode, err)
+    assert _snapshot([e6_db]) == (before, revisions)                # the upgrade never completed
+    assert _locks_released(database_engine)
+
+
+@pytest.mark.parametrize("env", [
+    {"PGPORT": "6543"},                                             # Supabase transaction-mode pooler port, PG* path
+    {"DATABASE_URL": "postgresql://u:p@localhost:6543/x"},          # ... DATABASE_URL path
+    {"DATABASE_URL": "postgresql://u:p@pgbouncer.internal:5432/x"},
+])
+def test_sr07_transaction_poolers_are_refused_for_the_migration(
+    guarded: _Guarded, e6_db: Tuple[str, Engine], env: Dict[str, Optional[str]],
+) -> None:
+    result = guarded.run((E9A_REVISION, e6_db[0]), e6_db[0], e6_db[1], env=env)
+
+    assert result.returncode == 64 and "transaction-mode pooler" in result.stderr
+    assert guarded.upgrade_calls() == [] and not guarded.log.exists()
 
 
 # ---- SR-03: the test mode needs every condition, localhost alone is never enough ----------------------------------

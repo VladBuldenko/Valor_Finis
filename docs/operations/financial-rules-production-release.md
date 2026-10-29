@@ -128,7 +128,7 @@ classified. **STOP:** connectivity fails or the cause is unexplained: fix that f
 SHA-256, `pg_restore --list`, restore into a throwaway `*_test` database, `e9a_preflight` on the restored copy, and
 the sealed receipt that `verify_backup_restore.sh` produces after performing the restore and the restored-copy preflight
 (same section). Gate B authorization must also state the owner's acceptance of the residual risk that software cannot prove the
-dump came from the production *server* (E9A runbook section 4); without that acceptance the gate stays BLOCKED.
+dump came from the production *server* (E9A runbook section 4) and of the limits of the local-server proof; without that acceptance the gate stays BLOCKED.
 **PASS:** the checksum verifies, the restore completes, and the restored `row_count:*` rows equal production's.
 **STOP:** any mismatch or error. **Recovery:** delete the local copies per the owner's retention rule; nothing in
 production changed. **Notes:** provider snapshots/PITR are additional, UNKNOWN until checked, and do not replace

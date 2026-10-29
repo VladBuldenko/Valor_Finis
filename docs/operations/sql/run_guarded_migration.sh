@@ -31,6 +31,7 @@
 # Exit status: 0 = migrated and verified; 11 = STOPPED BEFORE any migration (nothing changed);
 # 12 = `alembic upgrade` itself failed (single transaction: nothing committed, verify with the
 # preflight); 13 = migrated, but a post-check did not PASS (report; do not retry);
+# 14 = the migration lock was lost during the upgrade and the upgrade was terminated (verify with the preflight);
 # 64 = refused to start (usage or unsafe environment).
 #
 # Credentials come only from the environment (never arguments); nothing here prints a URL.
@@ -44,14 +45,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$(cd "$DIR/../../../services/api" && pwd)"
 PY="${MIGRATION_PYTHON:-$API_DIR/.venv/bin/python}"
 
-LOCK_PID=""; ERR_FILE=""; LOCK_STATUS=""
+LOCK_PID=""; ERR_FILE=""; LOCK_STATUS=""; UPG_PID=""
 cleanup() {
+    [ -z "$UPG_PID" ] || kill "$UPG_PID" >/dev/null 2>&1   # a still running upgrade is one transaction: it rolls back
+
     # Stopping the holder closes its connection, which releases the advisory lock; wait so the lock is gone at exit.
     [ -z "$LOCK_PID" ] || { kill "$LOCK_PID" >/dev/null 2>&1; wait "$LOCK_PID" >/dev/null 2>&1; }
     [ -z "$ERR_FILE" ] || rm -f "$ERR_FILE"
     [ -z "$LOCK_STATUS" ] || rm -f "$LOCK_STATUS" "$LOCK_STATUS.tmp"
 }
 trap cleanup EXIT
+trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
 
 refuse() { echo "REFUSED: $1" >&2; exit 64; }
 stop() { echo "STOP (before any migration): $1" >&2; exit 11; }
@@ -73,6 +77,15 @@ esac
 for forbidden in PGSERVICE PGSERVICEFILE PGHOSTADDR; do
     [ -z "${!forbidden:-}" ] || refuse "unset $forbidden: it can override the validated connection settings"
 done
+# Session-level advisory locks (SR-04/SR-07) need a direct or session-mode connection. Supabase's transaction-mode pooler
+# (port 6543) and any pgbouncer-style endpoint cannot hold them reliably, so they are refused outright; the lock holder
+# additionally verifies at run time that the answering backend still holds the lock.
+URL_AUTHORITY="${DATABASE_URL#*://}"; URL_AUTHORITY="${URL_AUTHORITY#*@}"; URL_AUTHORITY="${URL_AUTHORITY%%[/?]*}"
+URL_PORT=""; case "$URL_AUTHORITY" in *:*) URL_PORT="${URL_AUTHORITY##*:}" ;; esac
+if [ "${PGPORT:-5432}" = "6543" ] || [ "$URL_PORT" = "6543" ] || [[ "$PGHOST $URL_AUTHORITY" == *pgbouncer* ]]; then
+    refuse "a transaction-mode pooler (port 6543 / pgbouncer) cannot hold the migration lock: use the direct or session-mode endpoint for both PG* and DATABASE_URL"
+fi
+
 # Disposable local test mode (it relaxes TLS and allows the MIGRATION_PYTHON test double). EVERY condition must hold:
 # the explicit flag, a local PG* host, a local DATABASE_URL host, and an expected database whose name ends in `_test`.
 # Merely being on localhost is never enough (SR-03).
@@ -168,7 +181,7 @@ for _wait in $(seq 1 75); do [ -s "$LOCK_STATUS" ] && break; sleep 0.2; done
 case "$(cat "$LOCK_STATUS" 2>/dev/null)" in
     LOCKED) ;;
     BUSY)   stop "another guarded migration run holds the lock on this database" ;;
-    *)      stop "cannot take the migration lock" ;;
+    *)      stop "cannot take or verify the migration lock (is this a transaction-mode pooler? use the direct or session-mode endpoint)" ;;
 esac
 check_current
 
@@ -183,8 +196,21 @@ kill -0 "$LOCK_PID" 2>/dev/null || stop "the migration lock holder is gone"
 
 # --- 5. the exact upgrade ----------------------------------------------------------------------
 echo "applying exactly $TARGET"
-( cd "$API_DIR" && "$PY" -m alembic upgrade "$TARGET" ) >/dev/null 2>"$ERR_FILE"
-UPGRADE_STATUS=$?
+# The upgrade runs as a child that is watched: if the lock holder disappears (connection lost, backend terminated, pooler
+# surprise) the upgrade is terminated instead of continuing without the lock (one transaction: it rolls back).
+( cd "$API_DIR" && exec "$PY" -m alembic upgrade "$TARGET" ) >/dev/null 2>"$ERR_FILE" &
+UPG_PID=$!
+LOCK_LOST=no
+while kill -0 "$UPG_PID" 2>/dev/null; do
+    if ! kill -0 "$LOCK_PID" 2>/dev/null; then LOCK_LOST=yes; kill "$UPG_PID" 2>/dev/null; break; fi
+    sleep 0.5
+done
+wait "$UPG_PID"; UPGRADE_STATUS=$?
+UPG_PID=""
+if [ "$LOCK_LOST" = yes ]; then
+    echo "STOP: the migration lock was lost during the upgrade and the upgrade process was terminated (single transaction: nothing is committed unless it had already finished). Verify with the preflight; do not retry blindly." >&2
+    exit 14
+fi
 if [ "$UPGRADE_STATUS" -ne 0 ]; then
     # Only FIXED text is printed: Alembic/SQLAlchemy messages can contain hosts, roles, databases or a full URL, so
     # the captured stderr is classified by keyword and never echoed.

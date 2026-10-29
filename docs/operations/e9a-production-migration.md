@@ -113,7 +113,8 @@ LOCAL machine against a LOCAL disposable PostgreSQL server (never production); i
 preflight itself and writes the sealed receipt only when everything passed:
 
 ```bash
-RESTORE_PGHOST=localhost RESTORE_PGUSER=<local role allowed to CREATE DATABASE> \
+RESTORE_PGHOST=<local Unix socket directory, e.g. /tmp> RESTORE_PGDATA=<that local server's data directory> \
+RESTORE_PGUSER=<local role allowed to CREATE DATABASE> \
   ./verify_backup_restore.sh a7c3e91d5b24 <production_database_name> "$FILE" "$BACKUP_DIR/vf_e9a_pre_${STAMP}.receipt.env"
 ```
 
@@ -122,7 +123,18 @@ exactly `e0503e9ca9d3`, the required tables must be listed, the SHA-256 is compu
 `vf_restore_*_test` database on the local server, using only `RESTORE_PG*` (every `PG*` and `DATABASE_URL` variable of
 your shell is dropped, so production cannot be reached by accident); (3) restores into it with `pg_restore --clean --if-exists --exit-on-error`;
 (4) reads the restored revision back; (5) runs `e9a_preflight` on the restored copy, which must PASS; (6) writes the receipt
-(mode 600) and drops the throwaway database, also on failure (no receipt exists after a failure).
+to a pending file, drops the throwaway database **and checks that the drop succeeded**, and only then moves the receipt into
+place (mode 600): if the drop fails there is no receipt, the exit status is 1 and the message names the database for manual
+investigation. The verifier drops a database only if **it created it** (a failed `createdb`, e.g. because the name exists,
+never leads to a `dropdb`), and also cleans up on interruption (INT, TERM, HUP).
+
+**Local-server proof (before anything is created).** "localhost" can be an SSH tunnel to a remote server and scrubbing the
+environment does not prove where a server is, so the verifier requires a Unix socket directory by default (TCP to
+localhost/127.0.0.1 needs `RESTORE_ALLOW_LOOPBACK_TCP=1`) and proves that the server it reached is the postmaster of the
+local `RESTORE_PGDATA`: its `postmaster.pid` must name a running local process, the same data directory and port, and a start
+time equal (±2 s) to the start time the reached server reports. A tunnel to a remote server fails this. **Limit that cannot be
+removed automatically:** a remote server forwarded onto this machine's socket whose start time matches a local postmaster
+to the second would pass; the operator remains responsible for using a genuinely local disposable server.
 
 **What is machine-verified, and what is not.** Verified: the dump is intact, belongs to the expected database name
 (archive metadata), holds the required source revision, restores completely, and the restored copy passes the
@@ -172,7 +184,12 @@ There is no override flag. In this order it requires:
    a **concurrency lock**: one session-level PostgreSQL advisory lock, taken (never waited for) right after the first
    endpoint proof and held until the runner exits, so a second run against the same database stops with exit 11 before
    any check that could lead to an upgrade; PostgreSQL releases the lock when the holder's connection closes, and the
-   holder exits when the runner dies (also after `kill -9`) or after 15 minutes at most;
+   holder has **no time cap** (a long migration never outlives its lock) and exits when the runner dies (also after `kill -9`).
+   The holder re-verifies about once a second that its own backend still holds the lock; if the connection is lost, the
+   backend is terminated, or the lock is not held by the answering backend, it exits and the runner **terminates the
+   running upgrade** (a single transaction, so it rolls back) and exits 14 instead of continuing without the lock. Session-level
+   locks do not work behind a transaction-mode pooler, so ports 6543 and pgbouncer hosts are refused (the run-time check
+   also catches an undetected pooler): use the direct or session-mode endpoint for both `PG*` and `DATABASE_URL`;
 6. the endpoint proof and `alembic current` **repeated immediately before the upgrade**: the proof must equal the first
    one (same server instance) and the revision must still be exactly the parent (this narrows, but cannot remove, the
    window between check and change; the upgrade is a single transaction);
@@ -185,6 +202,7 @@ There is no override flag. In this order it requires:
 | 11 | **stopped before any migration; nothing changed** (a guard failed, the cause is printed) | fix the cause, re-run from the preflight |
 | 12 | `alembic upgrade` itself failed (one transaction: nothing committed); the runner prints only a fixed cause (lock timeout, statement timeout, permission, already exists, connection or unclassified), never Alembic's own message | verify with the preflight, report, stop |
 | 13 | migrated, but a post-check did not PASS | report; do not retry; see section 8 |
+| 14 | the migration lock was lost during the upgrade and the upgrade process was terminated (nothing is committed unless it had already finished) | verify with the preflight before anything else; do not retry blindly |
 | 64 | refused to start (usage or unsafe environment) | fix the invocation |
 
 Never retry in a loop and never raise a timeout to make a step pass. Do not interrupt the process after it started
