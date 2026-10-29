@@ -8,12 +8,18 @@ import {
   createSessionLifecycle,
   type SessionIdentity,
 } from "../api/session-lifecycle";
-import { queryClient, resetPrivateQueryData } from "./query-client";
+import { SessionQueryClient } from "./session-query-client";
 import { supabase } from "./supabase";
 
+export const sessionQueryClient = new SessionQueryClient();
+
 export const sessionBoundary = new SessionBoundary(() => {
-  resetPrivateQueryData(queryClient);
+  sessionQueryClient.rotate();
 });
+
+// For code that continues after an await: false once the user it started for
+// is gone. Pass the client obtained from useQueryClient() while rendering.
+export const isCurrentQueryClient = sessionQueryClient.isCurrent;
 
 async function getCurrentSession(): Promise<SessionIdentity | null> {
   const {

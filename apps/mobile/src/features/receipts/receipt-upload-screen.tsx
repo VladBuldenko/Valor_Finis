@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 
+import { isCurrentQueryClient } from "../../lib/session-runtime";
 import {
   getReceiptById,
   processReceipt,
@@ -79,6 +80,11 @@ export function ReceiptUploadScreen() {
       try {
         const currentReceipt = await getReceiptById(receiptId);
 
+        // The user may have changed while the status was being fetched.
+        if (!isCurrentQueryClient(queryClient)) {
+          return;
+        }
+
         if (
           currentReceipt.status === "processed" ||
           currentReceipt.status === "confirmed"
@@ -101,6 +107,10 @@ export function ReceiptUploadScreen() {
       } catch {
         // Status check itself failed (e.g. offline) -- fall through to
         // the generic retry UI below.
+      }
+
+      if (!isCurrentQueryClient(queryClient)) {
+        return;
       }
 
       setFailedReceiptId(receiptId);

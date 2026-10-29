@@ -69,10 +69,35 @@ a token refresh.
 ## Cache isolation
 
 `SessionBoundary` counts epochs per signed-in user. The auth listener (and, as a safety net, every request) reports
-the user; when a signed-in user is replaced or signs out, the old epoch's requests are aborted and the query cache is
-cleared (`queryClient.clear()`). A response that still arrives is refused by the transport (`cancelled`) and cannot reach
-a query. A token refresh for the same user changes nothing. The first user after "nobody" is only adopted, because
-sign-out already cleared everything.
+the user. When a signed-in user is replaced or signs out:
+
+1. the old epoch's requests are aborted, and a response that still arrives is refused by the transport (`cancelled`);
+2. `SessionQueryClient` **retires** the current `QueryClient` (`clear()`, and its mutation callbacks are halted, see
+   below) and installs a **new client** for the next user; `app/_layout.tsx` re-provides it (`useSyncExternalStore`).
+
+A token refresh for the same user changes nothing. The first user after "nobody" is only adopted, because sign-out
+already rotated the client.
+
+### Mutation callbacks (MF2-SR01)
+
+`useMutation` callbacks (`onSuccess`/`onError`/`onSettled`) belong to the mutation, not to the screen: they keep running
+after the screen unmounted and after sign-out, and several screens write the cache or navigate in them (for example
+`receipt-upload-screen.tsx` calls `setQueryData` and `router.push`; `goal-priorities-screen.tsx` writes
+`["goals", userId]`). With one shared client such a callback could write user A's data into user B's cache (the receipt
+key has no user id) and navigate B to A's screen. Protection, in two layers:
+
+- **Retired clients halt their mutations.** The client's `MutationCache` hooks `onSuccess`/`onError`/`onSettled` never
+  settle once the client is retired. TanStack awaits them *before* the screen's own callbacks, so none of the screen's
+  callbacks run, whether the request finished after the switch or before it. A retired mutation never settles (a
+  `mutateAsync` caller stays pending; its screen is gone) and is never replayed.
+- **Callbacks already running hold the old client.** Screens get the client from `useQueryClient()` while rendering, so
+  a callback body that was already past the hooks and resumes later writes and invalidates only the retired, cleared
+  client: nothing reaches B's cache or fetches under B's session.
+
+What this does not stop: an already-running callback body that resumes after an `await` and calls `router.push`/`back`.
+The body must check `isCurrentQueryClient(queryClient)` (from `lib/session-runtime.ts`) before navigating or starting
+new requests; `receipt-upload-screen.tsx` does this after its status check. Today's bodies only await HTTP calls, which
+the transport aborts on a user change, so no other screen needs the check; new code must add it after any other await.
 
 ## Navigation intent
 
@@ -80,11 +105,36 @@ When the server invalidates a session, the last in-app path is kept (only plain 
 fragment, scheme, `..` or `/sign-in`), for 30 minutes, once, and only for the same user. A deliberate sign-out or a
 different user discards it. `app/_layout.tsx` tracks the path and restores it with `router.replace`.
 
+## Error presentation (audit)
+
+Screens that show `error.message` in an alert: `receipt-upload-screen.tsx` (upload, process, picker and camera
+failures), `goal-create-screen.tsx`, `budget-create-screen.tsx`, `budget-edit-screen.tsx`, `budgets-screen.tsx`
+(delete), `categories-screen.tsx` (visibility), `dashboard-screen.tsx` (sign-out, a Supabase error) and
+`app/sign-in.tsx` (Supabase). Other screens go through `getApiErrorMessage`, `getGoalErrorMessage` or a status-only check.
+
+- `ApiError` does not change what these screens show for HTTP failures: the message is byte-for-byte the historical
+  `API request failed: <status> <body>`. **That text, including the raw server body, was already shown by the screens
+  above before MF-2** (a pre-existing presentation defect, not introduced here). `ApiError.body`, `status`, `detail`
+  and `cause` are not rendered anywhere.
+- New non-HTTP messages are fixed strings: `Request timed out.`, `Request was cancelled.`,
+  `The server returned an unreadable response.`, `User is not authenticated.`; a network failure keeps the runtime's
+  own message (`Network request failed`). Tests assert that no message or serialized field contains the access token,
+  the base URL or the request path.
+- Not changed in MF-2 (the exact messages are the compatibility contract of the existing mappers).
+
+**Deferred requirement (after BE-1, `feat/VF-API-ERROR-CODES`):** codes do not exist yet, so none are mapped or
+invented. Once the backend returns the stable snake_case `code` on every error body, add one user-facing mapper
+`code -> copy` with a string fallback (using `ApiError.code`, `status` and `kind`), and replace every direct
+`error.message` alert above with it, so a 5xx page or JSON body is never shown. Until then the unmapped screens above
+can show technical text for HTTP errors. Unknown or missing codes must fall back to a neutral message, never the body.
+
 ## Known limits
 
-- Services do not yet forward TanStack's `signal` into `apiRequest`; screens' unmounted queries are not aborted on the
+- Services do not yet forward TanStack's `signal` into `apiRequest`; unmounted queries are not aborted on the
   network until MF-3.
-- A mutation `onSuccess` of the previous user that runs after the reset could still call `setQueryData`; none exists
-  today, and new code must not do this after an await without checking the user.
-- The route restore effect in `app/_layout.tsx` and the real Supabase refresh-rejection behavior are covered by review
-  only; they need the staging/device drills (BR-7) before they can be called accepted.
+- A retired mutation never settles, so any `await mutation.mutateAsync(...)` of a signed-out screen stays pending (the
+  screen is unmounted; memory is released when the client is dropped).
+- A callback body that resumes after an `await` other than HTTP must check `isCurrentQueryClient` before navigating.
+- The route restore effect in `app/_layout.tsx`, the client rotation in a mounted React tree, and the real Supabase
+  refresh-rejection behavior are covered by review and Node tests of the pure parts only; they need the staging/device
+  drills (BR-7) before they can be called accepted.

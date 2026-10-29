@@ -6,14 +6,15 @@ import { hangUntilAborted, json, never } from "../api/api-test-support.ts";
 import { ApiError } from "../api/api-error.ts";
 import { SessionBoundary } from "../api/session-boundary.ts";
 import type { SessionIdentity } from "../api/session-lifecycle.ts";
-import { createAppQueryClient, resetPrivateQueryData } from "./query-client.ts";
+import { createAppQueryClient } from "./query-client.ts";
+import { SessionQueryClient } from "./session-query-client.ts";
 
 const USER_A: SessionIdentity = { userId: "user-a", accessToken: "a-token" };
 const USER_B: SessionIdentity = { userId: "user-b", accessToken: "b-token" };
 
 function app(respond: (url: string, init: RequestInit, user: SessionIdentity) => Promise<Response>) {
-  const client = createAppQueryClient();
-  const boundary = new SessionBoundary(() => resetPrivateQueryData(client));
+  const holder = new SessionQueryClient();
+  const boundary = new SessionBoundary(() => holder.rotate());
   const state: { session: SessionIdentity | null } = { session: USER_A };
   const urls: string[] = [];
   const transport = createApiTransport({
@@ -31,9 +32,19 @@ function app(respond: (url: string, init: RequestInit, user: SessionIdentity) =>
 
   // The app's real shape: queries share ONE key space across users.
   const load = (key: string, path = `/api/v1/${key}`) =>
-    client.fetchQuery({ queryKey: [key], queryFn: () => transport.request<{ owner: string }>(path) });
+    holder.get().fetchQuery({ queryKey: [key], queryFn: () => transport.request<{ owner: string }>(path) });
 
-  return { client, boundary, state, transport, load, urls };
+  return {
+    get client() {
+      return holder.get();
+    },
+    holder,
+    boundary,
+    state,
+    transport,
+    load,
+    urls,
+  };
 }
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -85,9 +96,13 @@ describe("cross-user cache isolation", () => {
     a.boundary.observe(USER_A.userId);
     assert.equal(a.client.getQueryCache().getAll().length, 2, "same user: nothing is cleared");
 
+    const previous = a.client;
+
     a.boundary.observe(USER_B.userId);
     assert.equal(a.client.getQueryCache().getAll().length, 0);
     assert.equal(a.client.getQueryData(["accounts"]), undefined);
+    assert.notEqual(a.client, previous, "the next user gets a fresh client");
+    assert.equal(previous.getQueryCache().getAll().length, 0, "the old client holds nothing either");
   });
 
   it("clears the cache on sign-out", async () => {

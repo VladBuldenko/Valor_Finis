@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, usePathname, type Href } from "expo-router";
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   View,
@@ -11,7 +11,7 @@ import {
   useAuth,
 } from "../src/features/auth/auth-context";
 import { navigationIntent } from "../src/features/auth/navigation-intent";
-import { queryClient } from "../src/lib/query-client";
+import { sessionQueryClient } from "../src/lib/session-runtime";
 
 function RootNavigator() {
   const { session, isLoading } = useAuth();
@@ -68,6 +68,12 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
+  // One QueryClient per signed-in user (see session-query-client.ts).
+  const queryClient = useSyncExternalStore(
+    sessionQueryClient.subscribe,
+    sessionQueryClient.get,
+  );
+
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
