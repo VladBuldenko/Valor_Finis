@@ -375,11 +375,16 @@ PostgreSQL
 
 Client types mirror the API contract: the mobile client keeps strict TypeScript types aligned with the backend response schemas, and all business data goes through the FastAPI client.
 
-The mobile app has no test framework dependency. Pure helper modules can have focused tests written as plain JavaScript for Node's built-in test runner, which imports the TypeScript helper through Node's type stripping. Type stripping is on by default from Node 22.18; the project's pinned Node (apps/mobile/.nvmrc 22.13.0, engines >=22.13.0) needs the --experimental-strip-types flag for it, which newer versions still accept. The flagged form therefore works on every supported version (from apps/mobile):
+Mobile validation (from apps/mobile, Node 22.13.0 from `.nvmrc`; npm only):
 
-node --experimental-strip-types --test src/features/goals/goal-transaction-attempts.test.mjs
+npm ci
+npx tsc --noEmit
+npm run lint
+npm test
 
-On Node 22.18 or later the flag can be omitted. Both forms were verified locally on Node 22.23.2; Node may print a MODULE_TYPELESS_PACKAGE_JSON warning, which does not affect the result.
+`npm test` runs every `src/**/*.test.ts` and `src/**/*.test.mjs` file with Node's built-in test runner (`scripts/run-unit-tests.js`). There is no test framework dependency, and no phone, simulator, Metro, network or Supabase is needed. The runner fails when no test file is found, so a moved test directory cannot pass silently. The tests import TypeScript helpers through Node's type stripping, which needs `--experimental-strip-types` on the pinned Node 22.13 (it is on by default from 22.18); the script passes the flag, so it works on every supported version. Test files may import `./x.ts` directly (`allowImportingTsExtensions`), and `@types/node` is a devDependency for `node:test` typing. Keep tests to pure helpers: screens, navigation and device behavior are not covered by this command.
+
+GitHub Actions (`.github/workflows/mobile-ci.yml`) runs the same four commands on every pull request to `main` and every push to `main`, on Ubuntu with the Node version from `.nvmrc`, a read-only token and no secrets. It does not build, publish or run EAS.
 
 ✅ Definition of Done
 
