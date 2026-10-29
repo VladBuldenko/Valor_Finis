@@ -40,23 +40,28 @@ post-check instead. STOP with revision `e0503e9ca9d3` means E9A is missing: E10 
 `vf_e10_pre_<UTC>_rev_a7c3e91d5b24.dump`). Do not reuse the pre-E9A dump: after E9A the E9B runtime may have
 written alerts, which that dump does not contain. Restore-verify it into a throwaway `*_test` database; the
 restored copy must pass `e10_preflight` (`alembic_revision_is_e9a` OK; the table absent checks OK) with
-`REQUIRE_DATA_API_ROLES=no` locally.
+`REQUIRE_DATA_API_ROLES=no` locally. Then produce the receipt with the verifier, never by hand (E9A runbook section 4):
+`./verify_backup_restore.sh c4d8a2f6e193 <production_database_name> <dump> <receipt_out>`; it restores the dump, requires the
+E9A revision and `rule_alerts` in it, and runs `e10_preflight` on the restored copy.
 
 ## 3. Gate F - the exact upgrade (authorization naming `c4d8a2f6e193`)
 
-Re-run the preflight immediately before; it must PASS. Then, from `services/api` with the Alembic environment
-loaded from the secret store (no echo):
+Use **only** the fail-closed runner described in the E9A runbook section 5 (same environment, same guards, same
+exit codes). Do not type `alembic upgrade` by hand.
 
 ```bash
-export PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=60000'
-# Run the endpoint proof of the E9A runbook section 5 here (FP_SQL / VIA_PG / VIA_URL): it must end with
-# `SAME SERVER, lock_timeout 5s`, otherwise stop.
-.venv/bin/alembic current                         # must print a7c3e91d5b24
-.venv/bin/alembic upgrade c4d8a2f6e193            # the EXACT revision
+BACKUP_EVIDENCE_FILE="$RECEIPT" ./run_guarded_migration.sh c4d8a2f6e193 <production_database_name>
 ```
 
-Although this migration takes no lock on an existing relation, the timeouts stay: they bound any unexpected
-wait. A failure rolls the single transaction back; re-run the preflight, report and stop. No retry loop.
+`$RECEIPT` is the verifier-produced receipt of the **fresh pre-E10 backup** (E9A runbook section 4; file name
+`vf_e10_pre_<UTC>_rev_a7c3e91d5b24`). The runner
+refuses the pre-E9A receipt (wrong source revision), a dump without `rule_alerts`, and any evidence older than 24 hours.
+Like every use of this runner it is never a bootstrap and never used for staging builds.
+
+Here the runner requires `alembic current` to be exactly `a7c3e91d5b24`, `e10_preflight` to PASS, and after the
+upgrade both `e10_postcheck` and `e9a_postcheck` to PASS (exit 13 otherwise). Although this migration takes no lock
+on an existing relation, the timeouts stay: they bound any unexpected wait. Exit 11 means nothing was changed;
+exit 12 means the single upgrade transaction failed and nothing was committed. No retry loop.
 
 ## 4. Gate G - post-check, role security and runtime compatibility
 

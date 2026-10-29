@@ -125,7 +125,10 @@ classified. **STOP:** connectivity fails or the cause is unexplained: fix that f
 
 **Entry:** Gate A PASS with `e9a_preflight` PASS; written authorization B.
 **Procedure and evidence:** [e9a-production-migration.md](e9a-production-migration.md) section 4: logical dump,
-SHA-256, `pg_restore --list`, restore into a throwaway `*_test` database, `e9a_preflight` on the restored copy.
+SHA-256, `pg_restore --list`, restore into a throwaway `*_test` database, `e9a_preflight` on the restored copy, and
+the sealed receipt that `verify_backup_restore.sh` produces after performing the restore and the restored-copy preflight
+(same section). Gate B authorization must also state the owner's acceptance of the residual risk that software cannot prove the
+dump came from the production *server* (E9A runbook section 4) and of the limits of the local-server proof; without that acceptance the gate stays BLOCKED.
 **PASS:** the checksum verifies, the restore completes, and the restored `row_count:*` rows equal production's.
 **STOP:** any mismatch or error. **Recovery:** delete the local copies per the owner's retention rule; nothing in
 production changed. **Notes:** provider snapshots/PITR are additional, UNKNOWN until checked, and do not replace
@@ -135,10 +138,12 @@ the verified dump.
 
 **Entry:** Gate B PASS; a fresh `e9a_preflight` PASS in the same window; written authorization C naming revision
 `a7c3e91d5b24`; a maintenance moment with low write traffic on `financial_rules`.
-**Procedure:** [e9a-production-migration.md](e9a-production-migration.md) section 5
-(`PGOPTIONS` lock/statement timeouts, an endpoint proof that `DATABASE_URL` and the preflighted `PG*` variables reach the same server and honour them, `alembic current`, `alembic upgrade a7c3e91d5b24`, never `head`).
-**PASS:** the command exits 0. **STOP:** any error or a lock timeout (nothing is committed; re-verify with the
-preflight and stop). **Recovery:** the migration is one transaction; see the E9A runbook section 8 for what a
+**Procedure:** [e9a-production-migration.md](e9a-production-migration.md) section 5: only
+`BACKUP_EVIDENCE_FILE=<receipt> ./run_guarded_migration.sh a7c3e91d5b24 <db>`, which fails closed (backup evidence,
+endpoint proof, `alembic current`, preflight, and a repeat of the proof and revision) before the exact-revision upgrade
+and verifies afterwards; never a hand-typed `alembic upgrade`, never `head`.
+**PASS:** the runner exits 0. **STOP:** exit 11 (nothing changed), 12 (upgrade failed, nothing committed) or 13
+(migrated but a post-check failed: report); re-verify with the preflight and stop. **Recovery:** the migration is one transaction; see the E9A runbook section 8 for what a
 downgrade can and cannot do. **Authorization:** C.
 
 ## 7. Gate D - E9A post-check and application validation
@@ -156,7 +161,7 @@ grant together with C but must name; a later re-run needs A.
 
 **Entry:** Gate D PASS; written authorization E.
 **Procedure:** [e10-production-migration.md](e10-production-migration.md) section 2: `e10_preflight` PASS and a
-**fresh** restore-verified dump (not the pre-E9A one).
+**fresh** restore-verified dump (not the pre-E9A one) with its receipt (the runner refuses the pre-E9A receipt).
 **PASS / STOP:** as in that section. **Recovery:** none needed (nothing changed in production).
 
 ## 9. Gate F - exact E10 migration
@@ -164,8 +169,8 @@ grant together with C but must name; a later re-run needs A.
 **Entry:** Gate E PASS; a fresh `e10_preflight` PASS immediately before; written authorization F naming revision
 `c4d8a2f6e193`.
 **Procedure:** [e10-production-migration.md](e10-production-migration.md) section 3
-(`alembic upgrade c4d8a2f6e193`, with the `PGOPTIONS` timeouts). No lock on an existing table is taken.
-**PASS:** exit 0. **STOP:** any error; verify with the preflight and stop. **Recovery:** see the E10 runbook
+only `BACKUP_EVIDENCE_FILE=<pre-E10 receipt> ./run_guarded_migration.sh c4d8a2f6e193 <db>` (same guards and exit codes). No lock on an existing table is taken.
+**PASS:** the runner exits 0. **STOP:** exit 11, 12 or 13; verify with the preflight and stop. **Recovery:** see the E10 runbook
 section 6; a downgrade is safe only after the dispatcher is disabled or switched to
 `RULE_DISPATCHER_ALERT_PROGRESS=off` and no run is active.
 
@@ -194,10 +199,29 @@ later optimization.
 `python -m app.modules.financial_rules.dispatcher`, schedule `*/10 * * * *` UTC, same database URL secret as the
 web service, same region). Do not commit a `render.yaml` that provisions it automatically.
 **Staged activation (each stage needs the operator to confirm the previous one):**
-1. Create the job with `RULE_DISPATCHER_ENABLED=false`. Trigger one run. Expected: exit 0 and a
-   `dispatcher_summary` with `outcome: disabled`, nothing touched. This proves the image, the environment and the
-   database connection without any financial effect.
-2. Read-only backlog check before the first effective run (counts only):
+1. **Smoke test of the CLI and configuration only.** Create the job with `RULE_DISPATCHER_ENABLED=false` and trigger
+   one run. Expected: exit 0 and a `dispatcher_summary` with `outcome: disabled`. This proves only that the image
+   builds, the command starts and the configuration parses. **It does not prove database connectivity**: a disabled
+   dispatcher returns before it ever opens a database session, so a successful disabled run says nothing about
+   PostgreSQL, the credentials, the endpoint or the schema.
+1b. **Read-only connection and schema verification through the actual Cron runtime path** (required before real
+   processing is enabled). Temporarily set the Cron Job's Docker Command to the single command below and trigger one
+   run, then restore `python -m app.modules.financial_rules.dispatcher`. It runs inside the Cron image with the Cron
+   service's own `DATABASE_URL`, through the same engine module the dispatcher uses
+   (`app.db.database_session`), starts with `SET TRANSACTION READ ONLY`, writes nothing, prints no URL, and exits
+   non-zero unless every expectation holds (each table privilege is tested on its own: PostgreSQL's
+   `has_table_privilege` with a list returns true when the role holds ANY listed privilege):
+
+   ```
+   python -c 'import sys; from sqlalchemy import text; from app.db.database_session import engine; c = engine.connect(); c.execute(text("SET TRANSACTION READ ONLY")); r = tuple(c.execute(text("SELECT (SELECT min(version_num) FROM alembic_version), (SELECT count(*) FROM alembic_version), to_regclass($$public.rule_alerts$$) IS NOT NULL, to_regclass($$public.alert_dispatch_progress$$) IS NOT NULL, current_setting($$transaction_read_only$$), has_table_privilege(current_user, $$public.alert_dispatch_progress$$, $$SELECT$$) AND has_table_privilege(current_user, $$public.alert_dispatch_progress$$, $$INSERT$$) AND has_table_privilege(current_user, $$public.alert_dispatch_progress$$, $$UPDATE$$) AND has_table_privilege(current_user, $$public.alert_dispatch_progress$$, $$DELETE$$), has_sequence_privilege(current_user, $$public.alert_dispatch_service_seq$$, $$USAGE$$)")).one()); print(r); sys.exit(0 if r == ("c4d8a2f6e193", 1, True, True, "on", True, True) else 1)'
+   ```
+
+   Expected output: `('c4d8a2f6e193', 1, True, True, 'on', True, True)` and a successful run. Any other output, any
+   traceback or a non-zero exit is a **STOP**: connectivity, the credentials, the endpoint or the schema/privileges
+   are not as required. Render's handling of a multi-line or quoted Docker Command is unverified: confirm that the
+   command arrives intact (the printed tuple proves it) and never paste the output if it contains connection
+   details. This check creates no new write path; the dispatcher itself is not run with processing enabled.
+2. Only after 1b succeeded: read-only backlog check before the first effective run (counts only):
    `SELECT status, count(*), min(occurred_at) FROM financial_events GROUP BY 1;` Because the dispatcher executes
    AUTO rules and writes alerts for **all** users, decide knowingly how large a backlog the first run may meet.
    Optional cautious first run: `RULE_DISPATCHER_MAX_USERS=1`, `RULE_DISPATCHER_MAX_EVENTS_PER_USER=5`,
@@ -206,7 +230,7 @@ web service, same region). Do not commit a `render.yaml` that provisions it auto
    another: do not trigger manually while one is running.
 **Unverified Render behaviour to confirm on the first deployment:** how a non-zero exit code (1, 2 or 3) appears,
 whether failed-run notifications exist, and how to suspend the job.
-**PASS:** the staged runs behave as stated. **STOP:** a non-zero exit in stage 1, `outcome: fatal`, or any
+**PASS:** the staged runs behave as stated. **STOP:** a non-zero exit in stage 1 or a failed stage 1b, `outcome: fatal`, or any
 unexpected `progress_update_failures`. **Rollback:** set `RULE_DISPATCHER_ENABLED=false` (the next run exits 0
 touching nothing), or delete the Cron Job. Committed events, executions and alerts are ordinary rows and need no
 reversal; a half-done run leaves only expiring leases (up to 5 minutes).
