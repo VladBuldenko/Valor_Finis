@@ -1,54 +1,38 @@
 import { env } from "../config/env";
 import { supabase } from "../lib/supabase";
+import { sessionBoundary, sessionLifecycle } from "../lib/session-runtime";
+import { createApiTransport, type ApiRequestOptions } from "./api-transport";
 
-export async function apiRequest<T>(
+export { ApiError, isApiError, isAuthApiError } from "./api-error";
+export type { ApiErrorKind } from "./api-error";
+export type { ApiRequestOptions } from "./api-transport";
+
+const transport = createApiTransport({
+  baseUrl: env.apiUrl,
+  fetch: (input, init) => fetch(input, init),
+  getSession: async () => {
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+
+    if (error) {
+      throw error;
+    }
+
+    return session
+      ? { userId: session.user.id, accessToken: session.access_token }
+      : null;
+  },
+  boundary: sessionBoundary,
+  onUnauthorized: (used) => sessionLifecycle.handleUnauthorized(used),
+});
+
+// The single entry point for FastAPI calls. See api-transport.ts for the
+// timeout, retry and cancellation policy and session-lifecycle.ts for HTTP 401.
+export function apiRequest<T>(
   path: string,
-  options: RequestInit = {},
+  options: ApiRequestOptions = {},
 ): Promise<T> {
-  const {
-    data: { session },
-    error: sessionError,
-  } = await supabase.auth.getSession();
-
-  if (sessionError) {
-    throw sessionError;
-  }
-
-  if (!session) {
-    throw new Error("User is not authenticated.");
-  }
-
-  // Multipart requests (e.g. receipt uploads) must not set a manual
-  // Content-Type header: the runtime fetch implementation generates the
-  // correct "multipart/form-data" boundary itself. JSON requests keep the
-  // existing explicit header.
-  const isFormDataBody = options.body instanceof FormData;
-
-  const response = await fetch(
-    `${env.apiUrl}${path}`,
-    {
-      ...options,
-      headers: {
-        ...(isFormDataBody
-          ? {}
-          : { "Content-Type": "application/json" }),
-        Authorization: `Bearer ${session.access_token}`,
-        ...options.headers,
-      },
-    },
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-
-    throw new Error(
-      `API request failed: ${response.status} ${errorText}`,
-    );
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json() as Promise<T>;
+  return transport.request<T>(path, options);
 }

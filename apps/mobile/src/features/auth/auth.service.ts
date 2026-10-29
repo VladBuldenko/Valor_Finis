@@ -1,4 +1,5 @@
 import { supabase } from "../../lib/supabase";
+import { navigationIntent } from "./navigation-intent";
 
 /**
  * Signs in a user with email and password through Supabase Auth.
@@ -28,6 +29,9 @@ export async function signInWithEmail(
  * Auth state changes are handled globally by AuthProvider.
  */
 export async function signOut(): Promise<void> {
+  // A deliberate sign-out never restores the previous location on next sign-in.
+  navigationIntent.discard();
+
   const { error } = await supabase.auth.signOut();
 
   if (error) {

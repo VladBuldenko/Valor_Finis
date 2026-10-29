@@ -7,6 +7,7 @@ import {
   } from "react";
   import type { Session } from "@supabase/supabase-js";
   
+  import { sessionBoundary } from "../../lib/session-runtime";
   import { supabase } from "../../lib/supabase";
   
   type AuthContextValue = {
@@ -50,6 +51,7 @@ import {
           );
         }
   
+        sessionBoundary.observe(initialSession?.user.id ?? null);
         setSession(initialSession);
         setIsLoading(false);
       }
@@ -60,6 +62,9 @@ import {
         data: { subscription },
       } = supabase.auth.onAuthStateChange(
         (_event, nextSession) => {
+          // A different user (or none) resets private data and aborts the
+          // old user's requests; a token refresh for the same user does not.
+          sessionBoundary.observe(nextSession?.user.id ?? null);
           setSession(nextSession);
           setIsLoading(false);
         },
