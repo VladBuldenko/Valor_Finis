@@ -384,6 +384,8 @@ npm test
 
 `npm test` runs every `src/**/*.test.ts` and `src/**/*.test.mjs` file with Node's built-in test runner (`scripts/run-unit-tests.js`). There is no test framework dependency, and no phone, simulator, Metro, network or Supabase is needed. The runner fails when no test file is found, so a moved test directory cannot pass silently. The tests import TypeScript helpers through Node's type stripping, which needs `--experimental-strip-types` on the pinned Node 22.13 (it is on by default from 22.18); the script passes the flag, so it works on every supported version. Test files may import `./x.ts` directly (`allowImportingTsExtensions`), and `@types/node` is a devDependency for `node:test` typing. Keep tests to pure helpers: screens, navigation and device behavior are not covered by this command.
 
+API transport (timeouts, typed `ApiError`, GET-only retry, HTTP 401 handling, cache isolation between users): see [docs/modules/mobile-api-client.md](modules/mobile-api-client.md). Its Node tests prove the rules only; staging acceptance (BR-7) is separate.
+
 GitHub Actions (`.github/workflows/mobile-ci.yml`) runs the same four commands on every pull request to `main` and every push to `main`, on Ubuntu with the Node version from `.nvmrc`, a read-only token and no secrets. It does not build, publish or run EAS.
 
 ✅ Definition of Done
