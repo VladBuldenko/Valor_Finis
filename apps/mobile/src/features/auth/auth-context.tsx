@@ -8,7 +8,7 @@ import {
   import type { Session } from "@supabase/supabase-js";
   
   import { sessionBoundary } from "../../lib/session-runtime";
-  import { createAuthCoordinator } from "./auth-coordinator";
+  import { startAuthSession } from "./auth-session";
   import { supabase } from "../../lib/supabase";
   
   type AuthContextValue = {
@@ -32,57 +32,23 @@ import {
     );
     const [isLoading, setIsLoading] = useState(true);
   
-    useEffect(() => {
-      let isMounted = true;
-
-      // Ordering and boundary adoption live in the coordinator (testable
-      // without React); this component only mirrors its output.
-      const coordinator = createAuthCoordinator<Session>({
-        boundary: sessionBoundary,
-        publish: ({ session: nextSession, isLoading: nextLoading }) => {
-          if (!isMounted) {
-            return;
-          }
-
-          setSession(nextSession);
-          setIsLoading(nextLoading);
-        },
-      });
-
-      async function loadSession() {
-        // Taken before the await: an auth event that arrives meanwhile wins.
-        const settle = coordinator.beginInitialRestore();
-        const {
-          data: { session: initialSession },
-          error,
-        } = await supabase.auth.getSession();
-
-        if (error) {
-          console.error(
-            "Unable to restore Supabase session:",
-            error,
-          );
-        }
-
-        settle(initialSession);
-      }
-
-      void loadSession();
-
-      // Synchronous on purpose: no Supabase Auth call may be made in here.
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange(
-        (_event, nextSession) => {
-          coordinator.handleAuthEvent(nextSession);
-        },
-      );
-
-      return () => {
-        isMounted = false;
-        subscription.unsubscribe();
-      };
-    }, []);
+    useEffect(
+      // All lifecycle rules (restore vs. events, disposal, boundary authority)
+      // live in startAuthSession / the coordinator; this only mirrors state.
+      () =>
+        startAuthSession<Session>({
+          auth: supabase.auth,
+          boundary: sessionBoundary,
+          publish: ({ session: nextSession, isLoading: nextLoading }) => {
+            setSession(nextSession);
+            setIsLoading(nextLoading);
+          },
+          onRestoreError: (error) => {
+            console.error("Unable to restore Supabase session:", error);
+          },
+        }),
+      [],
+    );
 
     return (
       <AuthContext.Provider

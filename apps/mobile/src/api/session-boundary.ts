@@ -12,6 +12,16 @@
 //    `ownsSession` afterwards and `isCurrent` before every dispatch. Comparing
 //    user ids alone would let a request from the first "A" generation become
 //    valid again after A -> B -> A; the epoch makes that impossible.
+//  * The boundary also tracks the CURRENT ACCESS TOKEN of the authoritative
+//    session (updated by every auth event, including same-user refreshes). A
+//    HTTP 401 only matters if the token that failed is still that token in the
+//    same epoch (`ownsToken`); this is synchronous and cannot be made stale by
+//    an asynchronous Supabase lookup, which is why the 401 flow never asks
+//    `getSession()` who is signed in.
+//  * Only the newest AUTHORITY (`claimAuthority`, one per mounted AuthProvider
+//    effect) may apply auth events. An unmounted / superseded provider holds a
+//    revoked authority and cannot change the boundary, whatever its late
+//    callbacks do.
 //  * A change away from a signed-in user aborts that epoch's requests and runs
 //    `onReset` (retire the user's query client). A token refresh for the same
 //    user is not a change.
@@ -26,8 +36,17 @@ export type BoundarySnapshot = {
   readonly signal: AbortSignal;
 };
 
+// Held by the auth coordinator of ONE mounted AuthProvider effect.
+export type BoundaryAuthority = {
+  applyAuthEvent: (userId: string | null, accessToken: string | null) => boolean;
+  isActive: () => boolean;
+  release: () => void;
+};
+
 export class SessionBoundary {
   private userId: string | null = null;
+  private accessToken: string | null = null;
+  private authorityGeneration = 0;
   private epoch = 0;
   private controller = new AbortController();
   private readonly onReset: () => void;
@@ -50,11 +69,44 @@ export class SessionBoundary {
     return snapshot.epoch === this.epoch && snapshot.userId === userId;
   }
 
+  // True when `accessToken` of `userId` is still the authoritative session's
+  // token and the request's epoch is still live.
+  ownsToken(snapshot: BoundarySnapshot, userId: string, accessToken: string): boolean {
+    return (
+      snapshot.epoch === this.epoch &&
+      this.userId === userId &&
+      this.accessToken !== null &&
+      this.accessToken === accessToken
+    );
+  }
+
+  // The newest claim wins: claiming revokes every older authority, and a
+  // released authority is inert. Its applyAuthEvent then does nothing.
+  claimAuthority(): BoundaryAuthority {
+    this.authorityGeneration += 1;
+
+    const mine = this.authorityGeneration;
+    const state = { released: false };
+    const isActive = () => !state.released && this.authorityGeneration === mine;
+
+    return {
+      isActive,
+      release: () => {
+        state.released = true;
+      },
+      applyAuthEvent: (userId, accessToken) =>
+        isActive() ? this.applyAuthEvent(userId, accessToken) : false,
+    };
+  }
+
   // The authoritative current user (null = nobody). Returns true when the
   // user changed. Leaving a signed-in user (to nobody or to another user)
   // aborts that epoch's requests and resets the private data; the first user
   // after "nobody" only advances the epoch, since signing out already reset.
-  applyAuthEvent(userId: string | null): boolean {
+  applyAuthEvent(userId: string | null, accessToken: string | null): boolean {
+    // Same-user refreshes only move the token: no epoch change, no rotation.
+    this.accessToken = userId === null ? null : accessToken;
+
     if (userId === this.userId) {
       return false;
     }

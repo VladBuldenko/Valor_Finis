@@ -25,7 +25,7 @@ const transport = createApiTransport({
       : null;
   },
   boundary: sessionBoundary,
-  onUnauthorized: (used) => sessionLifecycle.handleUnauthorized(used),
+  onUnauthorized: (used, proof) => sessionLifecycle.handleUnauthorized(used, proof),
 });
 
 // The single entry point for FastAPI calls. See api-transport.ts for the

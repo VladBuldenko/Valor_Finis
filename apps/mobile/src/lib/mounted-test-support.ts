@@ -101,7 +101,7 @@ export function createMountedWorld() {
     },
   });
 
-  boundary.applyAuthEvent(auth.session?.userId ?? null);
+  boundary.applyAuthEvent(auth.session?.userId ?? null, auth.session?.accessToken ?? null);
 
   function Probe(): ReactElement | null {
     const client = useQueryClient();
@@ -202,7 +202,7 @@ export function createMountedWorld() {
       auth.session = session;
       // Same order as the auth coordinator: the boundary adopts first, then the
       // UI is told.
-      boundary.applyAuthEvent(session?.userId ?? null);
+      boundary.applyAuthEvent(session?.userId ?? null, session?.accessToken ?? null);
       authSnapshot.current = session;
       authListeners.forEach((listener) => listener());
     });

@@ -27,7 +27,7 @@ function setup() {
   const holder = new SessionQueryClient();
   const boundary = new SessionBoundary(() => holder.rotate());
 
-  boundary.applyAuthEvent("user-a");
+  boundary.applyAuthEvent("user-a", "token-user-a");
 
   return { holder, boundary };
 }
@@ -49,7 +49,7 @@ describe("a retired client is inert", () => {
     let sent = 0;
     const events: string[] = [];
 
-    boundary.applyAuthEvent("user-b");
+    boundary.applyAuthEvent("user-b", "token-user-b");
 
     const observer = new MutationObserver(retired, {
       mutationFn: async () => {
@@ -74,7 +74,7 @@ describe("a retired client is inert", () => {
     const retired = holder.get();
     let fetched = 0;
 
-    boundary.applyAuthEvent("user-b");
+    boundary.applyAuthEvent("user-b", "token-user-b");
 
     await assert.rejects(
       retired.fetchQuery({
@@ -94,7 +94,7 @@ describe("a retired client is inert", () => {
   it("the live client is unaffected by the retired one's guards", async () => {
     const { holder, boundary } = setup();
 
-    boundary.applyAuthEvent("user-b");
+    boundary.applyAuthEvent("user-b", "token-user-b");
 
     const live = holder.get();
     const events: string[] = [];
@@ -129,8 +129,8 @@ describe("pending mutations across account changes", () => {
     }).mutate();
     await tick();
 
-    boundary.applyAuthEvent(null);
-    boundary.applyAuthEvent("user-b");
+    boundary.applyAuthEvent(null, null);
+    boundary.applyAuthEvent("user-b", "token-user-b");
 
     await new MutationObserver(holder.get(), {
       mutationFn: async () => "b",
@@ -159,7 +159,7 @@ describe("pending mutations across account changes", () => {
       onSettled: () => { events.push("settled"); },
     }).mutate();
     await tick();
-    boundary.applyAuthEvent("user-b");
+    boundary.applyAuthEvent("user-b", "token-user-b");
     gate.resolve();
     await tick(30);
 
@@ -185,7 +185,7 @@ describe("pending mutations across account changes", () => {
       }).mutate();
       await tick(1);
 
-      boundary.applyAuthEvent(cycle % 2 === 0 ? "user-b" : "user-a");
+      { const next = cycle % 2 === 0 ? "user-b" : "user-a"; boundary.applyAuthEvent(next, `token-${next}`); }
       clients.add(holder.get());
     }
 
@@ -230,7 +230,7 @@ describe("resource retention (measured)", () => {
         }).mutate();
         await tick(1);
 
-        boundary.applyAuthEvent(cycle % 2 === 0 ? "user-b" : "user-a"); // retires `client`
+        { const next = cycle % 2 === 0 ? "user-b" : "user-a"; boundary.applyAuthEvent(next, `token-${next}`); } // retires `client`
       }
     }
 

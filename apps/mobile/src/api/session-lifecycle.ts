@@ -1,11 +1,20 @@
 // Decides what a HTTP 401 means for the session. Pure and dependency-injected
 // (no Supabase / React Native import) so the concurrency rules are testable.
 //
+// OWNERSHIP, NOT LOOKUPS. Whether the failed token still belongs to the active
+// session is decided by the synchronous `proof.stillOwns()` (session-boundary:
+// same epoch, same user, same CURRENT access token, all driven by authoritative
+// auth events). An asynchronous "who is signed in?" lookup is never consulted:
+// its answer can be stale by the time it resolves, and acting on it signed out
+// the wrong user (MF2-SR07).
+//
 // Rules:
-//  * A 401 only matters if the token that failed is still the ACTIVE
-//    session's token. An old request that was rejected after the session was
-//    refreshed, replaced or ended must never end the newer session.
-//  * Simultaneous 401s for the same token share ONE check.
+//  * A 401 only matters if its token is still the active session's token in the
+//    same generation. A newer token, another user, or a later A -> B -> A
+//    generation makes it stale.
+//  * Ownership is re-checked after every asynchronous step and, in `endSession`,
+//    again immediately before the sign-out side effect (auth-operations.ts).
+//  * Simultaneous 401s for one token (and generation) share ONE check.
 //  * The session is ended only when it is CONFIRMED invalid, i.e. the
 //    authentication server itself rejects the refresh. If the server cannot be
 //    reached the session is kept (a flaky network is not a logout).
@@ -29,26 +38,37 @@ export type UnauthorizedOutcome =
   | "signed-out"
   | "unconfirmed";
 
+// Proof that a request belonged to an authentication generation.
+export type OwnershipProof = {
+  // The authentication epoch the request started in (part of the dedupe key).
+  epoch: number;
+  // Synchronous and authoritative: true only while the request's token is still
+  // the current session's token in the request's epoch.
+  stillOwns: () => boolean;
+};
+
 export type SessionLifecycleDeps = {
-  getCurrentSession: () => Promise<SessionIdentity | null>;
   refreshSession: () => Promise<RefreshResult>;
-  // Ends the local session and the private data tied to it.
-  endSession: () => Promise<void>;
+  // Ends the local session, but only if `proof` still holds at the moment the
+  // side effect starts. Resolves "stale" when it no longer does.
+  endSession: (proof: OwnershipProof) => Promise<"signed-out" | "stale">;
 };
 
 export type SessionLifecycle = {
-  handleUnauthorized: (used: SessionIdentity) => Promise<UnauthorizedOutcome>;
+  handleUnauthorized: (
+    used: SessionIdentity,
+    proof: OwnershipProof,
+  ) => Promise<UnauthorizedOutcome>;
 };
-
-function sameSession(a: SessionIdentity | null, b: SessionIdentity): boolean {
-  return a !== null && a.userId === b.userId && a.accessToken === b.accessToken;
-}
 
 export function createSessionLifecycle(deps: SessionLifecycleDeps): SessionLifecycle {
   const inFlight = new Map<string, Promise<UnauthorizedOutcome>>();
 
-  async function check(used: SessionIdentity): Promise<UnauthorizedOutcome> {
-    if (!sameSession(await deps.getCurrentSession(), used)) {
+  async function check(
+    used: SessionIdentity,
+    proof: OwnershipProof,
+  ): Promise<UnauthorizedOutcome> {
+    if (!proof.stillOwns()) {
       return "stale";
     }
 
@@ -64,27 +84,26 @@ export function createSessionLifecycle(deps: SessionLifecycleDeps): SessionLifec
       return refreshed.session.accessToken === used.accessToken ? "unconfirmed" : "refreshed";
     }
 
-    // Re-check after the await: other work may have replaced or
-    // ended the session while the refresh was running.
-    if (!sameSession(await deps.getCurrentSession(), used)) {
+    // The auth server rejected the refresh. Sign out only if the rejected
+    // session is STILL the active one (it may have been replaced or already
+    // ended by the auth layer while the refresh was running).
+    if (!proof.stillOwns()) {
       return "stale";
     }
 
-    await deps.endSession();
-
-    return "signed-out";
+    return deps.endSession(proof);
   }
 
   return {
-    handleUnauthorized(used) {
-      const key = `${used.userId}:${used.accessToken}`;
+    handleUnauthorized(used, proof) {
+      const key = `${proof.epoch}:${used.userId}:${used.accessToken}`;
       const pending = inFlight.get(key);
 
       if (pending) {
         return pending;
       }
 
-      const started = check(used).finally(() => {
+      const started = check(used, proof).finally(() => {
         inFlight.delete(key);
       });
 

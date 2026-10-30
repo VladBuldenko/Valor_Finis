@@ -14,7 +14,7 @@
 
 import { ApiError, httpApiError } from "./api-error.ts";
 import type { SessionBoundary } from "./session-boundary.ts";
-import type { SessionIdentity } from "./session-lifecycle.ts";
+import type { OwnershipProof, SessionIdentity } from "./session-lifecycle.ts";
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -43,8 +43,9 @@ export type TransportDeps = {
   fetch: FetchLike;
   getSession: () => Promise<SessionIdentity | null>;
   boundary: SessionBoundary;
-  // Called on HTTP 401 with the identity whose token was rejected.
-  onUnauthorized: (used: SessionIdentity) => Promise<unknown>;
+  // Called on HTTP 401 with the identity whose token was rejected and the proof
+  // that the request belonged to the (still current?) authentication generation.
+  onUnauthorized: (used: SessionIdentity, proof: OwnershipProof) => Promise<unknown>;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   policy?: Partial<TransportPolicy>;
@@ -241,10 +242,30 @@ export function createApiTransport(deps: TransportDeps) {
 
           if (response.status === 401) {
             // Never lets a failure of the check mask the 401 itself.
-            await abortable(
-              deps.onUnauthorized(session).catch(() => undefined),
-              controller.signal,
-            );
+            try {
+              await abortable(
+                deps
+                  .onUnauthorized(session, {
+                    epoch: snapshot.epoch,
+                    stillOwns: () =>
+                      deps.boundary.ownsToken(snapshot, session.userId, session.accessToken),
+                  })
+                  .catch(() => undefined),
+                controller.signal,
+              );
+            } catch (error) {
+              // If handling this very 401 ended the session, the boundary moved
+              // on and aborted this request's epoch: the server did answer 401,
+              // so that is still what the caller gets. A timeout or the
+              // caller's own abort is reported as such.
+              if (
+                !(error instanceof AbortedError) ||
+                abort.reason === "timeout" ||
+                callerSignal?.aborted
+              ) {
+                throw error;
+              }
+            }
 
             throw httpApiError("unauthorized", 401, body);
           }

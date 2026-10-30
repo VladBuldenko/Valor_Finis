@@ -1,7 +1,7 @@
 // Shared fakes for the API transport tests (not imported by app code).
 import { createApiTransport, type FetchLike, type TransportPolicy } from "./api-transport.ts";
 import { SessionBoundary } from "./session-boundary.ts";
-import type { SessionIdentity } from "./session-lifecycle.ts";
+import type { OwnershipProof, SessionIdentity } from "./session-lifecycle.ts";
 
 export type Call = { url: string; init: RequestInit; headers: Headers };
 
@@ -28,7 +28,7 @@ export function hangUntilAborted(init: RequestInit): Promise<Response> {
 export function makeHarness(options: {
   respond: (call: Call, attempt: number) => Promise<Response>;
   session?: () => Promise<SessionIdentity | null>;
-  onUnauthorized?: (used: SessionIdentity) => Promise<unknown>;
+  onUnauthorized?: (used: SessionIdentity, proof: OwnershipProof) => Promise<unknown>;
   policy?: Partial<TransportPolicy>;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   onReset?: () => void;
@@ -39,7 +39,7 @@ export function makeHarness(options: {
   const boundary = new SessionBoundary(options.onReset ?? (() => undefined));
   const session: SessionIdentity = { userId: "user-1", accessToken: "token-1" };
 
-  boundary.applyAuthEvent(session.userId); // the auth coordinator adopted the session
+  boundary.applyAuthEvent(session.userId, session.accessToken); // the auth coordinator adopted the session
 
   const fetchLike: FetchLike = (url, init) => {
     const call: Call = { url, init, headers: new Headers(init.headers) };
@@ -54,10 +54,10 @@ export function makeHarness(options: {
     fetch: fetchLike,
     getSession: options.session ?? (async () => session),
     boundary,
-    onUnauthorized: async (used) => {
+    onUnauthorized: async (used, proof) => {
       unauthorized.push(used);
 
-      return options.onUnauthorized?.(used);
+      return options.onUnauthorized?.(used, proof);
     },
     sleep:
       options.sleep ??

@@ -54,23 +54,45 @@ timeout or cancellation, and every POST/PATCH/PUT/DELETE and upload (exactly one
 retry is disabled (`createAppQueryClient`), so attempts are not multiplied. A request is never replayed after a 401 or
 a token refresh.
 
-## HTTP 401 and the session
+## HTTP 401 and the session (MF2-SR07)
 
-1. The transport reports the identity (user id + access token) that was rejected.
-2. `session-lifecycle.ts` ignores it unless that token is still the active session's token (a newer or different
-   session is never signed out by an old 401).
-3. Simultaneous 401s for one token share one check.
-4. The check asks Supabase to refresh. A new token means the session lives (no sign-out; the failed request is not
-   replayed). Only an explicit rejection by the auth server (`AuthApiError` 400/401/403/404/422, or no session) confirms
-   the session is invalid, after a second "still the same session" check. Network errors, 5xx and 429 leave the session
-   alone.
-5. A confirmed-invalid session is ended with `signOut({ scope: "local" })`.
+A 401 is judged by **ownership**, never by an asynchronous "who is signed in?" lookup (its answer can be stale when it
+resolves; acting on one signed out the wrong user in R2).
+
+1. The transport passes the rejected identity and an **ownership proof**: the request's epoch plus `stillOwns()`, which
+   asks the boundary synchronously whether that token is still the authoritative session's current token in that epoch.
+2. `session-lifecycle.ts` ignores the 401 unless `stillOwns()`; a newer token, another user, or a later A -> B -> A
+   generation makes it stale. Simultaneous 401s of one token and epoch share one check.
+3. It asks Supabase to refresh. A new token means the session lives (no sign-out, no replay). Only an explicit rejection
+   by the auth server (`AuthApiError` 400/401/403/404/422, or no session) confirms invalidity. Network errors, 5xx and 429
+   leave the session alone.
+4. After the refresh answer it checks `stillOwns()` again, and `endSession` checks it a third time **inside the auth
+   operation queue, as the first thing it does**, immediately before `signOut({ scope: "local" })`.
+5. Every app-initiated session change (sign-in, user sign-out, ending an invalidated session) runs through
+   `auth-operations.ts`' queue, so no other session change can slip between that final check and the sign-out. New
+   auth-mutating calls (sign-up, recovery in MF-4) must use the same queue.
+
+Residual window (accepted, documented in `auth-operations.ts`): between the final check and supabase-js taking its own
+lock only an auth event from OUTSIDE the queue could intervene; a same-user token refresh there cannot make the sign-out
+wrong, because that session's refresh token was just rejected by the auth server. A 401 whose own sign-out aborted its
+epoch is still reported to the caller as the 401 (`unauthorized`), not as `cancelled`.
 
 ## Session ownership (MF2-SR02, SR06)
 
 A request must never decide who is signed in. `SessionBoundary` is changed only by **authoritative** events:
-`AuthProvider` feeds Supabase's `onAuthStateChange` and the initial `getSession()` restore through
-`auth-coordinator.ts`, which calls `boundary.applyAuthEvent(userId)` BEFORE the UI is told.
+`AuthProvider`'s effect (`auth-session.ts` `startAuthSession`) feeds Supabase's `onAuthStateChange` and the initial
+`getSession()` restore through `auth-coordinator.ts`, which applies `(userId, accessToken)` BEFORE the UI is told.
+The boundary also tracks the **current access token** (every event, including same-user refreshes), which is what the
+401 ownership proof compares against.
+
+### Provider lifetime (MF2-SR08)
+
+One coordinator belongs to one mounted effect. It holds a boundary **authority** (`claimAuthority()`): only the newest
+claim is active, and `release()` (effect cleanup) makes a claim inert. After cleanup, or once a newer provider claimed
+the boundary, a late `getSession()` restore, a late event callback of an unsubscribed subscription, or anything else the
+old coordinator receives can neither change the boundary nor publish state. Under StrictMode (setup, cleanup, setup) only
+the second setup is alive. `src/api/boundary-authority.test.ts` fails if any other source file calls `applyAuthEvent` or
+`claimAuthority`.
 
 - Every identity change (nobody -> A, A -> B, A -> nobody, B -> A) advances an **epoch**; a same-user token refresh
   does not. Leaving a signed-in user aborts that epoch's requests and retires its query client.
@@ -78,7 +100,7 @@ A request must never decide who is signed in. `SessionBoundary` is changed only 
   must still be in the live epoch and the lookup must name the snapshot's user, else it is refused (`cancelled`)
   before any HTTP. The epoch is re-checked before every dispatch (also after retry waits) and when the body has been
   read. Comparing user ids alone would let a request of the first "A" generation become valid after A -> B -> A.
-- A request never calls `applyAuthEvent`. Earlier (ef9b63b) it did, so a delayed `getSession()` of A could turn B back
+- A request never calls `applyAuthEvent` (enforced by a source-scan test). Earlier (ef9b63b) it did, so a delayed `getSession()` of A could turn B back
   into A: B's request was cancelled, A's obsolete token was sent, and the client was rotated twice. A session the
   coordinator has not adopted (a missed or late event) is refused, not adopted.
 - The initial restore compares an event counter taken before its await; if any auth event arrived meanwhile (a login,
@@ -172,6 +194,8 @@ on parsing `detail`.
 - A callback body that resumes after a non-HTTP `await` must check `isCurrentQueryClient` before navigating.
 - A session that `getSession()` returns but the coordinator has not adopted (a lost or late auth event) is refused
   until the event arrives; there is no request-side recovery, by design.
+- The 401 / sign-out ordering is proven with a scripted auth world (`auth-test-support.ts`), not against real
+  supabase-js locks or timing; the residual window above is argued, not exercised.
 - `ApiError.code` is `null` until BE-1. Retry waits are fixed (no jitter).
 - The package change of MF-2 R2 (`react-test-renderer`, `@types/react-test-renderer` as exact devDependencies) will
   conflict textually with the owner's local `package.json`/`package-lock.json` edits; merge those after this branch

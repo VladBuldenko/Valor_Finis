@@ -24,7 +24,7 @@ function world(respond: (init: RequestInit, user: SessionIdentity, method: strin
   const boundary = new SessionBoundary(() => holder.rotate());
   const state: { session: SessionIdentity } = { session: USER_A };
 
-  boundary.applyAuthEvent(USER_A.userId); // what AuthProvider does when the session loads
+  boundary.applyAuthEvent(USER_A.userId, USER_A.accessToken); // what AuthProvider does when the session loads
   const requests: { method: string; user: string }[] = [];
   const transport = createApiTransport({
     baseUrl: "https://api.test",
@@ -97,7 +97,7 @@ function gate() {
 
 function switchToB(w: ReturnType<typeof world>) {
   w.state.session = USER_B;
-  w.boundary.applyAuthEvent(USER_B.userId);
+  w.boundary.applyAuthEvent(USER_B.userId, USER_B.accessToken);
 }
 
 describe("normal operation is unchanged", () => {
@@ -123,7 +123,7 @@ describe("normal operation is unchanged", () => {
     const { outcome } = w.screenMutation(client, { guardNavigation: true });
 
     await tick();
-    w.boundary.applyAuthEvent(USER_A.userId);
+    w.boundary.applyAuthEvent(USER_A.userId, USER_A.accessToken);
     release.open();
     await outcome;
 
@@ -187,8 +187,8 @@ describe("a pending request that completes after the account switch", () => {
     const { outcome } = w.screenMutation(w.holder.get(), { guardNavigation: true });
 
     await tick();
-    w.boundary.applyAuthEvent(USER_B.userId);
-    w.boundary.applyAuthEvent(USER_A.userId);
+    w.boundary.applyAuthEvent(USER_B.userId, USER_B.accessToken);
+    w.boundary.applyAuthEvent(USER_A.userId, USER_A.accessToken);
     release.open();
     await tick();
 

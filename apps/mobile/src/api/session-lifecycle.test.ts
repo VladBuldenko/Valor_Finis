@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ApiError } from "./api-error.ts";
+import { createAuthLab, deferred, tick } from "./auth-test-support.ts";
 import { json, makeHarness, never } from "./api-test-support.ts";
 import {
   classifyRefreshError,
@@ -14,112 +15,96 @@ const A1: SessionIdentity = { userId: "user-a", accessToken: "a-token-1" };
 const A2: SessionIdentity = { userId: "user-a", accessToken: "a-token-2" };
 const B1: SessionIdentity = { userId: "user-b", accessToken: "b-token-1" };
 
-// A scripted auth world: the "current" session can change between awaits.
-function world(initial: SessionIdentity | null, refresh: () => Promise<RefreshResult>) {
-  const state = { current: initial, refreshCalls: 0, endCalls: 0 };
-  const lifecycle = createSessionLifecycle({
-    getCurrentSession: async () => state.current,
-    refreshSession: async () => {
-      state.refreshCalls += 1;
-
-      return refresh();
-    },
-    endSession: async () => {
-      state.endCalls += 1;
-      state.current = null;
-    },
-  });
-
-  return { state, lifecycle };
-}
-
-const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
-
 describe("handleUnauthorized", () => {
   it("ends the session only when the auth server rejects the refresh", async () => {
-    const w = world(A1, async () => ({ status: "rejected" }));
+    const w = createAuthLab({ initial: A1, refresh: async () => ({ status: "rejected" }) });
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "signed-out");
-    assert.equal(w.state.endCalls, 1);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, w.proofFor(A1)), "signed-out");
+    assert.equal(w.lab.signOutCalls, 1);
+    assert.deepEqual(w.lab.signedOutUsers, ["user-a"]);
   });
 
   it("keeps the session when the refresh gives a new token", async () => {
-    const w = world(A1, async () => ({ status: "refreshed", session: A2 }));
+    const w = createAuthLab({ initial: A1, refresh: async () => ({ status: "refreshed", session: A2 }) });
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "refreshed");
-    assert.equal(w.state.endCalls, 0);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, w.proofFor(A1)), "refreshed");
+    assert.equal(w.lab.signOutCalls, 0);
   });
 
   it("keeps the session when the auth server cannot be reached", async () => {
-    const w = world(A1, async () => ({ status: "unavailable" }));
+    const w = createAuthLab({ initial: A1, refresh: async () => ({ status: "unavailable" }) });
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "unconfirmed");
-    assert.equal(w.state.endCalls, 0);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, w.proofFor(A1)), "unconfirmed");
+    assert.equal(w.lab.signOutCalls, 0);
   });
 
   it("does not trust a refresh that returns the very same token", async () => {
-    const w = world(A1, async () => ({ status: "refreshed", session: A1 }));
+    const w = createAuthLab({ initial: A1, refresh: async () => ({ status: "refreshed", session: A1 }) });
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "unconfirmed");
-    assert.equal(w.state.endCalls, 0);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, w.proofFor(A1)), "unconfirmed");
+    assert.equal(w.lab.signOutCalls, 0);
   });
 
   it("ignores an old token's 401 after the session was refreshed (token race)", async () => {
-    const w = world(A2, async () => ({ status: "rejected" }));
+    const w = createAuthLab({ initial: A1 });
+    const oldProof = w.proofFor(A1);
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "stale");
-    assert.equal(w.state.refreshCalls, 0);
-    assert.equal(w.state.endCalls, 0);
+    w.event(A2); // TOKEN_REFRESHED
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, oldProof), "stale");
+    assert.equal(w.lab.refreshCalls, 0);
+    assert.equal(w.lab.signOutCalls, 0);
   });
 
   it("ignores a 401 from a previous user's session after an account switch", async () => {
-    const w = world(B1, async () => ({ status: "rejected" }));
+    const w = createAuthLab({ initial: A1 });
+    const oldProof = w.proofFor(A1);
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "stale");
-    assert.equal(w.state.endCalls, 0);
-    assert.equal(w.state.current, B1);
+    w.event(B1);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, oldProof), "stale");
+    assert.equal(w.lab.signOutCalls, 0);
+    assert.equal(w.lab.current, B1);
   });
 
   it("ignores a 401 when nobody is signed in any more", async () => {
-    const w = world(null, async () => ({ status: "rejected" }));
+    const w = createAuthLab({ initial: A1 });
+    const oldProof = w.proofFor(A1);
 
-    assert.equal(await w.lifecycle.handleUnauthorized(A1), "stale");
-    assert.equal(w.state.refreshCalls, 0);
-  });
-
-  it("does not end a newer session that appeared while the refresh was running", async () => {
-    let release: (value: RefreshResult) => void = () => undefined;
-    const w = world(A1, () => new Promise<RefreshResult>((resolve) => { release = resolve; }));
-    const pending = w.lifecycle.handleUnauthorized(A1);
-
-    await tick();
-    w.state.current = B1; // the user switched accounts during the refresh
-    release({ status: "rejected" });
-
-    assert.equal(await pending, "stale");
-    assert.equal(w.state.endCalls, 0);
-    assert.equal(w.state.current, B1);
+    w.event(null);
+    assert.equal(await w.lifecycle.handleUnauthorized(A1, oldProof), "stale");
+    assert.equal(w.lab.refreshCalls, 0);
   });
 
   it("shares one check between simultaneous 401s of the same token", async () => {
-    const releases: ((value: RefreshResult) => void)[] = [];
-    const w = world(A1, () => new Promise<RefreshResult>((resolve) => { releases.push(resolve); }));
-    const results = [1, 2, 3, 4, 5].map(() => w.lifecycle.handleUnauthorized(A1));
+    const refresh = deferred<RefreshResult>();
+    const w = createAuthLab({ initial: A1, refresh: () => refresh.promise });
+    const proof = w.proofFor(A1);
+    const results = [1, 2, 3, 4, 5].map(() => w.lifecycle.handleUnauthorized(A1, proof));
 
     await tick();
-    releases.forEach((release) => release({ status: "rejected" }));
+    refresh.resolve({ status: "rejected" });
 
     assert.deepEqual(await Promise.all(results), Array(5).fill("signed-out"));
-    assert.equal(w.state.refreshCalls, 1);
-    assert.equal(w.state.endCalls, 1);
+    assert.equal(w.lab.refreshCalls, 1);
+    assert.equal(w.lab.signOutCalls, 1);
   });
 
   it("runs a fresh check for a later 401 once the first has finished", async () => {
-    const w = world(A1, async () => ({ status: "unavailable" }));
+    const w = createAuthLab({ initial: A1, refresh: async () => ({ status: "unavailable" }) });
+    const proof = w.proofFor(A1);
 
-    await w.lifecycle.handleUnauthorized(A1);
-    await w.lifecycle.handleUnauthorized(A1);
-    assert.equal(w.state.refreshCalls, 2);
+    await w.lifecycle.handleUnauthorized(A1, proof);
+    await w.lifecycle.handleUnauthorized(A1, proof);
+    assert.equal(w.lab.refreshCalls, 2);
+  });
+
+  it("does not look up the current session at all (no stale lookup can authorize anything)", () => {
+    // The lifecycle's dependencies are exactly refreshSession and endSession.
+    const lifecycle = createSessionLifecycle({
+      refreshSession: async () => ({ status: "unavailable" }),
+      endSession: async () => "stale",
+    });
+
+    assert.deepEqual(Object.keys(lifecycle), ["handleUnauthorized"]);
   });
 });
 
@@ -149,18 +134,24 @@ describe("HTTP 401 through the transport", () => {
   function setup(
     refresh: () => Promise<RefreshResult>,
     respond: Parameters<typeof makeHarness>[0]["respond"],
-    initial: SessionIdentity | null = A1,
   ) {
-    const w = world(initial, refresh);
+    const lifecycleRef: { current: ReturnType<typeof createAuthLab> | null } = { current: null };
     const h = makeHarness({
       respond,
-      session: async () => w.state.current,
-      onUnauthorized: (used) => w.lifecycle.handleUnauthorized(used),
-    });
+      session: async () => lifecycleRef.current?.lab.current ?? null,
+      onUnauthorized: (used, proof) => {
+        const w = lifecycleRef.current;
 
-    if (initial) {
-      h.boundary.applyAuthEvent(initial.userId); // the coordinator adopted the session
-    }
+        if (!w) {
+          throw new Error("lab missing");
+        }
+
+        return w.lifecycle.handleUnauthorized(used, proof);
+      },
+    });
+    const w = createAuthLab({ initial: A1, refresh, boundary: h.boundary });
+
+    lifecycleRef.current = w;
 
     return { w, h };
   }
@@ -179,7 +170,7 @@ describe("HTTP 401 through the transport", () => {
 
       return true;
     });
-    assert.equal(w.state.endCalls, 1);
+    assert.equal(w.lab.signOutCalls, 1);
   });
 
   it("concurrent 401s sign out exactly once and all callers fail", async () => {
@@ -196,60 +187,47 @@ describe("HTTP 401 through the transport", () => {
     );
 
     assert.ok(results.every((result) => result.status === "rejected"));
-    assert.equal(w.state.refreshCalls, 1);
-    assert.equal(w.state.endCalls, 1);
+    assert.equal(w.lab.refreshCalls, 1);
+    assert.equal(w.lab.signOutCalls, 1);
   });
 
   it("a late 401 for an old token does not sign out the refreshed session", async () => {
-    let release: () => void = () => undefined;
-    const { w, h } = setup(
-      async () => ({ status: "rejected" }),
-      () => new Promise<Response>((resolve) => { release = () => resolve(json(401, {})); }),
-    );
+    const release = deferred<Response>();
+    const { w, h } = setup(async () => ({ status: "rejected" }), () => release.promise);
     const pending = h.transport.request("/x");
 
     await tick();
-    w.state.current = A2; // the token was refreshed while the request was in flight
-    release();
+    w.event(A2); // the token was refreshed while the request was in flight
+    release.resolve(json(401, {}));
 
     await assert.rejects(pending);
-    assert.equal(w.state.endCalls, 0);
-    assert.equal(w.state.current, A2);
+    assert.equal(w.lab.signOutCalls, 0);
+    assert.equal(w.lab.current, A2);
   });
 
   it("a 401 that arrives after the user switched is dropped before any sign-out logic", async () => {
-    let release: () => void = () => undefined;
-    const { w, h } = setup(
-      async () => ({ status: "rejected" }),
-      () => new Promise<Response>((resolve) => { release = () => resolve(json(401, {})); }),
-    );
+    const release = deferred<Response>();
+    const { w, h } = setup(async () => ({ status: "rejected" }), () => release.promise);
     const pending = h.transport.request("/x");
 
     await tick();
-    w.state.current = B1;
-    h.boundary.applyAuthEvent(B1.userId);
-    release();
+    w.event(B1);
+    release.resolve(json(401, {}));
 
     await assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.kind === "cancelled");
-    assert.equal(w.state.refreshCalls, 0);
-    assert.equal(w.state.current, B1);
+    assert.equal(w.lab.refreshCalls, 0);
+    assert.equal(w.lab.current, B1);
   });
 
   it("keeps the session on a 401 while the auth server is unreachable", async () => {
-    const { w, h } = setup(
-      async () => ({ status: "unavailable" }),
-      async () => json(401, {}),
-    );
+    const { w, h } = setup(async () => ({ status: "unavailable" }), async () => json(401, {}));
 
     await assert.rejects(h.transport.request("/x"));
-    assert.equal(w.state.endCalls, 0);
+    assert.equal(w.lab.signOutCalls, 0);
   });
 
   it("does not replay a request after a successful token refresh, mutation or not", async () => {
-    const { h } = setup(
-      async () => ({ status: "refreshed", session: A2 }),
-      async () => json(401, {}),
-    );
+    const { h } = setup(async () => ({ status: "refreshed", session: A2 }), async () => json(401, {}));
 
     await assert.rejects(h.transport.request("/x"));
     await assert.rejects(h.transport.request("/y", { method: "POST", body: "{}" }));

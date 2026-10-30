@@ -3,11 +3,8 @@
 // and the auth provider so both talk to the same instances.
 import { navigationIntent } from "../features/auth/navigation-intent";
 import { SessionBoundary } from "../api/session-boundary";
-import {
-  classifyRefreshError,
-  createSessionLifecycle,
-  type SessionIdentity,
-} from "../api/session-lifecycle";
+import { createAuthOperationQueue, createGuardedSessionEnd } from "../api/auth-operations";
+import { classifyRefreshError, createSessionLifecycle } from "../api/session-lifecycle";
 import { SessionQueryClient } from "./session-query-client";
 import { supabase } from "./supabase";
 
@@ -21,19 +18,11 @@ export const sessionBoundary = new SessionBoundary(() => {
 // is gone. Pass the client obtained from useQueryClient() while rendering.
 export const isCurrentQueryClient = sessionQueryClient.isCurrent;
 
-async function getCurrentSession(): Promise<SessionIdentity | null> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  return session
-    ? { userId: session.user.id, accessToken: session.access_token }
-    : null;
-}
+// Every app-initiated change of the Supabase session (sign-in, sign-out,
+// ending an invalidated session) runs through this queue; see auth-operations.ts.
+export const authOperations = createAuthOperationQueue();
 
 export const sessionLifecycle = createSessionLifecycle({
-  getCurrentSession,
-
   async refreshSession() {
     const { data, error } = await supabase.auth.refreshSession();
 
@@ -58,9 +47,13 @@ export const sessionLifecycle = createSessionLifecycle({
       : { status: "rejected" };
   },
 
-  async endSession() {
-    // Local scope: the server already rejected this session, so no revoke call
-    // is needed (or possible).
-    await supabase.auth.signOut({ scope: "local" });
-  },
+  // Ownership is re-checked inside the queue, immediately before the side
+  // effect. Local scope: the server already rejected this session, so no revoke
+  // call is needed (or possible).
+  endSession: createGuardedSessionEnd({
+    queue: authOperations,
+    signOutLocal: async () => {
+      await supabase.auth.signOut({ scope: "local" });
+    },
+  }),
 });
