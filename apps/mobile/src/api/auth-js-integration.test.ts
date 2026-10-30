@@ -404,6 +404,107 @@ describe("SR09: with the exported (queueing) client the window is closed", () =>
   });
 });
 
+describe("SR10: a request that never completes cannot hold the auth queue or cross users", { timeout: 8000 }, () => {
+  it("a refresh whose response BODY never ends is bounded; B (queued behind it) signs in and is not signed out", async () => {
+    const server = createFakeGoTrueServer();
+    const stall = { on: false };
+    const stallRefreshBody: typeof fetch = (async (input, init) => {
+      const response = await server.fetch(input, init);
+
+      if (!stall.on || !String(input).includes("grant_type=refresh_token")) {
+        return response;
+      }
+
+      stall.on = false; // auth-js's own retry gets a healthy answer
+
+      return new Response(new ReadableStream<Uint8Array>({ start: () => undefined }), { status: response.status, headers: response.headers });
+    }) as typeof fetch;
+    const w = lab({ server, fetch: createFetchWithTimeout(stallRefreshBody, 60) });
+    const sessionA = await w.signIn(w.guarded, "A");
+
+    await tick();
+    stall.on = true;
+
+    const startedAt = Date.now();
+    const handling = w.lifecycle.handleUnauthorized({ userId: "A", accessToken: sessionA.access_token }, w.proofFor(sessionA));
+    const signingInB = w.signIn(w.guarded, "B");
+
+    await Promise.race([Promise.allSettled([handling, signingInB]), tick(4000).then(() => assert.fail("auth queue blocked by a stalled body"))]);
+    assert.ok(Date.now() - startedAt < 4000);
+    assert.equal(await w.storedUser(), "B");
+    assert.equal(w.boundary.snapshot().userId, "B");
+    await tick(100);
+    assert.deepEqual(unhandled, []);
+  });
+
+  it("a logout whose fetch ignores abort entirely is bounded; late completion changes nothing", async () => {
+    const server = createFakeGoTrueServer();
+    const release = deferred<void>();
+    const ignoringAbort: typeof fetch = (async (input, init) => {
+      if (new URL(String(input)).pathname.endsWith("/logout")) {
+        await release.promise; // never looks at init.signal
+
+        return new Response(null, { status: 204 });
+      }
+
+      return server.fetch(input, init);
+    }) as typeof fetch;
+    const w = lab({ server, fetch: createFetchWithTimeout(ignoringAbort, 60) });
+    const sessionA = await w.signIn(w.guarded, "A");
+
+    await tick();
+
+    const ending = createGuardedSessionEnd({
+      queue: w.queue,
+      signOutLocal: async () => {
+        await w.raw.signOut({ scope: "local" });
+      },
+    })(w.proofFor(sessionA));
+    const signingInB = w.signIn(w.guarded, "B");
+
+    assert.equal(await ending, "signed-out");
+    await signingInB;
+    assert.equal(await w.storedUser(), "B");
+
+    release.resolve(); // the abandoned request finally answers
+    await tick(50);
+
+    assert.equal(await w.storedUser(), "B", "a late completion cannot sign B out");
+    assert.equal(w.boundary.snapshot().userId, "B");
+    assert.equal(w.counts.resets, 1, "A->B only: no extra cache reset");
+    assert.deepEqual(unhandled, []);
+  });
+
+  it("a timed-out refresh during a 401 (auth-js retries it itself) leaves the queue usable and does not sign B out", async () => {
+    const server = createFakeGoTrueServer();
+    const hang = { on: false };
+    // Only the first refresh request hangs; auth-js's own retry then succeeds.
+    const hanging: typeof fetch = ((input, init) => {
+      if (hang.on && String(input).includes("grant_type=refresh_token")) {
+        hang.on = false;
+
+        return new Promise<Response>(() => undefined);
+      }
+
+      return server.fetch(input, init);
+    }) as typeof fetch;
+    const w = lab({ server, fetch: createFetchWithTimeout(hanging, 60) });
+    const sessionA = await w.signIn(w.guarded, "A");
+
+    await tick();
+    hang.on = true;
+
+    const handling = w.lifecycle.handleUnauthorized({ userId: "A", accessToken: sessionA.access_token }, w.proofFor(sessionA));
+    const signingInB = w.signIn(w.guarded, "B");
+
+    await Promise.race([Promise.allSettled([handling, signingInB]), tick(3000).then(() => assert.fail("deadlock"))]);
+    assert.equal(await w.storedUser(), "B");
+    assert.equal(w.boundary.snapshot().userId, "B");
+    await tick(100);
+    assert.deepEqual(unhandled, []);
+  });
+});
+
 describe("the gateway", () => {
   it("every public method of the installed GoTrueClient is classified (an upgrade adding one fails here)", () => {
     const publicNames = Object.getOwnPropertyNames(GoTrueClient.prototype).filter(

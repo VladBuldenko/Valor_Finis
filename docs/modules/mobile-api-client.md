@@ -89,6 +89,18 @@ nothing); it cannot establish a different user. Tested on the real library. A hu
 so `lib/supabase.ts` bounds every Supabase request to 20 s (`fetch-with-timeout.ts`); auth-js still removes the local
 session after the aborted call.
 
+**The deadline is one overall deadline (SR10).** It covers dispatch, headers and the response body: the body is
+buffered inside the deadline and returned as a fresh `Response` (status, statusText, headers preserved; 101/204/205/304
+carry no body). The returned promise is settled by the deadline itself, so a fetch or body stream that ignores
+`AbortSignal` cannot hold it open; the underlying request is still aborted, and anything it does later is swallowed.
+Caller cancellation rejects immediately with `AbortError`; the deadline rejects with `TimeoutError`.
+Queue safety is unchanged: a timeout only fails that one request. auth-js receives an ordinary network error inside its
+own operation, finishes it (a sign-out still removes the local session) and only then does the queue slot end, so the
+queue is never released ahead of an operation that could still change the session, and a late completion never
+reaches auth-js. Known bound: auth-js retries a failed token refresh itself with backoff (about 30 s of wall clock), so
+a persistently unreachable server can keep a refresh, and the sign-ins queued behind it, waiting for that long; this is
+the library's existing retry budget, not an unbounded wait.
+
 A 401 whose own sign-out aborted its epoch is still reported to the caller as the 401 (`unauthorized`), not as
 `cancelled`.
 
