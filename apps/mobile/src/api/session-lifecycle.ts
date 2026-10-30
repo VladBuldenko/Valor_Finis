@@ -32,6 +32,10 @@ export type RefreshResult =
   // The auth server could not be reached or failed (network, 5xx, 429).
   | { status: "unavailable" };
 
+// What the refresh step may answer. "stale": ownership was lost before the
+// refresh could start (it must then not touch whichever session is current).
+export type RefreshOutcome = RefreshResult | { status: "stale" };
+
 export type UnauthorizedOutcome =
   | "stale"
   | "refreshed"
@@ -48,7 +52,9 @@ export type OwnershipProof = {
 };
 
 export type SessionLifecycleDeps = {
-  refreshSession: () => Promise<RefreshResult>;
+  // Must verify `proof.stillOwns()` as its first step once it holds the auth
+  // operation queue: refreshing acts on the session that is current THEN.
+  refreshSession: (proof: OwnershipProof) => Promise<RefreshOutcome>;
   // Ends the local session, but only if `proof` still holds at the moment the
   // side effect starts. Resolves "stale" when it no longer does.
   endSession: (proof: OwnershipProof) => Promise<"signed-out" | "stale">;
@@ -72,7 +78,11 @@ export function createSessionLifecycle(deps: SessionLifecycleDeps): SessionLifec
       return "stale";
     }
 
-    const refreshed = await deps.refreshSession();
+    const refreshed = await deps.refreshSession(proof);
+
+    if (refreshed.status === "stale") {
+      return "stale";
+    }
 
     if (refreshed.status === "unavailable") {
       return "unconfirmed";

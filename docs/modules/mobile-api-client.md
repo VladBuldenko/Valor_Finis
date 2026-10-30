@@ -66,16 +66,31 @@ resolves; acting on one signed out the wrong user in R2).
 3. It asks Supabase to refresh. A new token means the session lives (no sign-out, no replay). Only an explicit rejection
    by the auth server (`AuthApiError` 400/401/403/404/422, or no session) confirms invalidity. Network errors, 5xx and 429
    leave the session alone.
-4. After the refresh answer it checks `stillOwns()` again, and `endSession` checks it a third time **inside the auth
-   operation queue, as the first thing it does**, immediately before `signOut({ scope: "local" })`.
-5. Every app-initiated session change (sign-in, user sign-out, ending an invalidated session) runs through
-   `auth-operations.ts`' queue, so no other session change can slip between that final check and the sign-out. New
-   auth-mutating calls (sign-up, recovery in MF-4) must use the same queue.
+4. The refresh runs in a queue slot and checks `stillOwns()` first (refreshing acts on whichever session is current when
+   the slot is reached). After the refresh answer it checks again, and `endSession` checks a third time **inside its
+   queue slot, as the first thing it does**, immediately before `signOut({ scope: "local" })`.
+5. **Every call that can store, replace or end a session runs through the same queue (MF2-SR09).** This is built into
+   the client the app imports: `lib/supabase.ts` exports a client whose `auth` is wrapped by `api/auth-gateway.ts`
+   (`signInWith*`, `signUp`, `verifyOtp`, `setSession`, `exchangeCodeForSession`, `refreshSession`, `signOut`, ...).
+   The unguarded `rawSupabase` is imported only by `session-runtime.ts`, which already runs inside a slot. A scan test
+   enforces both, and a classification test fails if an `@supabase/auth-js` upgrade adds a public method that is in
+   neither the queued nor the pass-through list. Future flows (sign-up, recovery in MF-4) are queued automatically.
 
-Residual window (accepted, documented in `auth-operations.ts`): between the final check and supabase-js taking its own
-lock only an auth event from OUTSIDE the queue could intervene; a same-user token refresh there cannot make the sign-out
-wrong, because that session's refresh token was just rejected by the auth server. A 401 whose own sign-out aborted its
-epoch is still reported to the caller as the 401 (`unauthorized`), not as `cancelled`.
+**Why this is needed (verified on `@supabase/auth-js` 2.112.3, `lock: processLock`):** sign-in calls do not take the
+client's lock; `signOut` reads the stored session, calls the server and then removes whatever is stored at that moment.
+A sign-in that completes in between is erased locally while only the older session is revoked server-side
+(reproduced on the real library in `auth-js-integration.test.ts`). The queue makes sign-out and every other
+session change mutually exclusive, so ownership cannot change between the in-slot check and the removal.
+
+**What the queue does not cover, and why that is safe:** the library's own background work (auto-refresh tick,
+foreground recovery, initialization) acts only on the stored session. It can move it to a newer token of the same user
+(a sign-out that follows revokes that refreshed session, which is invalid anyway) or end it (a sign-out then finds
+nothing); it cannot establish a different user. Tested on the real library. A hung sign-out request would hold the queue,
+so `lib/supabase.ts` bounds every Supabase request to 20 s (`fetch-with-timeout.ts`); auth-js still removes the local
+session after the aborted call.
+
+A 401 whose own sign-out aborted its epoch is still reported to the caller as the 401 (`unauthorized`), not as
+`cancelled`.
 
 ## Session ownership (MF2-SR02, SR06)
 
@@ -194,8 +209,10 @@ on parsing `detail`.
 - A callback body that resumes after a non-HTTP `await` must check `isCurrentQueryClient` before navigating.
 - A session that `getSession()` returns but the coordinator has not adopted (a lost or late auth event) is refused
   until the event arrives; there is no request-side recovery, by design.
-- The 401 / sign-out ordering is proven with a scripted auth world (`auth-test-support.ts`), not against real
-  supabase-js locks or timing; the residual window above is argued, not exercised.
+- The 401 / sign-out ordering is proven with a scripted auth world AND the real `@supabase/auth-js` client against a
+  scripted GoTrue server (`auth-js-integration.test.ts`: real lock, events, storage, refresh). It is not proven against a
+  real Supabase project or on a device (BR-7). `auth.mfa.*` upgrades a session without the queue and is therefore
+  forbidden by a scan test until it is classified.
 - `ApiError.code` is `null` until BE-1. Retry waits are fixed (no jitter).
 - The package change of MF-2 R2 (`react-test-renderer`, `@types/react-test-renderer` as exact devDependencies) will
   conflict textually with the owner's local `package.json`/`package-lock.json` edits; merge those after this branch

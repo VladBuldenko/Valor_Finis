@@ -27,6 +27,8 @@ export const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms)
 export function createAuthLab(options: {
   initial: SessionIdentity | null;
   refresh?: () => Promise<RefreshResult>;
+  // Called when the refresh would start; defaults to the real in-queue check.
+  checkOwnershipInQueue?: boolean;
   boundary?: SessionBoundary;
   // Holds the real signOut side effect until released.
   signOutGate?: Deferred<void>;
@@ -52,11 +54,17 @@ export function createAuthLab(options: {
   event(options.initial);
 
   const lifecycle = createSessionLifecycle({
-    refreshSession: async () => {
-      lab.refreshCalls += 1;
+    // Mirrors the app: the refresh runs in a queue slot and verifies ownership first.
+    refreshSession: (proof) =>
+      queue.run(async () => {
+        if (options.checkOwnershipInQueue !== false && !proof.stillOwns()) {
+          return { status: "stale" } as const;
+        }
 
-      return options.refresh ? options.refresh() : { status: "rejected" };
-    },
+        lab.refreshCalls += 1;
+
+        return options.refresh ? options.refresh() : ({ status: "rejected" } as const);
+      }),
     endSession: createGuardedSessionEnd({
       queue,
       signOutLocal: async () => {

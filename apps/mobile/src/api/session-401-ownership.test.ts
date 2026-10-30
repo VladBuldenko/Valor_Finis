@@ -125,11 +125,12 @@ describe("SR07-T04: two simultaneous 401s followed by an account switch", () => 
     const current = w.lifecycle.handleUnauthorized(A1, w.proofFor(A1));
 
     await tick();
-    assert.equal(w.lab.refreshCalls, 2, "separate investigations");
+    assert.equal(w.lab.refreshCalls, 1, "the second generation's refresh waits in the queue behind the first");
     refresh.resolve({ status: "rejected" });
 
     assert.equal(await old, "stale");
     assert.equal(await current, "signed-out");
+    assert.equal(w.lab.refreshCalls, 2, "separate investigations, never merged");
     assert.deepEqual(w.lab.signedOutUsers, ["user-a"], "only the current generation was ended");
   });
 });
@@ -185,6 +186,22 @@ describe("SR07-T05: the account changes while session-ending work is in progress
     await busy;
 
     assert.equal(await ending, "stale", "ownership is checked when the side effect would start");
+    assert.equal(w.lab.signOutCalls, 0);
+    assert.equal(w.lab.current, B1);
+  });
+
+  it("B's sign-in queued DURING the refresh round trip runs before A's sign-out: only the in-slot check stops it", async () => {
+    const refresh = deferred<RefreshResult>();
+    const w = createAuthLab({ initial: A1, refresh: () => refresh.promise });
+    const handling = w.lifecycle.handleUnauthorized(A1, w.proofFor(A1));
+
+    await tick(); // the refresh slot is running; A is still the owner
+    const signingIn = w.signIn(B1); // queued behind the refresh
+
+    refresh.resolve({ status: "rejected" }); // post-refresh check passes (B has not run yet)...
+    await signingIn; // ...then B's sign-in runs BEFORE A's sign-out slot
+
+    assert.equal(await handling, "stale", "the sign-out slot re-checked ownership and stood down");
     assert.equal(w.lab.signOutCalls, 0);
     assert.equal(w.lab.current, B1);
   });

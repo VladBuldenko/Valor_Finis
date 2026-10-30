@@ -1,5 +1,4 @@
 import { supabase } from "../../lib/supabase";
-import { authOperations } from "../../lib/session-runtime";
 import { navigationIntent } from "./navigation-intent";
 
 /**
@@ -12,13 +11,12 @@ export async function signInWithEmail(
   email: string,
   password: string,
 ) {
-  // Serialized with every other session change (see auth-operations.ts).
-  const { data, error } = await authOperations.run(() =>
-    supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    }),
-  );
+  // The exported client serializes this with every other session change
+  // (api/auth-gateway.ts).
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
 
   if (error) {
     throw error;
@@ -36,7 +34,7 @@ export async function signOut(): Promise<void> {
   // A deliberate sign-out never restores the previous location on next sign-in.
   navigationIntent.discard();
 
-  const { error } = await authOperations.run(() => supabase.auth.signOut());
+  const { error } = await supabase.auth.signOut();
 
   if (error) {
     throw error;

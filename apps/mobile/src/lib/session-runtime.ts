@@ -3,10 +3,11 @@
 // and the auth provider so both talk to the same instances.
 import { navigationIntent } from "../features/auth/navigation-intent";
 import { SessionBoundary } from "../api/session-boundary";
-import { createAuthOperationQueue, createGuardedSessionEnd } from "../api/auth-operations";
-import { classifyRefreshError, createSessionLifecycle } from "../api/session-lifecycle";
+import { createGuardedSessionEnd, createQueuedRefresh } from "../api/auth-operations";
+import { createSessionLifecycle } from "../api/session-lifecycle";
 import { SessionQueryClient } from "./session-query-client";
-import { supabase } from "./supabase";
+import { authOperations } from "./auth-queue";
+import { rawSupabase } from "./supabase";
 
 export const sessionQueryClient = new SessionQueryClient();
 
@@ -18,42 +19,28 @@ export const sessionBoundary = new SessionBoundary(() => {
 // is gone. Pass the client obtained from useQueryClient() while rendering.
 export const isCurrentQueryClient = sessionQueryClient.isCurrent;
 
-// Every app-initiated change of the Supabase session (sign-in, sign-out,
-// ending an invalidated session) runs through this queue; see auth-operations.ts.
-export const authOperations = createAuthOperationQueue();
-
 export const sessionLifecycle = createSessionLifecycle({
-  async refreshSession() {
-    const { data, error } = await supabase.auth.refreshSession();
-
-    if (error) {
-      const outcome = classifyRefreshError(error);
-
-      if (outcome === "rejected") {
-        // The auth layer may end the session itself while rejecting the
-        // refresh, so the location is saved here, before anything signs out.
-        // A deliberate sign-out or a different user discards it again.
-        navigationIntent.captureOnInvalidation();
-      }
-
-      return { status: outcome };
-    }
-
-    return data.session
-      ? {
-          status: "refreshed",
-          session: { userId: data.session.user.id, accessToken: data.session.access_token },
-        }
-      : { status: "rejected" };
-  },
+  // Runs in a queue slot and verifies ownership first (api/auth-operations.ts).
+  // Inside the slot the UNGUARDED client is used.
+  refreshSession: createQueuedRefresh({
+    queue: authOperations,
+    refresh: () => rawSupabase.auth.refreshSession(),
+    onRejected: () => {
+      // The auth layer may end the session itself while rejecting the refresh,
+      // so the location is saved here, before anything signs out. A deliberate
+      // sign-out or a different user discards it again.
+      navigationIntent.captureOnInvalidation();
+    },
+  }),
 
   // Ownership is re-checked inside the queue, immediately before the side
-  // effect. Local scope: the server already rejected this session, so no revoke
-  // call is needed (or possible).
+  // effect. This already runs inside a queue slot, so it must use the UNGUARDED
+  // client (the guarded one would queue behind itself). Every other session
+  // change is queued by the guarded client, so nothing can interleave with it.
   endSession: createGuardedSessionEnd({
     queue: authOperations,
     signOutLocal: async () => {
-      await supabase.auth.signOut({ scope: "local" });
+      await rawSupabase.auth.signOut({ scope: "local" });
     },
   }),
 });
