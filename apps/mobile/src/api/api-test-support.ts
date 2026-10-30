@@ -39,6 +39,8 @@ export function makeHarness(options: {
   const boundary = new SessionBoundary(options.onReset ?? (() => undefined));
   const session: SessionIdentity = { userId: "user-1", accessToken: "token-1" };
 
+  boundary.applyAuthEvent(session.userId); // the auth coordinator adopted the session
+
   const fetchLike: FetchLike = (url, init) => {
     const call: Call = { url, init, headers: new Headers(init.headers) };
 

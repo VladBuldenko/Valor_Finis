@@ -17,6 +17,7 @@
 //   is never assumed (a malformed/differently-shaped entry is skipped, not
 //   trusted) -- the first item with a non-empty string `msg` field has
 //   that `msg` returned.
+// - A 5xx answer always returns the fallback, whatever its body says.
 // - Anything else (a non-JSON body, an empty/malformed detail array, a
 //   detail that is neither a usable string nor an array, or no JSON body
 //   at all after the "API request failed: ..." wrapper) falls back to the
@@ -34,16 +35,22 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
     return fallback;
   }
 
-  const match = error.message.match(/^API request failed: \d+ (.*)$/s);
+  const match = error.message.match(/^API request failed: (\d+) (.*)$/s);
 
   if (!match) {
     return error.message;
   }
 
+  // A server failure's body is never a user-facing message (it can carry
+  // diagnostics). Only 4xx domain / validation messages are returned.
+  if (Number(match[1]) >= 500) {
+    return fallback;
+  }
+
   let body: unknown;
 
   try {
-    body = JSON.parse(match[1]);
+    body = JSON.parse(match[2]);
   } catch {
     return fallback;
   }

@@ -16,6 +16,8 @@ function app(respond: (url: string, init: RequestInit, user: SessionIdentity) =>
   const holder = new SessionQueryClient();
   const boundary = new SessionBoundary(() => holder.rotate());
   const state: { session: SessionIdentity | null } = { session: USER_A };
+
+  boundary.applyAuthEvent(USER_A.userId); // the auth coordinator adopted the session
   const urls: string[] = [];
   const transport = createApiTransport({
     baseUrl: "https://api.test",
@@ -93,12 +95,12 @@ describe("cross-user cache isolation", () => {
     await a.load("goals");
     assert.equal(a.client.getQueryCache().getAll().length, 2);
 
-    a.boundary.observe(USER_A.userId);
+    a.boundary.applyAuthEvent(USER_A.userId);
     assert.equal(a.client.getQueryCache().getAll().length, 2, "same user: nothing is cleared");
 
     const previous = a.client;
 
-    a.boundary.observe(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
     assert.equal(a.client.getQueryCache().getAll().length, 0);
     assert.equal(a.client.getQueryData(["accounts"]), undefined);
     assert.notEqual(a.client, previous, "the next user gets a fresh client");
@@ -109,7 +111,7 @@ describe("cross-user cache isolation", () => {
     const a = app(async () => json(200, { owner: "a" }));
 
     await a.load("accounts");
-    a.boundary.observe(null);
+    a.boundary.applyAuthEvent(null);
     assert.equal(a.client.getQueryCache().getAll().length, 0);
   });
 
@@ -119,7 +121,7 @@ describe("cross-user cache isolation", () => {
     const pending = a.load("accounts");
 
     await tick();
-    a.boundary.observe(USER_A.userId); // refreshed token, same user
+    a.boundary.applyAuthEvent(USER_A.userId); // refreshed token, same user
     release();
 
     assert.deepEqual(await pending, { owner: "a" });
@@ -131,7 +133,7 @@ describe("cross-user cache isolation", () => {
     const pending = a.transport.request("/api/v1/accounts");
 
     await tick();
-    a.boundary.observe(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
 
     await assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.kind === "cancelled");
   });
@@ -143,7 +145,7 @@ describe("cross-user cache isolation", () => {
 
     await tick();
     a.state.session = USER_B;
-    a.boundary.observe(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
     deliver(); // user A's data arrives after user B took over
 
     await assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.kind === "cancelled");
@@ -156,7 +158,7 @@ describe("cross-user cache isolation", () => {
 
     await tick();
     a.state.session = USER_B;
-    a.boundary.observe(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
     deliver();
 
     await assert.rejects(pendingA); // cancelled by the reset or refused by the transport
@@ -165,15 +167,21 @@ describe("cross-user cache isolation", () => {
     assert.equal(a.client.getQueryCache().getAll().length, 0);
   });
 
-  it("detects a switch the auth listener has not reported yet (self-correcting)", async () => {
+  it("a request never adopts a user the auth coordinator has not reported: refused, nothing reset", async () => {
     const a = app(async (_url, _init, user) => json(200, { owner: user.userId }));
 
     await a.load("accounts");
-    a.state.session = USER_B; // no boundary.observe() from the auth listener
+    a.state.session = USER_B; // getSession() says B, but no authoritative auth event yet
 
-    await a.transport.request("/api/v1/goals"); // the next request notices the new user
+    const before = a.urls.length;
+    const refused = await a.transport.request("/api/v1/goals").then(
+      () => "sent",
+      (error: unknown) => (error instanceof ApiError ? error.kind : "other"),
+    );
 
-    assert.equal(a.client.getQueryData(["accounts"]), undefined);
+    assert.equal(refused, "cancelled");
+    assert.equal(a.urls.length, before, "no HTTP request was made with a session nobody adopted");
+    assert.deepEqual(a.client.getQueryData(["accounts"]), { owner: "user-a" }, "and the boundary did not reset");
   });
 
   it("user B can load fresh data after the switch, scoped to B", async () => {
@@ -181,7 +189,7 @@ describe("cross-user cache isolation", () => {
 
     await a.load("accounts");
     a.state.session = USER_B;
-    a.boundary.observe(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
 
     assert.deepEqual(await a.load("accounts"), { owner: "user-b" });
     assert.deepEqual(a.client.getQueryData(["accounts"]), { owner: "user-b" });
@@ -193,7 +201,7 @@ describe("cross-user cache isolation", () => {
 
     await tick();
     a.state.session = USER_B;
-    a.boundary.observe(USER_B.userId); // what the auth listener does
+    a.boundary.applyAuthEvent(USER_B.userId); // what the auth listener does
 
     const resultB = await a.load("goals");
 
@@ -207,8 +215,8 @@ describe("cross-user cache isolation", () => {
     const first = a.load("accounts");
 
     await tick();
-    a.boundary.observe(USER_B.userId);
-    a.boundary.observe(USER_A.userId);
+    a.boundary.applyAuthEvent(USER_B.userId);
+    a.boundary.applyAuthEvent(USER_A.userId);
     deliver();
 
     await assert.rejects(first);
@@ -221,7 +229,7 @@ describe("cross-user cache isolation", () => {
     const pending = a.load("accounts");
 
     await tick();
-    a.boundary.observe(null);
+    a.boundary.applyAuthEvent(null);
 
     await assert.rejects(pending);
     assert.equal(a.client.getQueryCache().getAll().length, 0);

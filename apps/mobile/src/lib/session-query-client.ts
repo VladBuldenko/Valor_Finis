@@ -6,11 +6,21 @@ import { createAppQueryClient, isRetiredQueryClient, resetPrivateQueryData } fro
 // changes the client is retired and a fresh one takes over, so every callback
 // that captured the old client (screens get it from useQueryClient() while
 // rendering) can only touch a dead cache, never the next user's.
+export type SessionQueryClientSnapshot = {
+  readonly client: QueryClient;
+  // Advances on every rotation; used as the React key of the session subtree.
+  readonly generation: number;
+};
+
 export class SessionQueryClient {
   private current: QueryClient = createAppQueryClient();
+  private snapshot: SessionQueryClientSnapshot = { client: this.current, generation: 0 };
   private readonly listeners = new Set<() => void>();
 
   get = (): QueryClient => this.current;
+
+  // Referentially stable between rotations (useSyncExternalStore contract).
+  getSnapshot = (): SessionQueryClientSnapshot => this.snapshot;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -27,6 +37,7 @@ export class SessionQueryClient {
   rotate(): void {
     resetPrivateQueryData(this.current);
     this.current = createAppQueryClient();
+    this.snapshot = { client: this.current, generation: this.snapshot.generation + 1 };
     this.listeners.forEach((listener) => listener());
   }
 }

@@ -18,6 +18,7 @@ import { useAuth } from "../auth/auth-context";
 import { validateGoalForm } from "./goal-validation";
 import { createGoal } from "./goal.service";
 import { styles } from "./goals.styles";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 export function GoalCreateScreen() {
   const { session } = useAuth();
@@ -52,10 +53,7 @@ export function GoalCreateScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to create goal.";
+      const message = getUserFacingErrorMessage(mutationError, "Unable to create goal.");
 
       Alert.alert("Create goal failed", message);
     },

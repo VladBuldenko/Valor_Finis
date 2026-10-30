@@ -22,6 +22,7 @@ import {
 } from "./category.service";
 import { styles } from "./categories.styles";
 import type { Category } from "./category.types";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 // Extracts a user-facing message from a failed category delete request.
 // Mirrors category-create-screen.tsx's getCategoryCreateErrorMessage /
@@ -98,10 +99,7 @@ export function CategoriesScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to update category visibility.";
+      const message = getUserFacingErrorMessage(mutationError, "Unable to update category visibility.");
 
       Alert.alert("Update category failed", message);
     },

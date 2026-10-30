@@ -25,6 +25,7 @@ import { validateBudgetForm } from "./budget-validation";
 import { getBudgets, updateBudget } from "./budget.service";
 import { styles } from "./budgets.styles";
 import type { BudgetPeriod, BudgetUpdateInput } from "./budget.types";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 const BUDGET_PERIODS: BudgetPeriod[] = ["weekly", "monthly", "yearly"];
 
@@ -123,10 +124,7 @@ export function BudgetEditScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to update budget.";
+      const message = getUserFacingErrorMessage(mutationError, "Unable to update budget.");
 
       Alert.alert("Update budget failed", message);
     },

@@ -311,7 +311,7 @@ describe("late results", () => {
     const h = makeHarness({ respond: async () => readyResponse() });
 
     boundaryOf = (userId) => {
-      h.boundary.observe(userId);
+      h.boundary.applyAuthEvent(userId);
     };
 
     const error = await rejection(h.transport.request("/x"));

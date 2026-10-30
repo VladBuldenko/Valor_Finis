@@ -143,12 +143,23 @@ export function createApiTransport(deps: TransportDeps) {
     const onCallerAbort = () => abortWith("cancelled");
     const onBoundaryAbort = () => abortWith("cancelled");
     const timer = setTimeout(() => abortWith("timeout"), timeoutMs);
-    let boundarySignal: AbortSignal | null = null;
 
     callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 
+    // Ownership: the snapshot is taken BEFORE the asynchronous session lookup.
+    // The lookup result is only a claim; it counts only if the authoritative
+    // session did not change meanwhile (session-boundary.ts).
+    const snapshot = deps.boundary.snapshot();
+    const boundarySignal = snapshot.signal;
+
+    boundarySignal.addEventListener("abort", onBoundaryAbort, { once: true });
+
     try {
       const session = await abortable(deps.getSession(), controller.signal);
+
+      if (!deps.boundary.isCurrent(snapshot)) {
+        throw new AbortedError();
+      }
 
       if (!session) {
         throw new ApiError({
@@ -157,14 +168,12 @@ export function createApiTransport(deps: TransportDeps) {
         });
       }
 
-      // Self-correcting: a user change the auth listener has not reported yet
-      // is detected here, before the snapshot is taken.
-      deps.boundary.observe(session.userId);
-
-      const snapshot = deps.boundary.snapshot();
-
-      boundarySignal = snapshot.signal;
-      boundarySignal.addEventListener("abort", onBoundaryAbort, { once: true });
+      // A stale lookup, or a session the auth coordinator has not adopted
+      // (yet), is refused before any HTTP request and never touches the
+      // boundary: requests observe, only auth events decide.
+      if (!deps.boundary.ownsSession(snapshot, session.userId)) {
+        throw new AbortedError();
+      }
 
       const headers = buildHeaders(init.headers, isFormData, session.accessToken);
       const url = `${deps.baseUrl}${path}`;
@@ -182,6 +191,11 @@ export function createApiTransport(deps: TransportDeps) {
 
       for (let attempt = 0; ; attempt += 1) {
         let response: Response;
+
+        // Re-checked before every dispatch (also after retry waits).
+        if (!deps.boundary.isCurrent(snapshot)) {
+          throw new AbortedError();
+        }
 
         try {
           response = await abortable(
@@ -284,7 +298,7 @@ export function createApiTransport(deps: TransportDeps) {
     } finally {
       clearTimeout(timer);
       callerSignal?.removeEventListener("abort", onCallerAbort);
-      boundarySignal?.removeEventListener("abort", onBoundaryAbort);
+      boundarySignal.removeEventListener("abort", onBoundaryAbort);
     }
   }
 

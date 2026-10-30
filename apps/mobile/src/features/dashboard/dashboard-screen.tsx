@@ -39,6 +39,7 @@ import { getBudgets } from "../budgets/budget.service";
 import type { Budget } from "../budgets/budget.types";
 import { getGoals } from "../goals/goal.service";
 import { styles } from "./dashboard.styles";
+import { getAuthErrorMessage } from "../../api/user-facing-error";
 
 // "1 expenses" reads wrong -- singularize only for exactly one.
 function formatExpenseCount(count: number): string {
@@ -191,8 +192,7 @@ export function DashboardScreen() {
 
       await signOut();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to sign out.";
+      const message = getAuthErrorMessage(error, "Unable to sign out.");
 
       Alert.alert("Sign out failed", message);
     } finally {

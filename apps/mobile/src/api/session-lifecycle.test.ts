@@ -158,6 +158,10 @@ describe("HTTP 401 through the transport", () => {
       onUnauthorized: (used) => w.lifecycle.handleUnauthorized(used),
     });
 
+    if (initial) {
+      h.boundary.applyAuthEvent(initial.userId); // the coordinator adopted the session
+    }
+
     return { w, h };
   }
 
@@ -223,7 +227,7 @@ describe("HTTP 401 through the transport", () => {
 
     await tick();
     w.state.current = B1;
-    h.boundary.observe(B1.userId);
+    h.boundary.applyAuthEvent(B1.userId);
     release();
 
     await assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.kind === "cancelled");

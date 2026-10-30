@@ -1,4 +1,13 @@
-import { MutationCache, QueryClient } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryClient,
+  type DefaultedQueryObserverOptions,
+  type DefaultError,
+  type QueryKey,
+  type QueryObserverOptions,
+} from "@tanstack/react-query";
+
+import { ApiError } from "../api/api-error.ts";
 
 const retiredClients = new WeakSet<QueryClient>();
 
@@ -10,9 +19,43 @@ const retiredClients = new WeakSet<QueryClient>();
 // Mutation callbacks (useMutation onSuccess/onError/onSettled) belong to the
 // mutation, not to the screen: they keep running after the screen unmounted
 // and after the user signed out. Once a client is retired (the signed-in user
-// changed), the cache-level hooks below never settle, so TanStack never
-// reaches the screen's own callbacks: nothing of the previous user can write
-// to the cache, navigate or refetch under the next user's session.
+// changed):
+//  * a NEW mutation never starts (onMutate halts before mutationFn runs, so a
+//    stale callback cannot send a request under the next user's token);
+//  * a running mutation never reaches the screen's callbacks (the cache-level
+//    onSuccess/onError/onSettled hooks never settle; TanStack awaits them
+//    before the screen's own callbacks);
+//  * queries on it are inert: their queryFn is replaced by a rejection, so no
+//    request is made and nothing is fetched into the dead cache.
+// "Never settle" is deliberate and bounded: see docs/modules/mobile-api-client.md
+// (resource ownership) and retired-client-lifecycle.test.ts.
+class AppQueryClient extends QueryClient {
+  override defaultQueryOptions<
+    TQueryFnData = unknown,
+    TError = DefaultError,
+    TData = TQueryFnData,
+    TQueryData = TQueryFnData,
+    TQueryKey extends QueryKey = QueryKey,
+    TPageParam = never,
+  >(
+    options:
+      | QueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey, TPageParam>
+      | DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey>,
+  ): DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey> {
+    const resolved = super.defaultQueryOptions(options);
+
+    if (!retiredClients.has(this)) {
+      return resolved;
+    }
+
+    return {
+      ...resolved,
+      queryFn: () =>
+        Promise.reject(new ApiError({ kind: "cancelled", message: "Request was cancelled." })),
+    };
+  }
+}
+
 export function createAppQueryClient(): QueryClient {
   const owner: { client: QueryClient | null } = { client: null };
   const haltIfRetired = async (): Promise<void> => {
@@ -20,8 +63,9 @@ export function createAppQueryClient(): QueryClient {
       await new Promise<never>(() => undefined);
     }
   };
-  const client = new QueryClient({
+  const client = new AppQueryClient({
     mutationCache: new MutationCache({
+      onMutate: haltIfRetired,
       onSuccess: haltIfRetired,
       onError: haltIfRetired,
       onSettled: haltIfRetired,

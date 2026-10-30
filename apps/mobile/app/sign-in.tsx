@@ -11,6 +11,7 @@ import {
 } from "react-native";
 
 import { signInWithEmail } from "../src/features/auth/auth.service";
+import { getAuthErrorMessage } from "../src/api/user-facing-error";
 
 export default function SignInScreen() {
   const [email, setEmail] = useState("");
@@ -41,10 +42,7 @@ export default function SignInScreen() {
         );
       }
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to sign in.";
+      const message = getAuthErrorMessage(error, "Unable to sign in.");
 
       Alert.alert("Login failed", message);
     } finally {

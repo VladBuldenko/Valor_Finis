@@ -27,6 +27,7 @@ import {
 import { deleteBudget, getBudgets } from "./budget.service";
 import { styles } from "./budgets.styles";
 import type { Budget } from "./budget.types";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 function formatDateRange(startDate: string, endDate: string | null): string {
   return endDate ? `${startDate} – ${endDate}` : `${startDate} – Ongoing`;
@@ -203,10 +204,7 @@ export function BudgetsScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to delete budget.";
+      const message = getUserFacingErrorMessage(mutationError, "Unable to delete budget.");
 
       Alert.alert("Delete budget failed", message);
     },
