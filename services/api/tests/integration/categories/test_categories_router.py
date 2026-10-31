@@ -535,6 +535,7 @@ def test_create_category_endpoint_rejects_case_insensitive_duplicate(
         "detail": (
             "Category with this name already exists for this user."
         ),
+        "code": "category_already_exists",
     }
 
     # Tests that category rename checks are case-insensitive.
@@ -576,6 +577,7 @@ def test_update_category_endpoint_rejects_case_insensitive_duplicate(
         "detail": (
             "Category with this name already exists for this user."
         ),
+        "code": "category_already_exists",
     }
 
     # Tests that default categories cannot be modified.
@@ -612,6 +614,7 @@ def test_update_category_endpoint_rejects_default_category(
     assert response.status_code == 409
     assert response.json() == {
         "detail": "Default category cannot be modified.",
+        "code": "category_default_modification_not_allowed",
     }
 
     get_response = client.get(
@@ -654,6 +657,7 @@ def test_delete_category_endpoint_rejects_default_category(
     assert response.status_code == 409
     assert response.json() == {
         "detail": "Default category cannot be deleted.",
+        "code": "category_default_deletion_not_allowed",
     }
 
     get_response = client.get(
@@ -1130,6 +1134,7 @@ def test_delete_category_endpoint_rejects_category_referenced_by_budget(
     assert response.status_code == 409
     assert response.json() == {
         "detail": "Category is referenced by a budget and cannot be deleted. Hide it instead.",
+        "code": "category_in_use_by_budget",
     }
 
     budget_response = client.get(

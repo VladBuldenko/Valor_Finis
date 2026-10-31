@@ -288,7 +288,10 @@ def test_foreign_and_nonexistent_ids_are_the_same_404(client: TestClient, clean_
     missing_response = _reorder(client, user_id, [mine, str(uuid4())])
 
     assert foreign_response.status_code == 404 and missing_response.status_code == 404
-    assert foreign_response.json() == missing_response.json() == {"detail": "Goal not found."}
+    assert foreign_response.json() == missing_response.json() == {
+        "detail": "Goal not found.",
+        "code": "goal_not_found",
+    }
     assert _ranks(client, other_id)[foreign] == 1  # nothing of the other user changed
 
 

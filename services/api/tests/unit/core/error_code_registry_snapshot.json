@@ -1,0 +1,306 @@
+{
+  "_comment": "Committed registry of public API error codes (VF-BE-1). A code is never renamed, reused or removed; adding one means adding it here in the same change. See docs/api-contract.md section 13.",
+  "domain": {
+    "AccountArchivedError": {
+      "code": "account_archived",
+      "status": 409
+    },
+    "AccountCurrencyImmutableError": {
+      "code": "account_currency_immutable",
+      "status": 409
+    },
+    "AccountDeletionNotAllowedError": {
+      "code": "account_deletion_not_allowed",
+      "status": 409
+    },
+    "AccountNotFoundError": {
+      "code": "account_not_found",
+      "status": 404
+    },
+    "AccountReferencedByGoalAllocationError": {
+      "code": "account_referenced_by_goal_allocation",
+      "status": 409
+    },
+    "AccountReferencedByPlannedTransferError": {
+      "code": "account_referenced_by_planned_transfer",
+      "status": 409
+    },
+    "AccountReferencedByRuleError": {
+      "code": "account_referenced_by_rule",
+      "status": 409
+    },
+    "AccountTransferAlreadyPostedError": {
+      "code": "account_transfer_already_posted",
+      "status": 409
+    },
+    "AccountTransferCurrencyMismatchError": {
+      "code": "account_transfer_currency_mismatch",
+      "status": 422
+    },
+    "AccountTransferEffectiveDateInFutureError": {
+      "code": "account_transfer_effective_date_in_future",
+      "status": 422
+    },
+    "AccountTransferIdempotencyConflictError": {
+      "code": "account_transfer_idempotency_conflict",
+      "status": 409
+    },
+    "AccountTransferNotFoundError": {
+      "code": "account_transfer_not_found",
+      "status": 404
+    },
+    "BudgetAlreadyExistsError": {
+      "code": "budget_already_exists",
+      "status": 409
+    },
+    "BudgetImmutableFieldError": {
+      "code": "budget_immutable_field",
+      "status": 409
+    },
+    "BudgetNotFoundError": {
+      "code": "budget_not_found",
+      "status": 404
+    },
+    "BudgetReferencedByRuleError": {
+      "code": "budget_referenced_by_rule",
+      "status": 409
+    },
+    "BudgetRetroactiveDeactivationError": {
+      "code": "budget_retroactive_deactivation",
+      "status": 409
+    },
+    "CategoryAlreadyExistsError": {
+      "code": "category_already_exists",
+      "status": 409
+    },
+    "CategoryDefaultDeletionNotAllowedError": {
+      "code": "category_default_deletion_not_allowed",
+      "status": 409
+    },
+    "CategoryDefaultModificationNotAllowedError": {
+      "code": "category_default_modification_not_allowed",
+      "status": 409
+    },
+    "CategoryInUseByBudgetError": {
+      "code": "category_in_use_by_budget",
+      "status": 409
+    },
+    "CategoryNotFoundError": {
+      "code": "category_not_found",
+      "status": 404
+    },
+    "ExpenseAccountCurrencyMismatchError": {
+      "code": "expense_account_currency_mismatch",
+      "status": 422
+    },
+    "ExpenseNotFoundError": {
+      "code": "expense_not_found",
+      "status": 404
+    },
+    "FinancialRuleActivationNotAvailableError": {
+      "code": "financial_rule_activation_not_available",
+      "status": 409
+    },
+    "FinancialRuleAlreadyExistsError": {
+      "code": "financial_rule_already_exists",
+      "status": 409
+    },
+    "FinancialRuleCurrencyMismatchError": {
+      "code": "financial_rule_currency_mismatch",
+      "status": 422
+    },
+    "FinancialRuleDeletionNotAllowedError": {
+      "code": "financial_rule_deletion_not_allowed",
+      "status": 409
+    },
+    "FinancialRuleInvalidTransitionError": {
+      "code": "financial_rule_invalid_transition",
+      "status": 409
+    },
+    "FinancialRuleNotFoundError": {
+      "code": "financial_rule_not_found",
+      "status": 404
+    },
+    "FinancialRuleSubjectArchivedError": {
+      "code": "financial_rule_subject_archived",
+      "status": 409
+    },
+    "FxFutureDatedNotSupportedError": {
+      "code": "fx_future_dated_not_supported",
+      "status": 422
+    },
+    "FxProviderUnavailableError": {
+      "code": "fx_provider_unavailable",
+      "status": 503
+    },
+    "FxRateUnavailableError": {
+      "code": "fx_rate_unavailable",
+      "status": 422
+    },
+    "GoalAccountCurrencyMismatchError": {
+      "code": "goal_account_currency_mismatch",
+      "status": 422
+    },
+    "GoalArchivedError": {
+      "code": "goal_archived",
+      "status": 409
+    },
+    "GoalCurrencyImmutableError": {
+      "code": "goal_currency_immutable",
+      "status": 409
+    },
+    "GoalDeletionNotAllowedError": {
+      "code": "goal_deletion_not_allowed",
+      "status": 409
+    },
+    "GoalInsufficientFundsError": {
+      "code": "goal_insufficient_funds",
+      "status": 409
+    },
+    "GoalLinkedTransactionDateError": {
+      "code": "goal_linked_transaction_date_invalid",
+      "status": 422
+    },
+    "GoalNotFoundError": {
+      "code": "goal_not_found",
+      "status": 404
+    },
+    "GoalPartitionInsufficientFundsError": {
+      "code": "goal_partition_insufficient_funds",
+      "status": 409
+    },
+    "GoalPriorityGoalArchivedError": {
+      "code": "goal_priority_goal_archived",
+      "status": 409
+    },
+    "GoalPrioritySetStaleError": {
+      "code": "goal_priority_set_stale",
+      "status": 409
+    },
+    "GoalReferencedByRuleError": {
+      "code": "goal_referenced_by_rule",
+      "status": 409
+    },
+    "GoalReservationCapacityError": {
+      "code": "goal_reservation_capacity_exceeded",
+      "status": 409
+    },
+    "GoalTransactionEffectiveDateInFutureError": {
+      "code": "goal_transaction_effective_date_in_future",
+      "status": 422
+    },
+    "GoalTransactionIdempotencyConflictError": {
+      "code": "goal_transaction_idempotency_conflict",
+      "status": 409
+    },
+    "IncomeAccountCurrencyMismatchError": {
+      "code": "income_account_currency_mismatch",
+      "status": 422
+    },
+    "IncomeFutureDatedNotSupportedError": {
+      "code": "income_future_dated_not_supported",
+      "status": 422
+    },
+    "IncomeNotFoundError": {
+      "code": "income_not_found",
+      "status": 404
+    },
+    "ReceiptAlreadyConfirmedError": {
+      "code": "receipt_already_confirmed",
+      "status": 409
+    },
+    "ReceiptConfirmationDataMissingError": {
+      "code": "receipt_confirmation_data_missing",
+      "status": 422
+    },
+    "ReceiptConfirmationNotAllowedError": {
+      "code": "receipt_confirmation_not_allowed",
+      "status": 409
+    },
+    "ReceiptExpenseNotFoundError": {
+      "code": "receipt_expense_not_found",
+      "status": 404
+    },
+    "ReceiptFileEmptyError": {
+      "code": "receipt_file_empty",
+      "status": 422
+    },
+    "ReceiptFileStorageError": {
+      "code": "receipt_file_storage_failed",
+      "status": 500
+    },
+    "ReceiptFileTooLargeError": {
+      "code": "receipt_file_too_large",
+      "status": 413
+    },
+    "ReceiptFileTypeNotAllowedError": {
+      "code": "receipt_file_type_not_allowed",
+      "status": 415
+    },
+    "ReceiptNotFoundError": {
+      "code": "receipt_not_found",
+      "status": 404
+    },
+    "ReceiptOcrFileNotFoundError": {
+      "code": "receipt_ocr_file_not_found",
+      "status": 404
+    },
+    "ReceiptOcrProcessingError": {
+      "code": "receipt_ocr_processing_failed",
+      "status": 422
+    },
+    "ReceiptProcessingNotAllowedError": {
+      "code": "receipt_processing_not_allowed",
+      "status": 409
+    },
+    "RuleAlertNotFoundError": {
+      "code": "rule_alert_not_found",
+      "status": 404
+    },
+    "RuleProposalNotFoundError": {
+      "code": "rule_proposal_not_found",
+      "status": 404
+    },
+    "RuleProposalStaleError": {
+      "code": "rule_proposal_stale",
+      "status": 409
+    }
+  },
+  "financial_rule_invalid_fields": {
+    "code": "financial_rule_invalid_fields",
+    "status": 422
+  },
+  "router_and_auth": [
+    "analytics_trend_count_exceeded",
+    "analytics_year_month_required_together",
+    "auth_bearer_token_required",
+    "auth_invalid_authorization_header",
+    "auth_invalid_service_response",
+    "auth_invalid_token",
+    "auth_invalid_user_identifier",
+    "auth_invalid_user_payload",
+    "auth_missing_bearer_token",
+    "auth_missing_credentials",
+    "auth_not_configured",
+    "auth_service_unavailable"
+  ],
+  "generic": {
+    "validation": "validation_error",
+    "internal": "internal_server_error",
+    "http_fallback": "http_error",
+    "by_status": {
+      "400": "bad_request",
+      "401": "unauthorized",
+      "403": "forbidden",
+      "404": "not_found",
+      "405": "method_not_allowed",
+      "409": "conflict",
+      "413": "payload_too_large",
+      "415": "unsupported_media_type",
+      "422": "unprocessable_content",
+      "429": "too_many_requests",
+      "500": "internal_server_error",
+      "503": "service_unavailable"
+    }
+  }
+}
