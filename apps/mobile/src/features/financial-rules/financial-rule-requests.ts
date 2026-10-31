@@ -126,8 +126,8 @@ export const ruleActionRequest = (ruleId: string, action: RuleAction): RequestSp
 
 // ----------------------------------------------------- evaluate / preview
 
-// `limit` is the drain bound (1..MAX_DRAIN_LIMIT on the server); when omitted
-// the server default applies. The client never loops on it.
+// The server's drain `limit` query parameter is deliberately not exposed: the
+// server default bounds every drain, and the client never loops on it.
 export const evaluateRulesRequest = (): RequestSpec => ({
   method: "POST",
   path: `${FINANCIAL_RULES_PATH}/evaluate`,
