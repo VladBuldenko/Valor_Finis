@@ -278,6 +278,7 @@ def test_registered_domain_error_handler_returns_json_response() -> None:
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert response.json() == {
         "detail": "Budget not found.",
+        "code": "budget_not_found",
     }
 
 

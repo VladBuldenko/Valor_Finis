@@ -4,8 +4,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import UUID
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, status
 
+from app.core.api_errors import ApiHTTPException
 from app.core.app_config import settings
 from app.modules.auth.auth_schemas import CurrentUser
 
@@ -23,17 +24,19 @@ def extract_bearer_token(authorization: str) -> str:
     auth_scheme = "Bearer "
 
     if not authorization.startswith(auth_scheme):
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Authorization header.",
+            code="auth_invalid_authorization_header",
         )
 
     token = authorization.removeprefix(auth_scheme).strip()
 
     if not token:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing bearer token.",
+            code="auth_missing_bearer_token",
         )
 
     return token
@@ -52,9 +55,10 @@ def get_supabase_auth_settings() -> tuple[str, str]:
     supabase_publishable_key = settings.supabase_publishable_key
 
     if not supabase_url or not supabase_publishable_key:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Supabase authentication is not configured.",
+            code="auth_not_configured",
         )
 
     return (
@@ -92,19 +96,22 @@ def get_supabase_user_payload(token: str) -> dict[str, Any]:
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
         }:
-            raise HTTPException(
+            raise ApiHTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired authentication token.",
+                code="auth_invalid_token",
             ) from error
 
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Supabase authentication service is unavailable.",
+            code="auth_service_unavailable",
         ) from error
     except URLError as error:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Supabase authentication service is unavailable.",
+            code="auth_service_unavailable",
         ) from error
 
     try:
@@ -112,15 +119,17 @@ def get_supabase_user_payload(token: str) -> dict[str, Any]:
             response_body.decode("utf-8"),
         )
     except json.JSONDecodeError as error:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Invalid Supabase authentication response.",
+            code="auth_invalid_service_response",
         ) from error
 
     if not isinstance(payload, dict):
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Invalid Supabase authentication response.",
+            code="auth_invalid_service_response",
         )
 
     return cast(dict[str, Any], payload)
@@ -145,9 +154,10 @@ def get_current_user_from_supabase_token(
     user_id = user_payload.get("id")
 
     if user_id is None:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication user payload.",
+            code="auth_invalid_user_payload",
         )
 
     try:
@@ -155,9 +165,10 @@ def get_current_user_from_supabase_token(
             id=UUID(str(user_id)),
         )
     except ValueError as error:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication user identifier.",
+            code="auth_invalid_user_identifier",
         ) from error
 
 
@@ -178,9 +189,10 @@ def get_current_user_from_development_header(
             id=UUID(str(x_user_id)),
         )
     except ValueError as error:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication user identifier.",
+            code="auth_invalid_user_identifier",
         ) from error
 
 
@@ -215,16 +227,18 @@ def get_current_user(
 
     if settings.auth_mode == "development":
         if x_user_id is None:
-            raise HTTPException(
+            raise ApiHTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Missing authentication credentials.",
+                code="auth_missing_credentials",
             )
 
         return get_current_user_from_development_header(
             x_user_id=x_user_id,
         )
 
-    raise HTTPException(
+    raise ApiHTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authorization bearer token is required.",
+        code="auth_bearer_token_required",
     )

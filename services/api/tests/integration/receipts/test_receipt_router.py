@@ -548,6 +548,7 @@ def test_upload_receipt_rejects_mismatched_file_type(
     assert response.status_code == 415
     assert response.json() == {
         "detail": "Receipt file type is not supported.",
+        "code": "receipt_file_type_not_allowed",
     }
 
 # Verifies that a zero-byte receipt file is rejected.
@@ -588,6 +589,7 @@ def test_upload_receipt_rejects_empty_file(
     assert response.status_code == 422
     assert response.json() == {
         "detail": "Receipt file is empty.",
+        "code": "receipt_file_empty",
     }
 
     user_directory = tmp_path / user_id
@@ -639,6 +641,7 @@ def test_upload_receipt_rejects_oversized_file(
     assert response.status_code == 413
     assert response.json() == {
         "detail": "Receipt file is too large.",
+        "code": "receipt_file_too_large",
     }
 
     user_directory = tmp_path / user_id
@@ -777,6 +780,7 @@ def test_process_receipt_endpoint_rejects_missing_authentication(
     assert response.status_code == 401
     assert response.json() == {
         "detail": "Missing authentication credentials.",
+        "code": "auth_missing_credentials",
     }
 
 
@@ -817,6 +821,7 @@ def test_process_receipt_endpoint_rejects_other_user_receipt(
     assert response.status_code == 404
     assert response.json() == {
         "detail": "Receipt not found.",
+        "code": "receipt_not_found",
     }
 
     ocr_provider_mock.extract_text.assert_not_called()
@@ -897,6 +902,7 @@ def test_process_receipt_endpoint_rejects_unprocessable_status(
     assert process_response.status_code == 409
     assert process_response.json() == {
         "detail": "Receipt cannot be processed in its current status.",
+        "code": "receipt_processing_not_allowed",
     }
 
     ocr_provider_mock.extract_text.assert_not_called()
@@ -945,6 +951,7 @@ def test_process_receipt_endpoint_marks_missing_file_as_failed(
     assert process_response.status_code == 404
     assert process_response.json() == {
         "detail": "Receipt file not found.",
+        "code": "receipt_ocr_file_not_found",
     }
 
     stored_response = client.get(
@@ -1016,6 +1023,7 @@ def test_process_receipt_endpoint_marks_ocr_error_as_failed(
     assert process_response.status_code == 422
     assert process_response.json() == {
         "detail": "Receipt OCR processing failed.",
+        "code": "receipt_ocr_processing_failed",
     }
 
     stored_response = client.get(
@@ -1571,6 +1579,7 @@ def test_confirm_receipt_endpoint_rejects_missing_required_data(
     assert confirm_response.status_code == 422
     assert confirm_response.json() == {
         "detail": "Required receipt confirmation data is missing.",
+        "code": "receipt_confirmation_data_missing",
     }
 
     stored_receipt_response = client.get(
@@ -1643,6 +1652,7 @@ def test_confirm_receipt_endpoint_rejects_unconfirmable_status(
     assert confirm_response.status_code == 409
     assert confirm_response.json() == {
         "detail": "Receipt cannot be confirmed in its current status.",
+        "code": "receipt_confirmation_not_allowed",
     }
 
 # Verifies that a confirmed receipt cannot create a second expense.
@@ -1694,6 +1704,7 @@ def test_confirm_receipt_endpoint_rejects_repeated_confirmation(
     assert second_response.status_code == 409
     assert second_response.json() == {
         "detail": "Receipt has already been confirmed.",
+        "code": "receipt_already_confirmed",
     }
 
     expenses_response = client.get(
@@ -1746,6 +1757,7 @@ def test_confirm_receipt_endpoint_rejects_other_user_receipt(
     assert confirm_response.status_code == 404
     assert confirm_response.json() == {
         "detail": "Receipt not found.",
+        "code": "receipt_not_found",
     }
 
     expenses_response = client.get(
@@ -1782,6 +1794,7 @@ def test_confirm_receipt_endpoint_rejects_missing_authentication(
     assert confirm_response.status_code == 401
     assert confirm_response.json() == {
         "detail": "Missing authentication credentials.",
+        "code": "auth_missing_credentials",
     }
 
     # Verifies that receipt confirmation can assign
@@ -1914,6 +1927,7 @@ def test_confirm_receipt_endpoint_rejects_other_user_category(
     assert confirm_response.status_code == 404
     assert confirm_response.json() == {
         "detail": "Category not found.",
+        "code": "category_not_found",
     }
 
     stored_receipt_response = client.get(
@@ -2172,6 +2186,7 @@ def test_confirm_receipt_endpoint_account_currency_mismatch_is_atomic(
     assert response.status_code == 422, response.text
     assert response.json() == {
         "detail": "Expense currency must match the account's currency to link them.",
+        "code": "expense_account_currency_mismatch",
     }
 
     _assert_confirmation_left_no_partial_writes(
@@ -2211,6 +2226,7 @@ def test_confirm_receipt_endpoint_archived_account_is_atomic(
     assert response.status_code == 409, response.text
     assert response.json() == {
         "detail": "Archived account cannot receive new transactions.",
+        "code": "account_archived",
     }
 
     _assert_confirmation_left_no_partial_writes(
@@ -2241,7 +2257,10 @@ def test_confirm_receipt_endpoint_other_user_account_not_found(
     )
 
     assert response.status_code == 404, response.text
-    assert response.json() == {"detail": "Account not found."}
+    assert response.json() == {
+        "detail": "Account not found.",
+        "code": "account_not_found",
+    }
 
     receipt_response = client.get(
         f"/api/v1/receipts/{receipt['id']}",
@@ -2298,6 +2317,7 @@ def test_confirm_receipt_endpoint_repeated_linked_confirmation_single_debit(
     assert second_response.status_code == 409, second_response.text
     assert second_response.json() == {
         "detail": "Receipt has already been confirmed.",
+        "code": "receipt_already_confirmed",
     }
 
     expenses_response = client.get(
@@ -2349,6 +2369,7 @@ def test_confirm_receipt_endpoint_linked_fx_failure_is_atomic(
     assert response.status_code == 422, response.text
     assert response.json() == {
         "detail": "This currency cannot be converted for the given date.",
+        "code": "fx_rate_unavailable",
     }
 
     _assert_confirmation_left_no_partial_writes(

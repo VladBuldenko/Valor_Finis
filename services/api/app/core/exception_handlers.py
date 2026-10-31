@@ -1,7 +1,17 @@
 from typing import Dict, Tuple, Type
 
 from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from fastapi.utils import is_body_allowed_for_status_code
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.api_errors import (
+    INTERNAL_SERVER_ERROR_CODE,
+    VALIDATION_ERROR_CODE,
+    resolve_http_error_code,
+)
 
 from app.modules.accounts.account_errors import (
     AccountArchivedError,
@@ -372,13 +382,92 @@ DOMAIN_ERROR_RESPONSES: Dict[
 }
 
 
+# Stable public error code for every entry of DOMAIN_ERROR_RESPONSES. Codes are
+# part of the API contract (docs/api-contract.md, section 13): written out
+# explicitly, never derived from a class name or a message, and never renamed or
+# reused. A new mapped domain error needs a new entry here; the registry test
+# fails otherwise.
+DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
+    AccountNotFoundError: "account_not_found",
+    AccountCurrencyImmutableError: "account_currency_immutable",
+    AccountDeletionNotAllowedError: "account_deletion_not_allowed",
+    AccountArchivedError: "account_archived",
+    AccountReferencedByPlannedTransferError: "account_referenced_by_planned_transfer",
+    AccountReferencedByGoalAllocationError: "account_referenced_by_goal_allocation",
+    FinancialRuleNotFoundError: "financial_rule_not_found",
+    RuleAlertNotFoundError: "rule_alert_not_found",
+    RuleProposalNotFoundError: "rule_proposal_not_found",
+    RuleProposalStaleError: "rule_proposal_stale",
+    FinancialRuleAlreadyExistsError: "financial_rule_already_exists",
+    FinancialRuleInvalidTransitionError: "financial_rule_invalid_transition",
+    FinancialRuleActivationNotAvailableError: "financial_rule_activation_not_available",
+    FinancialRuleDeletionNotAllowedError: "financial_rule_deletion_not_allowed",
+    FinancialRuleSubjectArchivedError: "financial_rule_subject_archived",
+    FinancialRuleCurrencyMismatchError: "financial_rule_currency_mismatch",
+    AccountReferencedByRuleError: "account_referenced_by_rule",
+    GoalReferencedByRuleError: "goal_referenced_by_rule",
+    BudgetReferencedByRuleError: "budget_referenced_by_rule",
+    AccountTransferNotFoundError: "account_transfer_not_found",
+    AccountTransferIdempotencyConflictError: "account_transfer_idempotency_conflict",
+    AccountTransferCurrencyMismatchError: "account_transfer_currency_mismatch",
+    AccountTransferAlreadyPostedError: "account_transfer_already_posted",
+    AccountTransferEffectiveDateInFutureError: "account_transfer_effective_date_in_future",
+    CategoryAlreadyExistsError: "category_already_exists",
+    CategoryNotFoundError: "category_not_found",
+    CategoryDefaultModificationNotAllowedError: "category_default_modification_not_allowed",
+    CategoryDefaultDeletionNotAllowedError: "category_default_deletion_not_allowed",
+    CategoryInUseByBudgetError: "category_in_use_by_budget",
+    ExpenseNotFoundError: "expense_not_found",
+    ExpenseAccountCurrencyMismatchError: "expense_account_currency_mismatch",
+    FxProviderUnavailableError: "fx_provider_unavailable",
+    FxRateUnavailableError: "fx_rate_unavailable",
+    FxFutureDatedNotSupportedError: "fx_future_dated_not_supported",
+    BudgetAlreadyExistsError: "budget_already_exists",
+    BudgetNotFoundError: "budget_not_found",
+    BudgetImmutableFieldError: "budget_immutable_field",
+    BudgetRetroactiveDeactivationError: "budget_retroactive_deactivation",
+    GoalNotFoundError: "goal_not_found",
+    GoalInsufficientFundsError: "goal_insufficient_funds",
+    GoalPartitionInsufficientFundsError: "goal_partition_insufficient_funds",
+    GoalReservationCapacityError: "goal_reservation_capacity_exceeded",
+    GoalLinkedTransactionDateError: "goal_linked_transaction_date_invalid",
+    GoalAccountCurrencyMismatchError: "goal_account_currency_mismatch",
+    GoalPriorityGoalArchivedError: "goal_priority_goal_archived",
+    GoalPrioritySetStaleError: "goal_priority_set_stale",
+    GoalArchivedError: "goal_archived",
+    GoalCurrencyImmutableError: "goal_currency_immutable",
+    GoalDeletionNotAllowedError: "goal_deletion_not_allowed",
+    GoalTransactionIdempotencyConflictError: "goal_transaction_idempotency_conflict",
+    GoalTransactionEffectiveDateInFutureError: "goal_transaction_effective_date_in_future",
+    IncomeNotFoundError: "income_not_found",
+    IncomeFutureDatedNotSupportedError: "income_future_dated_not_supported",
+    IncomeAccountCurrencyMismatchError: "income_account_currency_mismatch",
+    ReceiptNotFoundError: "receipt_not_found",
+    ReceiptExpenseNotFoundError: "receipt_expense_not_found",
+    ReceiptFileEmptyError: "receipt_file_empty",
+    ReceiptFileTypeNotAllowedError: "receipt_file_type_not_allowed",
+    ReceiptFileTooLargeError: "receipt_file_too_large",
+    ReceiptFileStorageError: "receipt_file_storage_failed",
+    ReceiptProcessingNotAllowedError: "receipt_processing_not_allowed",
+    ReceiptOcrFileNotFoundError: "receipt_ocr_file_not_found",
+    ReceiptOcrProcessingError: "receipt_ocr_processing_failed",
+    ReceiptConfirmationNotAllowedError: "receipt_confirmation_not_allowed",
+    ReceiptConfirmationDataMissingError: "receipt_confirmation_data_missing",
+    ReceiptAlreadyConfirmedError: "receipt_already_confirmed",
+}
+
+# FinancialRuleInvalidFieldsError has its own handler (its message comes from the
+# exception), so it is outside DOMAIN_ERROR_RESPONSES and has its code here.
+FINANCIAL_RULE_INVALID_FIELDS_CODE = "financial_rule_invalid_fields"
+
+
 # Converts a domain exception into a consistent HTTP JSON response.
 # This function exists to keep HTTP error mapping outside router modules.
 # Parameters:
 # - request: FastAPI request that produced the exception.
 # - error: domain exception raised by the application.
 # Returns:
-# - JSONResponse with a consistent detail field.
+# - JSONResponse with a consistent detail field and a stable code field.
 async def handle_domain_error(
     request: Request,
     error: Exception,
@@ -391,6 +480,7 @@ async def handle_domain_error(
         status_code=status_code,
         content={
             "detail": detail,
+            "code": DOMAIN_ERROR_CODES[type(error)],
         },
     )
 
@@ -408,7 +498,71 @@ async def handle_financial_rule_invalid_fields(
 
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": message},
+        content={"detail": message, "code": FINANCIAL_RULE_INVALID_FIELDS_CODE},
+    )
+
+
+# Adds the stable code to every HTTPException response (authentication and
+# configuration errors, Starlette's 404/405, router-level errors). Status,
+# detail and headers are exactly what FastAPI's default handler produced.
+async def handle_http_exception(
+    request: Request,
+    error: Exception,
+) -> Response:
+    del request
+
+    http_error = error if isinstance(error, StarletteHTTPException) else None
+
+    if http_error is None:
+        raise error
+
+    headers = getattr(http_error, "headers", None)
+
+    if not is_body_allowed_for_status_code(http_error.status_code):
+        return Response(status_code=http_error.status_code, headers=headers)
+
+    return JSONResponse(
+        status_code=http_error.status_code,
+        content={
+            "detail": http_error.detail,
+            "code": resolve_http_error_code(http_error),
+        },
+        headers=headers,
+    )
+
+
+# Keeps FastAPI's structured validation `detail` list and adds only the code.
+async def handle_request_validation_error(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    del request
+
+    errors = error.errors() if isinstance(error, RequestValidationError) else []
+
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={
+            "detail": jsonable_encoder(errors),
+            "code": VALIDATION_ERROR_CODE,
+        },
+    )
+
+
+# Last-resort handler for an unexpected exception. The body is a fixed message:
+# nothing from the exception (text, SQL, traceback, settings) is ever included.
+async def handle_unexpected_error(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    del request, error
+
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "Internal server error.",
+            "code": INTERNAL_SERVER_ERROR_CODE,
+        },
     )
 
 
@@ -430,4 +584,16 @@ def register_exception_handlers(
     app.add_exception_handler(
         FinancialRuleInvalidFieldsError,
         handle_financial_rule_invalid_fields,
+    )
+    app.add_exception_handler(
+        StarletteHTTPException,
+        handle_http_exception,
+    )
+    app.add_exception_handler(
+        RequestValidationError,
+        handle_request_validation_error,
+    )
+    app.add_exception_handler(
+        Exception,
+        handle_unexpected_error,
     )

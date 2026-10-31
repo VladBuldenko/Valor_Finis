@@ -2751,11 +2751,57 @@ still no cash-flow reconciliation or net-worth surface.
 
 13. Error Contract
 
-Domain errors use a consistent JSON shape:
+Every JSON error response has the same shape:
 
 {
-  "detail": "Human-readable error message."
+  "detail": "Human-readable error message.",
+  "code": "stable_snake_case_code"
 }
+
+detail is the human-readable message and is unchanged from before codes were
+introduced (for request validation it is FastAPI's structured list, see below).
+code is a stable, machine-readable identifier. Clients must branch on code (and
+status), never on the text of detail.
+
+Where code comes from
+
+- Domain error: a business rule refused the request (a mapped domain exception).
+  code is the explicit domain code listed in the registry below.
+- Authentication or configuration error: an HTTP 401, 500 or 503 raised while
+  resolving the current user. code starts with auth_.
+- Router-level error: a request-specific check in a router (analytics). Explicit code.
+- Request validation: HTTP 422 from FastAPI/Pydantic. code is validation_error and
+  detail is the unchanged list of {type, loc, msg, input, ...} objects. A financial
+  rule request with fields that are invalid for its type is a domain 422 with
+  code financial_rule_invalid_fields and a plain-text detail.
+- Generic HTTP error: raised by the framework (unknown route, unsupported method,
+  any HTTPException without an explicit code). code is fixed per status:
+  400 bad_request, 401 unauthorized, 403 forbidden, 404 not_found,
+  405 method_not_allowed, 409 conflict, 413 payload_too_large,
+  415 unsupported_media_type, 422 unprocessable_content, 429 too_many_requests,
+  500 internal_server_error, 503 service_unavailable; any other status http_error.
+  not_found (no such route) is distinct from the resource codes such as goal_not_found.
+- Unexpected server error: HTTP 500, detail "Internal server error.", code
+  internal_server_error. The body never contains exception text, SQL, a
+  traceback or configuration.
+
+HTTP headers set on an error (for example WWW-Authenticate, Allow) are preserved.
+
+Stability guarantees and compatibility policy
+
+- Adding code is additive: status, detail and the success responses are unchanged,
+  so existing clients keep working.
+- A published code is never renamed, reused for a different meaning, or removed.
+  A changed meaning gets a new code; the old one stays documented.
+- New codes may appear at any time; clients must treat an unknown code as the
+  generic error for its status.
+- Codes are lowercase ASCII snake_case, written out explicitly in
+  services/api/app/core/exception_handlers.py (domain errors) and
+  services/api/app/core/api_errors.py (generic and HTTP errors); they are never
+  generated from class names or messages. A committed snapshot
+  (tests/unit/core/error_code_registry_snapshot.json) and a registry test fail the
+  build on any removal, rename or undocumented addition.
+- detail text may be reworded; it is not part of the machine contract.
 
 Authentication
 
@@ -2852,7 +2898,96 @@ Important current domain mappings include:
 
 500  Receipt file could not be stored.
 
-Pydantic/FastAPI request validation errors also return HTTP 422.
+Pydantic/FastAPI request validation errors also return HTTP 422 with code validation_error.
+
+Authentication and router error codes
+
+401  auth_invalid_authorization_header  -  Invalid Authorization header.
+401  auth_missing_bearer_token  -  Missing bearer token.
+401  auth_invalid_token  -  Invalid or expired authentication token.
+401  auth_invalid_user_payload  -  Invalid authentication user payload.
+401  auth_invalid_user_identifier  -  Invalid authentication user identifier.
+401  auth_missing_credentials  -  Missing authentication credentials.
+401  auth_bearer_token_required  -  Authorization bearer token is required.
+500  auth_not_configured  -  Supabase authentication is not configured.
+503  auth_service_unavailable  -  Supabase authentication service is unavailable.
+503  auth_invalid_service_response  -  Invalid Supabase authentication response.
+422  analytics_trend_count_exceeded  -  count must not exceed <maximum> for period '<period>'.
+422  analytics_year_month_required_together  -  Year and month must be provided together.
+
+Domain error codes (status, code, current detail)
+
+409  account_archived  -  Archived account cannot receive new transactions.
+409  account_currency_immutable  -  Account currency cannot be changed after transaction history exists.
+409  account_deletion_not_allowed  -  Account with transaction history cannot be deleted. Archive it instead.
+404  account_not_found  -  Account not found.
+409  account_referenced_by_goal_allocation  -  Account is referenced by Goal reservations and cannot be deleted or have its currency changed.
+409  account_referenced_by_planned_transfer  -  Account is referenced by planned transfers. Delete them first.
+409  account_referenced_by_rule  -  Account is referenced by a financial rule and cannot be deleted or have its currency changed.
+409  account_transfer_already_posted  -  Account transfer has already been posted.
+422  account_transfer_currency_mismatch  -  Transfer source and destination accounts must use the same currency.
+422  account_transfer_effective_date_in_future  -  Transfer effective date cannot be in the future.
+409  account_transfer_idempotency_conflict  -  client_request_id has already been used for a different transfer.
+404  account_transfer_not_found  -  Account transfer not found.
+409  budget_already_exists  -  Budget with this name, period, and start date already exists for this user.
+409  budget_immutable_field  -  Budget currency cannot be changed. Period and start date cannot be changed after the first period completes.
+404  budget_not_found  -  Budget not found.
+409  budget_referenced_by_rule  -  Budget is referenced by a financial rule and cannot be deleted.
+409  budget_retroactive_deactivation  -  Budget end date cannot be set to a date before today.
+409  category_already_exists  -  Category with this name already exists for this user.
+409  category_default_deletion_not_allowed  -  Default category cannot be deleted.
+409  category_default_modification_not_allowed  -  Default category cannot be modified.
+409  category_in_use_by_budget  -  Category is referenced by a budget and cannot be deleted. Hide it instead.
+404  category_not_found  -  Category not found.
+422  expense_account_currency_mismatch  -  Expense currency must match the account's currency to link them.
+404  expense_not_found  -  Expense not found.
+409  financial_rule_activation_not_available  -  This rule type cannot be enabled yet.
+409  financial_rule_already_exists  -  A rule of this type already exists for this subject.
+422  financial_rule_currency_mismatch  -  The source Account and every target Goal must use the same currency.
+409  financial_rule_deletion_not_allowed  -  Only draft or disabled rules can be deleted.
+409  financial_rule_invalid_transition  -  This status change is not allowed from the rule's current status.
+404  financial_rule_not_found  -  Financial rule not found.
+409  financial_rule_subject_archived  -  The rule's Account or Goal is archived.
+422  fx_future_dated_not_supported  -  A foreign-currency expense cannot be dated in the future.
+503  fx_provider_unavailable  -  Currency conversion is temporarily unavailable. Please try again shortly.
+422  fx_rate_unavailable  -  This currency cannot be converted for the given date.
+422  goal_account_currency_mismatch  -  Goal and Account currencies must match.
+409  goal_archived  -  Archived goal cannot receive contributions.
+409  goal_currency_immutable  -  Goal currency cannot be changed after transaction history exists.
+409  goal_deletion_not_allowed  -  Goal with transaction history cannot be deleted. Archive it instead.
+409  goal_insufficient_funds  -  Withdrawal exceeds the current goal balance.
+422  goal_linked_transaction_date_invalid  -  Linked goal transactions are dated today; effective_date must be omitted or equal to today.
+404  goal_not_found  -  Goal not found.
+409  goal_partition_insufficient_funds  -  Withdrawal exceeds the goal amount reserved against this account.
+409  goal_priority_goal_archived  -  Archived goals cannot be ranked.
+409  goal_priority_set_stale  -  Goal list is out of date. Reload goals and try again.
+409  goal_referenced_by_rule  -  Goal is referenced by a financial rule and cannot be deleted or have its currency changed.
+409  goal_reservation_capacity_exceeded  -  Reservation exceeds the Account's reservable capacity.
+422  goal_transaction_effective_date_in_future  -  Goal transaction effective date cannot be in the future.
+409  goal_transaction_idempotency_conflict  -  client_request_id has already been used for a different goal transaction.
+422  income_account_currency_mismatch  -  Income currency must match the account's currency to link them.
+422  income_future_dated_not_supported  -  A foreign-currency income cannot be dated in the future.
+404  income_not_found  -  Income not found.
+409  receipt_already_confirmed  -  Receipt has already been confirmed.
+422  receipt_confirmation_data_missing  -  Required receipt confirmation data is missing.
+409  receipt_confirmation_not_allowed  -  Receipt cannot be confirmed in its current status.
+404  receipt_expense_not_found  -  Linked expense not found.
+422  receipt_file_empty  -  Receipt file is empty.
+500  receipt_file_storage_failed  -  Receipt file could not be stored.
+413  receipt_file_too_large  -  Receipt file is too large.
+415  receipt_file_type_not_allowed  -  Receipt file type is not supported.
+404  receipt_not_found  -  Receipt not found.
+404  receipt_ocr_file_not_found  -  Receipt file not found.
+422  receipt_ocr_processing_failed  -  Receipt OCR processing failed.
+409  receipt_processing_not_allowed  -  Receipt cannot be processed in its current status.
+404  rule_alert_not_found  -  Rule alert not found.
+404  rule_proposal_not_found  -  Rule proposal not found.
+409  rule_proposal_stale  -  The proposal can no longer be confirmed and was cancelled (stale). Nothing was written.
+422  financial_rule_invalid_fields  -  (message describing the invalid rule fields)
+
+Generic and framework codes: validation_error (422), not_found (404),
+method_not_allowed (405), internal_server_error (500), and the per-status codes above.
+
 
 14. Client Integration Rules
 

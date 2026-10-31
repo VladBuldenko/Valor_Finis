@@ -2,9 +2,10 @@ from datetime import date
 from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.api_errors import ApiHTTPException
 from app.db.database_session import get_db_session
 from app.modules.analytics import analytics_service
 from app.modules.analytics.analytics_schemas import (
@@ -52,17 +53,18 @@ INCOME_EXPENSE_TREND_MAXIMUM_COUNT = 24
 # Returns:
 # - The resolved count to use.
 # Raises:
-# - HTTPException 422: when the resolved count exceeds the period's maximum.
+# - ApiHTTPException 422: when the resolved count exceeds the period's maximum.
 def _resolve_trend_count(period: str, count: Optional[int]) -> int:
     resolved_count = count if count is not None else SPENDING_TREND_DEFAULT_COUNTS[period]
 
     if resolved_count > SPENDING_TREND_MAXIMUM_COUNTS[period]:
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"count must not exceed {SPENDING_TREND_MAXIMUM_COUNTS[period]} "
                 f"for period '{period}'."
             ),
+            code="analytics_trend_count_exceeded",
         )
 
     return resolved_count
@@ -141,9 +143,10 @@ def get_category_summary(
     db_session: Session = Depends(get_db_session),
 ) -> list[CategorySummaryItem]:
     if (year is None) != (month is None):
-        raise HTTPException(
+        raise ApiHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Year and month must be provided together.",
+            code="analytics_year_month_required_together",
         )
 
     return analytics_service.get_category_summary(
@@ -170,7 +173,7 @@ def get_category_summary(
 # - SpendingTrendResponse with `count` buckets ending at the server's
 #   current date, and an optional period_over_period comparison.
 # Raises:
-# - HTTPException 422: when count exceeds the maximum for the requested period.
+# - ApiHTTPException 422: when count exceeds the maximum for the requested period.
 @router.get(
     "/spending-trend",
     response_model=SpendingTrendResponse,
@@ -224,7 +227,7 @@ def get_spending_trend(
 # Returns:
 # - CategoryTrendResponse with one item per matching category.
 # Raises:
-# - HTTPException 422: when count exceeds the maximum for the requested period.
+# - ApiHTTPException 422: when count exceeds the maximum for the requested period.
 # - CategoryNotFoundError: category_id is set and not owned by the caller
 #   (mapped centrally to 404 - see app.core.exception_handlers).
 @router.get(

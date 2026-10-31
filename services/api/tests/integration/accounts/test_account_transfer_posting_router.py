@@ -157,7 +157,10 @@ def test_post_future_effective_date_precedes_lookup(
     foreign_response = _post(client, user_id, foreign["id"], body={"effective_date": "2026-09-15"})
     assert missing.status_code == 404
     assert foreign_response.status_code == 404
-    assert missing.json() == foreign_response.json() == {"detail": TRANSFER_NOT_FOUND}
+    assert missing.json() == foreign_response.json() == {
+        "detail": TRANSFER_NOT_FOUND,
+        "code": "account_transfer_not_found",
+    }
     assert _transfer_leg_count(own["id"]) == 0
     assert _transfer_leg_count(foreign["id"]) == 0
 

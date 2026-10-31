@@ -38,6 +38,7 @@ def test_protected_endpoint_rejects_invalid_x_user_id(
     assert response.status_code == 401
     assert response.json() == {
         "detail": "Invalid authentication user identifier.",
+        "code": "auth_invalid_user_identifier",
     }
 
 
@@ -73,4 +74,5 @@ def test_protected_endpoint_rejects_x_user_id_in_supabase_mode(
     assert response.status_code == 401
     assert response.json() == {
         "detail": "Authorization bearer token is required.",
+        "code": "auth_bearer_token_required",
     }
