@@ -60,6 +60,7 @@ from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleInvalidFieldsError,
     FinancialRuleInvalidTransitionError,
     FinancialRuleNotFoundError,
+    FinancialRulePreviewNotAvailableError,
     RuleAlertNotFoundError,
     RuleProposalNotFoundError,
     RuleProposalStaleError,
@@ -168,6 +169,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
     FinancialRuleSubjectArchivedError: (
         status.HTTP_409_CONFLICT,
         "The rule's Account or Goal is archived.",
+    ),
+    FinancialRulePreviewNotAvailableError: (
+        status.HTTP_409_CONFLICT,
+        "Only income allocation rules can be previewed.",
     ),
     FinancialRuleCurrencyMismatchError: (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -403,6 +408,7 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     FinancialRuleActivationNotAvailableError: "financial_rule_activation_not_available",
     FinancialRuleDeletionNotAllowedError: "financial_rule_deletion_not_allowed",
     FinancialRuleSubjectArchivedError: "financial_rule_subject_archived",
+    FinancialRulePreviewNotAvailableError: "financial_rule_preview_not_available",
     FinancialRuleCurrencyMismatchError: "financial_rule_currency_mismatch",
     AccountReferencedByRuleError: "account_referenced_by_rule",
     GoalReferencedByRuleError: "goal_referenced_by_rule",

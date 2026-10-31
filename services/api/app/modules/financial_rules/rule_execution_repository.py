@@ -269,6 +269,26 @@ def account_has_execution_items(db_session: Session, account_id: UUID, user_id: 
 # Locks the given Goals FOR UPDATE in ascending id order (global lock level
 # L2). Only the user's own Goals are returned, so a foreign id can never be
 # locked or read.
+# The same Goals as get_goals_for_update, read without row locks. Used by the
+# read-only preview, which must never lock or write.
+def get_goals(
+    db_session: Session, user_id: UUID, goal_ids: Iterable[UUID],
+) -> dict[UUID, GoalModel]:
+    ids = sorted(set(goal_ids))
+
+    if not ids:
+        return {}
+
+    rows = (
+        db_session.query(GoalModel)
+        .filter(GoalModel.user_id == user_id, GoalModel.id.in_(ids))
+        .order_by(GoalModel.id)
+        .all()
+    )
+
+    return {row.id: row for row in rows}
+
+
 def get_goals_for_update(
     db_session: Session, user_id: UUID, goal_ids: Iterable[UUID],
 ) -> dict[UUID, GoalModel]:

@@ -876,6 +876,29 @@ inconsistent fields is 422. Deleting a Goal or Budget, or deleting / changing th
 of an Account, that a rule or an execution item references is a controlled 409 (archiving
 is allowed).
 
+POST /api/v1/financial-rules/{rule_id}/preview (VF-BE-2, authenticated): a HYPOTHETICAL, read-only dry run of an
+INCOME_ALLOCATION rule (any status) for a sample income. Body: { "sample_income": { "amount": "3000.00",
+"source": "salary" } } (amount: positive Decimal, at most 12 digits and 2 decimals; source optional, one of the
+income sources; no other field, the currency is the rule's source Account currency). Response 200:
+{ hypothetical: true, rule_id, rule_version, rule_status, execution_mode (AUTO | CONFIRM), policy, as_of_date,
+computed_at, sample_income { amount, currency, source, source_selected_by_rule (null without a source) },
+capacity { account_id, currency, reservable_amount, assumed_sample_income_credit, reservable_with_sample_income,
+minimum_unallocated_floor, active_rule_holds, rule_capacity }, predicted_outcome (full | partial | skipped |
+blocked), effect (would_apply | would_hold | none), reason_code, items [{ goal_id, position, priority_rank,
+planned_amount, selected_amount }], planned_total, selected_total, notices }. All money is a two-decimal string.
+effect separates the modes: AUTO would reserve money to the Goals at once (would_apply); CONFIRM would create a
+168-hour hold and reserve nothing until the user confirms (would_hold); skipped and blocked do nothing (none).
+Nothing is recorded, credited, reserved or held: planning ASSUMES the sample amount is credited to the source
+Account (reservable_with_sample_income = reservable_amount + assumed_sample_income_credit), which is what real
+execution sees after the Income is recorded. Only the requested rule is simulated; other enabled rules are not.
+Eligibility (live manual provenance, active_since, effective_from, the 7-day window, selected source) is NOT
+evaluated and is no promise about a future real event (notices: hypothetical_snapshot, income_not_recorded,
+eligibility_not_evaluated). Archived Account or Goal and currency mismatch are normal 200 responses with
+predicted_outcome blocked and the reason code. Errors: 404 financial_rule_not_found (unknown or foreign rule, the
+same body), 409 financial_rule_preview_not_available (not an allocation rule), 422 validation_error, 401 auth_*.
+It runs in its own PostgreSQL READ ONLY, REPEATABLE READ transaction that is always rolled back, takes no locks,
+and shares its allocation decision (rule_allocation_planner.decide) with real AUTO / CONFIRM execution.
+
 POST /api/v1/financial-rules/evaluate (VF-020E7, authenticated): drains at most `limit`
 (query, 1-100, default 20) DUE income events of the CALLER ONLY, in strict per-user FIFO
 order, and runs their AUTO rules. It is idempotent, creates no new identities and never
@@ -2947,6 +2970,7 @@ Domain error codes (status, code, current detail)
 409  financial_rule_deletion_not_allowed  -  Only draft or disabled rules can be deleted.
 409  financial_rule_invalid_transition  -  This status change is not allowed from the rule's current status.
 404  financial_rule_not_found  -  Financial rule not found.
+409  financial_rule_preview_not_available  -  Only income allocation rules can be previewed.
 409  financial_rule_subject_archived  -  The rule's Account or Goal is archived.
 422  fx_future_dated_not_supported  -  A foreign-currency expense cannot be dated in the future.
 503  fx_provider_unavailable  -  Currency conversion is temporarily unavailable. Please try again shortly.

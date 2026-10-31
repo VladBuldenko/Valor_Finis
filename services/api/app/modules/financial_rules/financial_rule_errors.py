@@ -122,3 +122,12 @@ class RuleAlertNotFoundError(Exception):
     """
 
     pass
+
+
+class FinancialRulePreviewNotAvailableError(Exception):
+    """
+    Raised when a preview is requested for a rule that is not an
+    INCOME_ALLOCATION rule (409). Only allocation rules allocate income.
+    """
+
+    pass

@@ -7,13 +7,21 @@ from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.financial_events import financial_event_processor
-from app.modules.financial_rules import financial_rule_service, rule_alert_service
+from app.modules.financial_rules import (
+    financial_rule_service,
+    rule_alert_service,
+    rule_preview_service,
+)
 from app.modules.financial_rules.financial_rule_schemas import (
     FinancialRuleCreate,
     FinancialRuleResponse,
     FinancialRuleUpdate,
 )
 from app.modules.financial_rules.rule_execution_schemas import RuleEvaluationResponse
+from app.modules.financial_rules.rule_preview_schemas import (
+    RulePreviewRequest,
+    RulePreviewResponse,
+)
 
 router = APIRouter(
     prefix="/financial-rules",
@@ -172,4 +180,22 @@ def disable_financial_rule(
 ):
     return financial_rule_service.disable_rule(
         db_session=db_session, rule_id=rule_id, user_id=current_user.id,
+    )
+
+
+# Hypothetical, read-only dry run of an allocation rule for a sample income. It
+# opens its own READ ONLY transaction (rule_preview_service), so it takes no
+# database session from the request and can never write.
+@router.post(
+    "/{rule_id}/preview",
+    response_model=RulePreviewResponse,
+    status_code=status.HTTP_200_OK,
+)
+def preview_financial_rule(
+    rule_id: UUID,
+    preview_request: RulePreviewRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return rule_preview_service.preview_rule(
+        user_id=current_user.id, rule_id=rule_id, request=preview_request,
     )

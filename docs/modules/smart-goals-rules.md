@@ -1782,7 +1782,14 @@ Deleting an Account or changing its currency returns the controlled 409 of
 
 - `POST/GET/PATCH/DELETE /api/v1/financial-rules`;
   `POST /api/v1/financial-rules/{id}/enable|pause|disable`.
-- `POST /api/v1/financial-rules/{id}/preview`: dry run, writes nothing.
+- `POST /api/v1/financial-rules/{id}/preview` (VF-BE-2): hypothetical dry run, writes nothing. Allowed for an
+  `INCOME_ALLOCATION` rule in any status (draft, enabled, paused, disabled), so an AUTO rule can be re-previewed
+  before it is re-enabled; other rule types are a 409 `financial_rule_preview_not_available`. Input is a
+  `sample_income` (amount, optional source); the income is **not recorded**, planning assumes it credited to the
+  source Account, only the requested rule is simulated, and eligibility (§15.1) is not evaluated. The decision is the
+  same pure function as real execution (`rule_allocation_planner.decide`); the endpoint runs in its own
+  `READ ONLY, REPEATABLE READ` transaction that is always rolled back (no lock, no sequence, no write). Contract:
+  `docs/api-contract.md`; sheet: `docs/mvp/vf-be2-preview-contract.md`.
 - `POST /api/v1/financial-rules/evaluate`: drains **only the caller's** due
   events (bounded) and evaluates alerts; idempotent; returns a summary; never
   scans historical Income.
