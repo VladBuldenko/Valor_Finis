@@ -1,6 +1,8 @@
 # VF-020F3 — Smart Rules list and editor: implementation design sheet (for owner approval)
 
-Status: **PROPOSED, awaiting owner approval. No UI code has been written.**
+Status: **APPROVED by the owner (D1-D5, exactly as proposed); implemented in VF-020F3.**
+This is approval of the F3 implementation design only. It is not acceptance of the broader DR-9 gate, and device
+acceptance remains pending.
 Why this exists: the roadmap requires approved high-fidelity specs (gate DR-HF/DR-I) before the F-slices, and
 `mvp-design-readiness.md` still lists "Rules ... screens (M01-M07, M10): NO - need approved scope, high-fidelity specs".
 No approved specs for R-01..R-06 were found in the repository. This sheet uses the existing Goals / Accounts screens as
@@ -86,7 +88,7 @@ are announced with `accessibilityLiveRegion="polite"`; status is text, never col
 F3 does **not** mount `watchForeground` or call `evaluate` (F4 owns the Inbox-open trigger and the single mount point).
 No duplicate foreground listeners are introduced.
 
-## 7. Decisions needed from the owner
+## 7. Decisions (all approved as recommended)
 
 | # | Question | Recommendation |
 |---|---|---|
