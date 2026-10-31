@@ -46,6 +46,7 @@ import {
   type GoalTransactionAttempt,
 } from "./goal-transaction-attempts";
 import { mapGoalTransactionFailure } from "./goal-transaction-errors";
+import { handleGoalTransactionSuccess } from "./goal-transaction-warning";
 import { validateGoalTransactionForm } from "./goal-transaction-validation";
 import {
   createGoalTransaction,
@@ -192,21 +193,30 @@ export function GoalDetailScreen() {
     // 201 (new) and 200 (exact replay of an earlier, possibly lost,
     // attempt) are the same success: the body is the one stored
     // transaction either way, and the refetch below shows it exactly once.
-    onSuccess: async (_transaction, variables) => {
-      createAttemptsRef.current = [];
-      setAmount("");
-      setDescription("");
-
-      // See invalidateGoalTransactionQueries: Goals, this Goal's history and
-      // Goal Progress always; Accounts too for a linked operation. A
-      // reservation writes no AccountTransaction, so Account history stays
-      // untouched. New values always come from a refetch.
-      await invalidateGoalTransactionQueries(
-        queryClient,
-        session?.user.id,
-        id,
-        variables.account_id !== undefined,
-      );
+    onSuccess: async (transaction, variables) => {
+      // The advisory floor warning (backend `warnings`) is presented before
+      // the refetch is awaited and never turns this success into an error;
+      // see handleGoalTransactionSuccess. Goals, this Goal's history and
+      // Goal Progress are always refreshed; Accounts too for a linked
+      // operation. A reservation writes no AccountTransaction, so Account
+      // history stays untouched. New values always come from a refetch.
+      await handleGoalTransactionSuccess({
+        response: transaction,
+        currency: transaction.currency ?? goal?.currency ?? "",
+        resetForm: () => {
+          createAttemptsRef.current = [];
+          setAmount("");
+          setDescription("");
+        },
+        presentWarning: (title, message) => Alert.alert(title, message),
+        invalidate: () =>
+          invalidateGoalTransactionQueries(
+            queryClient,
+            session?.user.id,
+            id,
+            variables.account_id !== undefined,
+          ),
+      });
     },
 
     // `variables` is the exact payload passed to .mutate() for this

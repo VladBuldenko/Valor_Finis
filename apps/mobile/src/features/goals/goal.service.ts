@@ -5,6 +5,7 @@ import type {
   Goal,
   GoalCreateInput,
   GoalTransaction,
+  GoalTransactionCreated,
   GoalTransactionCreateInput,
   GoalUpdateInput,
 } from "./goal.types";
@@ -108,8 +109,8 @@ export async function getGoalTransactions(
 export async function createGoalTransaction(
   goalId: string,
   transactionData: GoalTransactionCreateInput,
-): Promise<GoalTransaction> {
-  return apiRequest<GoalTransaction>(
+): Promise<GoalTransactionCreated> {
+  return apiRequest<GoalTransactionCreated>(
     `/api/v1/goals/${goalId}/transactions`,
     {
       method: "POST",

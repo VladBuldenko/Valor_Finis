@@ -33,6 +33,18 @@ export type Account = {
   reserved_amount: string;
   unallocated_amount: string;
   reservable_amount: string;
+  // VF-020F2 (backend VF-020E7): rule read model. All three are decimal
+  // strings in the Account's currency, derived by the backend and never
+  // computed on the client.
+  // - minimum_unallocated_floor: the enabled floor rule's threshold, else
+  //   "0.00". A configured threshold; it removes no money from the Account.
+  // - active_rule_holds: planned amounts of open CONFIRM proposals. A hold is
+  //   not a reservation and changes no balance.
+  // - rule_capacity: reservable_amount - floor - holds. SIGNED: it can be
+  //   negative and must be shown as returned.
+  minimum_unallocated_floor: string;
+  active_rule_holds: string;
+  rule_capacity: string;
   allocation_status: AllocationStatus;
   negative_balance: boolean;
   created_at: string;

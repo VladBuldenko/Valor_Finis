@@ -23,6 +23,12 @@ import {
   normalizeAccountDecimalAmount,
   validateAccountDecimalAmount,
 } from "./account-amount-validation";
+import {
+  CAPACITY_FOOTNOTE,
+  CAPACITY_SECTION_TITLE,
+  NEGATIVE_CAPACITY_HINT,
+  getAccountCapacityRows,
+} from "./account-capacity-presentation";
 import { getAccountErrorMessage } from "./account-error-message";
 import { validateAccountTransactionForm } from "./account-transaction-validation";
 import {
@@ -409,6 +415,28 @@ export function AccountDetailScreen() {
               Goal reservations exceed available balance.
             </Text>
           ) : null}
+
+          <Text style={styles.sectionTitle} accessibilityRole="header">
+            {CAPACITY_SECTION_TITLE}
+          </Text>
+
+          {getAccountCapacityRows(account).map((capacityRow) => (
+            <View
+              key={capacityRow.id}
+              accessible
+              accessibilityLabel={capacityRow.accessibilityLabel}
+            >
+              <Text style={styles.secondaryText}>
+                {capacityRow.label}: {capacityRow.value}
+              </Text>
+              <Text style={styles.helperText}>{capacityRow.note}</Text>
+              {capacityRow.id === "rule_capacity" && capacityRow.isNegative ? (
+                <Text style={styles.noticeText}>{NEGATIVE_CAPACITY_HINT}</Text>
+              ) : null}
+            </View>
+          ))}
+
+          <Text style={styles.helperText}>{CAPACITY_FOOTNOTE}</Text>
 
           <Link
             href={{
