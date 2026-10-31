@@ -1786,7 +1786,11 @@ Deleting an Account or changing its currency returns the controlled 409 of
   `INCOME_ALLOCATION` rule in any status (draft, enabled, paused, disabled), so an AUTO rule can be re-previewed
   before it is re-enabled; other rule types are a 409 `financial_rule_preview_not_available`. Input is a
   `sample_income` (amount, optional source); the income is **not recorded**, planning assumes it credited to the
-  source Account, only the requested rule is simulated, and eligibility (§15.1) is not evaluated. The decision is the
+  source Account (`actual_reservable` + `assumed_income_credit` = `hypothetical_reservable`, counted once), only the
+  requested rule is simulated (`other_enabled_rules_not_simulated`), and a source the rule does not select is
+  `skipped` / `income_source_not_selected`; provenance, activation and the time window (§15.1) are not simulated. An
+  inactive rule's result carries `rule_not_enabled`. `would_apply` is a hypothetical internal Goal reservation, never
+  a bank transfer; `would_hold` a hypothetical 168-hour proposal; the preview creates neither. The decision is the
   same pure function as real execution (`rule_allocation_planner.decide`); the endpoint runs in its own
   `READ ONLY, REPEATABLE READ` transaction that is always rolled back (no lock, no sequence, no write). Contract:
   `docs/api-contract.md`; sheet: `docs/mvp/vf-be2-preview-contract.md`.

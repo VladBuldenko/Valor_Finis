@@ -47,14 +47,16 @@ class SampleIncomeResponse(BaseModel):
 class RulePreviewCapacity(BaseModel):
     account_id: UUID
     currency: str
-    # The Account's actual reservable amount, without the sample income.
-    reservable_amount: Decimal
-    # The hypothetical credit assumed for planning. The income is NOT recorded.
-    assumed_sample_income_credit: Decimal
-    reservable_with_sample_income: Decimal
+    # The Account's ACTUAL reservable amount today. The sample income is not in it.
+    actual_reservable: Decimal
+    # The hypothetical credit assumed for planning: the sample amount, a NEW credit
+    # that is not a recorded transaction. The income is NOT recorded.
+    assumed_income_credit: Decimal
+    # actual_reservable + assumed_income_credit (the sample counted exactly once).
+    hypothetical_reservable: Decimal
     minimum_unallocated_floor: Decimal
     active_rule_holds: Decimal
-    # reservable_with_sample_income - minimum_unallocated_floor - active_rule_holds
+    # hypothetical_reservable - minimum_unallocated_floor - active_rule_holds
     rule_capacity: Decimal
 
 
@@ -84,10 +86,10 @@ class RulePreviewResponse(BaseModel):
     sample_income: SampleIncomeResponse
     capacity: RulePreviewCapacity
     predicted_outcome: Literal["full", "partial", "skipped", "blocked"]
-    # would_apply: AUTO reserves money to the Goals at once.
-    # would_hold: CONFIRM creates a 168-hour hold and reserves nothing until the
-    #   user confirms.
-    # none: skipped or blocked.
+    # would_apply: a hypothetical INTERNAL Goal reservation (AUTO); never a bank
+    #   transfer. would_hold: a hypothetical 168-hour CONFIRM proposal and hold;
+    #   nothing is reserved until the user confirms. Preview itself creates
+    #   neither. none: skipped or blocked.
     effect: Literal["would_apply", "would_hold", "none"]
     reason_code: Optional[str]
     items: list[RulePreviewItem]

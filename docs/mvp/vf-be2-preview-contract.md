@@ -44,9 +44,9 @@ The sample income's **currency is the rule's source Account currency** (server-d
   "capacity": {
     "account_id": "…",
     "currency": "EUR",
-    "reservable_amount": "1200.00",
-    "assumed_sample_income_credit": "3000.00",
-    "reservable_with_sample_income": "4200.00",
+    "actual_reservable": "1200.00",
+    "assumed_income_credit": "3000.00",
+    "hypothetical_reservable": "4200.00",
     "minimum_unallocated_floor": "500.00",
     "active_rule_holds": "100.00",
     "rule_capacity": "3600.00"
@@ -60,7 +60,8 @@ The sample income's **currency is the rule's source Account currency** (server-d
   ],
   "planned_total": "450.00",
   "selected_total": "300.00",
-  "notices": ["hypothetical_snapshot", "income_not_recorded", "eligibility_not_evaluated"]
+  "notices": ["hypothetical_snapshot", "income_not_recorded", "real_event_eligibility_not_simulated",
+               "other_enabled_rules_not_simulated"]   // + "rule_not_enabled" for draft/paused/disabled
 }
 ```
 
@@ -71,7 +72,7 @@ Field semantics:
 - `as_of_date`: server calendar date (same `server_today()` real execution uses). `computed_at`: database snapshot time.
   A client must treat the whole body as stale once the rule version changes or the user edits Goals/Accounts.
 - `capacity` (all two-decimal strings): the same figures the Account read model exposes, plus the explicit sample credit.
-  `rule_capacity = reservable_with_sample_income − minimum_unallocated_floor − active_rule_holds`.
+  `rule_capacity = hypothetical_reservable − minimum_unallocated_floor − active_rule_holds`; `hypothetical_reservable = actual_reservable + assumed_income_credit` (the sample, a new credit, counted once).
 - `predicted_outcome`: `full` | `partial` | `skipped` | `blocked`.
 - `effect` distinguishes the modes and is never ambiguous:
   - `AUTO` rule → `would_apply` (money would be reserved to the Goals immediately; outcomes executed / executed_partial).
@@ -87,7 +88,9 @@ Field semantics:
 
 ### What preview does **not** promise (stated in the response `notices`)
 
-`eligibility_not_evaluated`: a real future Income is only processed if it is a live manual entry, created after the rule
+**Reconciliation (owner clarifications C1–C5, applied after approval).** Source selection IS evaluated: `source_selected_by_rule: false` gives `skipped`, `income_source_not_selected`, effect `none`, no items. `would_apply` is a hypothetical internal Goal reservation (never a bank transfer), `would_hold` a hypothetical 168-hour proposal; preview creates neither. Notices add `other_enabled_rules_not_simulated` and, for non-enabled rules, `rule_not_enabled`; `eligibility_not_evaluated` became `real_event_eligibility_not_simulated`.
+
+`real_event_eligibility_not_simulated`: a real future Income is only processed if it is a live manual entry, created after the rule
 became enabled (`active_since`), on or after `effective_from`, within the 7-day window and from a selected source. Preview
 does not evaluate those predicates and gives no promise that a real event will satisfy them. `source_selected_by_rule`
 is informational only (null when no source was supplied).

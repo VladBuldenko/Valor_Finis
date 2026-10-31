@@ -136,9 +136,9 @@ def test_response_contract_full_auto_rule_example_a(client: TestClient, clean_da
     }
     assert body["capacity"] == {
         "account_id": account["id"], "currency": "EUR",
-        "reservable_amount": "1500.00",           # 2,000 - 500 reserved
-        "assumed_sample_income_credit": "3000.00",
-        "reservable_with_sample_income": "4500.00",
+        "actual_reservable": "1500.00",           # 2,000 - 500 reserved
+        "assumed_income_credit": "3000.00",
+        "hypothetical_reservable": "4500.00",   # 1,500 + 3,000: the sample counted once
         "minimum_unallocated_floor": "1000.00",
         "active_rule_holds": "0.00",
         "rule_capacity": "3500.00",               # 4,500 - 1,000 - 0
@@ -148,7 +148,10 @@ def test_response_contract_full_auto_rule_example_a(client: TestClient, clean_da
         g1["id"]: ("300.00", "300.00"), g2["id"]: ("200.00", "200.00"), g3["id"]: ("100.00", "100.00"),
     }  # 20% of 3,000 = 600 waterfall: G1 300, G2 200, G3 the remaining 100
     assert body["planned_total"] == "600.00" and body["selected_total"] == "600.00"
-    assert body["notices"] == ["hypothetical_snapshot", "income_not_recorded", "eligibility_not_evaluated"]
+    assert body["notices"] == [
+        "hypothetical_snapshot", "income_not_recorded", "real_event_eligibility_not_simulated",
+        "other_enabled_rules_not_simulated",
+    ]  # the rule is enabled: no rule_not_enabled
     assert body["as_of_date"] and body["computed_at"]
 
 
@@ -261,10 +264,10 @@ def test_nothing_to_allocate_and_source_notice(client: TestClient, clean_databas
         client, user, account["id"], [goal["id"]], policy="PERCENT_OF_INCOME_WATERFALL", percent="0.01",
     )
 
-    nothing = _preview(client, user, rule["id"], "1.00", source="refund").json()  # 0.01% of 1.00 rounds down to 0.00
+    nothing = _preview(client, user, rule["id"], "1.00").json()  # 0.01% of 1.00 rounds down to 0.00
 
     assert (nothing["predicted_outcome"], nothing["reason_code"], nothing["items"]) == ("skipped", "nothing_to_allocate", [])
-    assert nothing["sample_income"]["source_selected_by_rule"] is False  # refund is not selected by default
+    assert nothing["sample_income"]["source_selected_by_rule"] is True
     assert _preview(client, user, rule["id"], "1.00", source=None).json()["sample_income"]["source_selected_by_rule"] is None
 
 
@@ -321,9 +324,9 @@ def test_active_confirm_holds_reduce_the_rule_capacity(client: TestClient, clean
 
     body = _preview(client, user, preview_rule_id, "100.00").json()
 
-    assert body["capacity"]["reservable_amount"] == "1500.00"        # 1,000 + 500 recorded income
+    assert body["capacity"]["actual_reservable"] == "1500.00"          # 1,000 + 500 recorded income
     assert body["capacity"]["active_rule_holds"] == "400.00"         # the open proposal
-    assert body["capacity"]["reservable_with_sample_income"] == "1600.00"
+    assert body["capacity"]["hypothetical_reservable"] == "1600.00"
     assert body["capacity"]["rule_capacity"] == "1200.00"            # 1,600 - 0 floor - 400
 
 
@@ -353,7 +356,7 @@ def test_preview_equals_real_execution_on_identical_state(
     assert evaluate(client, user).status_code == 200
     execution = executions(client, user)["items"][0]
 
-    assert preview["capacity"]["reservable_with_sample_income"] == execution["capacity_reservable"]
+    assert preview["capacity"]["hypothetical_reservable"] == execution["capacity_reservable"]
     assert preview["capacity"]["minimum_unallocated_floor"] == execution["capacity_floor"]
     assert preview["capacity"]["active_rule_holds"] == execution["capacity_holds"]
     assert execution["reason_code"] == preview["reason_code"]
@@ -570,3 +573,71 @@ def test_previews_racing_real_executions_neither_deadlock_nor_change_the_result(
 
     assert outcome(raced) == outcome(control)
     assert _preview(client, raced, raced_rule["id"]).status_code == 200
+
+
+# ---------------------------------------------------------------- owner clarifications C1-C5
+
+
+def test_unselected_source_is_skipped_with_effect_none_for_auto_and_confirm(
+    client: TestClient, clean_database: None,
+) -> None:
+    user = str(uuid4())
+    account = funded_account(client, user)
+    goal = goal_with_target(client, user, "G", 1000)
+    auto = enabled_rule(client, user, account["id"], [goal["id"]])
+    confirm = enabled_rule(client, user, account["id"], [goal["id"]], name="Ask", execution_mode="CONFIRM")
+
+    for rule in (auto, confirm):
+        body = _preview(client, user, rule["id"], "500.00", source="refund").json()  # refund is not selected by default
+
+        assert body["sample_income"]["source_selected_by_rule"] is False
+        assert (body["predicted_outcome"], body["reason_code"], body["effect"]) == (
+            "skipped", "income_source_not_selected", "none",
+        )
+        assert body["items"] == [] and body["planned_total"] == "0.00" and body["selected_total"] == "0.00"
+
+    selected = _preview(client, user, auto["id"], "500.00", source="salary").json()
+
+    assert selected["predicted_outcome"] == "full"
+    # No source supplied: nothing to evaluate, the plan is computed.
+    assert _preview(client, user, auto["id"], "500.00", source=None).json()["predicted_outcome"] == "full"
+
+
+def test_capacity_names_and_the_sample_is_counted_exactly_once(client: TestClient, clean_database: None) -> None:
+    user = str(uuid4())
+    account = funded_account(client, user, opening="1000.00")
+    goal = goal_with_target(client, user, "G", 5000)
+    rule = enabled_rule(client, user, account["id"], [goal["id"]])
+
+    capacity = _preview(client, user, rule["id"], "250.00").json()["capacity"]
+
+    assert {"reservable_amount", "assumed_sample_income_credit", "reservable_with_sample_income"}.isdisjoint(capacity)
+    assert capacity["actual_reservable"] == "1000.00"
+    assert capacity["assumed_income_credit"] == "250.00"
+    assert capacity["hypothetical_reservable"] == "1250.00"  # 1,000 + 250, not 1,500
+    assert capacity["rule_capacity"] == "1250.00"
+
+
+def test_notices_explain_other_rules_and_inactive_status(client: TestClient, clean_database: None) -> None:
+    user = str(uuid4())
+    account = funded_account(client, user)
+    goal = goal_with_target(client, user, "G", 1000)
+    rule = enabled_rule(client, user, account["id"], [goal["id"]])
+    draft = create_rule(client, user, allocation_payload(account["id"], [goal["id"]], name="Draft"))
+
+    enabled_notices = _preview(client, user, rule["id"]).json()["notices"]
+
+    assert "other_enabled_rules_not_simulated" in enabled_notices and "rule_not_enabled" not in enabled_notices
+
+    for status_name in ("draft", "paused", "disabled"):
+        if status_name == "draft":
+            target = draft["id"]
+        else:
+            assert action(client, user, rule["id"], "pause" if status_name == "paused" else "disable").status_code == 200
+            target = rule["id"]
+
+        body = _preview(client, user, target).json()
+
+        assert body["rule_status"] == status_name
+        assert body["notices"][-1] == "rule_not_enabled" and "other_enabled_rules_not_simulated" in body["notices"]
+        assert body["predicted_outcome"] == "full"  # still a normal hypothetical result

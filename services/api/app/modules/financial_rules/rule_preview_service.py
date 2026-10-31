@@ -42,7 +42,18 @@ from app.modules.financial_rules.rule_preview_schemas import (
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
 
-NOTICES = ["hypothetical_snapshot", "income_not_recorded", "eligibility_not_evaluated"]
+# Fixed machine tokens, always returned. A source that the rule does not select is
+# evaluated (skipped / income_source_not_selected); provenance, activation and the
+# time window of a real future event are not simulated.
+NOTICES = [
+    "hypothetical_snapshot",
+    "income_not_recorded",
+    "real_event_eligibility_not_simulated",
+    "other_enabled_rules_not_simulated",
+]
+# Added when the rule is draft, paused or disabled: the result is hypothetical and
+# does not assert that the rule would execute while it is not enabled.
+NOTICE_RULE_NOT_ENABLED = "rule_not_enabled"
 
 
 # Opens the dedicated read-only snapshot transaction. SET TRANSACTION must be the
@@ -120,18 +131,30 @@ def preview_rule(
         rule_facts, target_facts, goal_facts = rule_execution_service.planner_inputs(
             db_session, rule_model, targets, goals, user_id,
         )
-        decision = rule_allocation_planner.decide(
-            rule_facts,
-            target_facts,
-            goal_facts,
-            rule_allocation_planner.AccountFacts(
-                archived=account.status == "archived",
-                currency=account.currency,
-                rule_capacity=rule_capacity,
-            ),
-            sample_amount,
-            account.currency,
-        )
+        source: Optional[str] = request.sample_income.source
+        source_not_selected = source is not None and source not in (rule_model.income_sources or [])
+
+        if source_not_selected:
+            # Real execution would not process an income from a source the rule does
+            # not select (E8): nothing would be applied or held.
+            decision = rule_allocation_planner.AllocationDecision(
+                rule_allocation_planner.STATUS_SKIPPED,
+                rule_execution_service.NOT_ELIGIBLE_SOURCE,
+                (), (), False,
+            )
+        else:
+            decision = rule_allocation_planner.decide(
+                rule_facts,
+                target_facts,
+                goal_facts,
+                rule_allocation_planner.AccountFacts(
+                    archived=account.status == "archived",
+                    currency=account.currency,
+                    rule_capacity=rule_capacity,
+                ),
+                sample_amount,
+                account.currency,
+            )
 
         selected_by_goal = {line.goal_id: applied for line, applied in decision.selected}
         items = [
@@ -163,7 +186,10 @@ def preview_rule(
                 else "would_apply"
             )
 
-        source: Optional[str] = request.sample_income.source
+        notices = list(NOTICES)
+
+        if rule_model.status != "enabled":
+            notices.append(NOTICE_RULE_NOT_ENABLED)
 
         return RulePreviewResponse(
             rule_id=rule_model.id,
@@ -184,9 +210,9 @@ def preview_rule(
             capacity=RulePreviewCapacity(
                 account_id=account.id,
                 currency=account.currency,
-                reservable_amount=_money(reservable),
-                assumed_sample_income_credit=sample_amount,
-                reservable_with_sample_income=_money(reservable_with_sample),
+                actual_reservable=_money(reservable),
+                assumed_income_credit=sample_amount,
+                hypothetical_reservable=_money(reservable_with_sample),
                 minimum_unallocated_floor=_money(floor),
                 active_rule_holds=_money(holds),
                 rule_capacity=_money(rule_capacity),
@@ -197,5 +223,5 @@ def preview_rule(
             items=items,
             planned_total=_money(planned_total),
             selected_total=_money(selected_total),
-            notices=list(NOTICES),
+            notices=notices,
         )
