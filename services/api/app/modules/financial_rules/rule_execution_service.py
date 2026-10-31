@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
@@ -11,10 +11,30 @@ from app.modules.accounts import account_repository, account_service
 from app.modules.accounts.account_models import AccountModel
 from app.modules.financial_events import financial_event_service
 from app.modules.financial_events.financial_event_models import FinancialEventModel
-from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
+from app.modules.financial_rules import (
+    financial_rule_repository,
+    rule_allocation_planner,
+    rule_execution_repository,
+)
 from app.modules.financial_rules.financial_rule_models import (
     FinancialRuleGoalTargetModel,
     FinancialRuleModel,
+)
+from app.modules.financial_rules.rule_allocation_planner import (  # noqa: F401  (re-exported)
+    MODE_AUTO,
+    MODE_CONFIRM,
+    POLICY_FIXED,
+    POLICY_PERCENT,
+    REASON_CURRENCY_MISMATCH,
+    REASON_INSUFFICIENT_CAPACITY,
+    REASON_NOTHING_TO_ALLOCATE,
+    REASON_SOURCE_ACCOUNT_ARCHIVED,
+    REASON_TARGET_GOAL_ARCHIVED,
+    STATUS_AWAITING_CONFIRMATION,
+    STATUS_BLOCKED,
+    STATUS_EXECUTED,
+    STATUS_EXECUTED_PARTIAL,
+    STATUS_SKIPPED,
 )
 from app.modules.financial_rules.rule_execution_models import (
     RuleExecutionItemModel,
@@ -27,7 +47,6 @@ from app.modules.financial_rules.rule_execution_schemas import (
 from app.modules.goals import goal_transaction_repository
 from app.modules.goals.goal_models import GoalModel
 
-CENT = Decimal("0.01")
 ZERO = Decimal("0.00")
 
 LIVE_ENTRY_WINDOW_DAYS = 7
@@ -36,21 +55,9 @@ EVENT_INCOME_CREATED = "income.created"
 EVENT_INCOME_UPDATED = "income.updated"
 EVENT_INCOME_DELETED = "income.deleted"
 
-STATUS_EXECUTED = "executed"
-STATUS_EXECUTED_PARTIAL = "executed_partial"
-STATUS_SKIPPED = "skipped"
-STATUS_BLOCKED = "blocked"
-STATUS_AWAITING_CONFIRMATION = "awaiting_confirmation"
-
 # Absolute 168 hours (not "7 days"): a calendar-day interval would shift by an
 # hour across a DST change in the session time zone.
 PROPOSAL_LIFETIME_SQL = "interval '168 hours'"
-
-REASON_INSUFFICIENT_CAPACITY = "insufficient_capacity"
-REASON_NOTHING_TO_ALLOCATE = "nothing_to_allocate"
-REASON_SOURCE_ACCOUNT_ARCHIVED = "source_account_archived"
-REASON_TARGET_GOAL_ARCHIVED = "target_goal_archived"
-REASON_CURRENCY_MISMATCH = "currency_mismatch"
 
 # Stable, non-monetary "not eligible" codes stored in outcome_summary.
 NOT_ELIGIBLE_PROVENANCE = "provenance_not_live"
@@ -69,12 +76,6 @@ AUDIT_SKIPPED = "skipped"
 AUDIT_BLOCKED = "blocked"
 AUDIT_SOURCE_CHANGED = "source_changed"
 AUDIT_SOURCE_DELETED = "source_deleted"
-
-MODE_AUTO = "AUTO"
-MODE_CONFIRM = "CONFIRM"
-
-POLICY_FIXED = "FIXED_PER_GOAL"
-POLICY_PERCENT = "PERCENT_OF_INCOME_WATERFALL"
 
 
 class EventDeferredError(Exception):
@@ -138,6 +139,13 @@ class _AccountCapacity:
     @property
     def rule_capacity(self) -> Decimal:
         return self.reservable - self.floor - self.holds
+
+
+# The server calendar date real execution uses for capacity and booking dates.
+# Exposed so the read-only preview measures the same date without depending on
+# the event module itself.
+def server_today() -> date:
+    return financial_event_service.server_today()
 
 
 def _event_local_date(event_model: FinancialEventModel) -> date:
@@ -242,16 +250,6 @@ def _is_live_manual(creation_event: Optional[FinancialEventModel]) -> bool:
     )
 
 
-def _priority_key(goal: GoalModel) -> tuple[int, int, str]:
-    # Current priority_rank (never the target position); an unranked Goal sorts
-    # last and the id keeps the order deterministic.
-    return (
-        1 if goal.priority_rank is None else 0,
-        goal.priority_rank if goal.priority_rank is not None else 0,
-        str(goal.id),
-    )
-
-
 def _remaining_to_target(
     db_session: Session, goal: GoalModel, user_id: UUID,
 ) -> Decimal:
@@ -262,75 +260,51 @@ def _remaining_to_target(
     return max(goal.target_amount - total, ZERO)
 
 
-# Builds the plan of one rule in Goal priority order: fixed amounts or the
-# percentage waterfall, each target limited by its own cap and (cap_at_target)
-# by the Goal's remaining target. Only positive cent amounts are planned.
-def _build_plan(
+# Converts the loaded rows into the plain facts the pure planner decides on. The
+# only queries are the per-Goal ledger balances (read-only), and only when the
+# rule caps at target. Shared by real execution and the read-only preview.
+def planner_inputs(
     db_session: Session,
     rule_model: FinancialRuleModel,
     targets: list[FinancialRuleGoalTargetModel],
     goals: dict[UUID, GoalModel],
     user_id: UUID,
-    income_amount: Decimal,
-) -> list[_PlannedItem]:
-    ordered = sorted(
-        ((target, goals[target.goal_id]) for target in targets),
-        key=lambda pair: _priority_key(pair[1]),
+) -> tuple[
+    rule_allocation_planner.RuleFacts,
+    list[rule_allocation_planner.TargetFacts],
+    dict[UUID, rule_allocation_planner.GoalFacts],
+]:
+    rule_facts = rule_allocation_planner.RuleFacts(
+        policy=rule_model.policy,
+        percent=rule_model.percent,
+        cap_at_target=rule_model.cap_at_target,
+        allow_partial=rule_model.allow_partial,
+        is_confirm=rule_model.execution_mode == MODE_CONFIRM,
     )
-
-    percent_budget: Optional[Decimal] = None
-
-    if rule_model.policy == POLICY_PERCENT:
-        # ROUND_DOWN to cents on Income.amount (never base_amount); the
-        # unallocated remainder stays on the Account (P44, P45).
-        percent_budget = (income_amount * rule_model.percent / Decimal("100")).quantize(
-            CENT, rounding=ROUND_DOWN,
+    target_facts = [
+        rule_allocation_planner.TargetFacts(
+            goal_id=target.goal_id,
+            position=target.position,
+            amount_or_cap=target.amount_or_cap,
         )
+        for target in targets
+    ]
+    goal_facts = {
+        target.goal_id: rule_allocation_planner.GoalFacts(
+            id=goals[target.goal_id].id,
+            priority_rank=goals[target.goal_id].priority_rank,
+            status=goals[target.goal_id].status,
+            currency=goals[target.goal_id].currency,
+            remaining_to_target=(
+                _remaining_to_target(db_session, goals[target.goal_id], user_id)
+                if rule_model.cap_at_target
+                else None
+            ),
+        )
+        for target in targets
+    }
 
-    plan: list[_PlannedItem] = []
-
-    for target, goal in ordered:
-        if rule_model.policy == POLICY_FIXED:
-            wanted = target.amount_or_cap
-        else:
-            wanted = percent_budget
-            if target.amount_or_cap is not None:
-                wanted = min(wanted, target.amount_or_cap)
-
-        if rule_model.cap_at_target:
-            wanted = min(wanted, _remaining_to_target(db_session, goal, user_id))
-
-        wanted = wanted.quantize(CENT, rounding=ROUND_DOWN)
-
-        if wanted <= ZERO:
-            continue
-
-        if percent_budget is not None:
-            percent_budget -= wanted
-
-        plan.append(_PlannedItem(goal=goal, position=target.position, planned=wanted))
-
-    return plan
-
-
-def _blocked_reason(
-    account: AccountModel,
-    targets: list[FinancialRuleGoalTargetModel],
-    goals: dict[UUID, GoalModel],
-    income_currency: str,
-) -> Optional[str]:
-    if account.status == "archived":
-        return REASON_SOURCE_ACCOUNT_ARCHIVED
-
-    if any(goals[target.goal_id].status == "archived" for target in targets):
-        return REASON_TARGET_GOAL_ARCHIVED
-
-    if account.currency != income_currency or any(
-        goals[target.goal_id].currency != account.currency for target in targets
-    ):
-        return REASON_CURRENCY_MISMATCH
-
-    return None
+    return rule_facts, target_facts, goal_facts
 
 
 def _assert_item_matches_transaction(
@@ -403,47 +377,39 @@ def _execute_rule(
     today: date,
     summary: _OutcomeSummary,
 ) -> None:
-    status: str
-    reason_code: Optional[str] = None
-    items_to_apply: list[tuple[_PlannedItem, Decimal]] = []
-    plan: list[_PlannedItem] = []
-    is_confirm = rule_model.execution_mode == MODE_CONFIRM
-    proposal_partial = False
-
     capacity_reservable = capacity.reservable
     capacity_floor = capacity.floor
     capacity_holds = capacity.holds
 
-    blocked = _blocked_reason(capacity.account, targets, goals, event_model.snap_currency)
-
-    if blocked is not None:
-        status, reason_code = STATUS_BLOCKED, blocked
-    else:
-        plan = _build_plan(
-            db_session, rule_model, targets, goals, user_id, event_model.snap_amount,
+    rule_facts, target_facts, goal_facts = planner_inputs(
+        db_session, rule_model, targets, goals, user_id,
+    )
+    decision = rule_allocation_planner.decide(
+        rule_facts,
+        target_facts,
+        goal_facts,
+        rule_allocation_planner.AccountFacts(
+            archived=capacity.account.status == "archived",
+            currency=capacity.account.currency,
+            rule_capacity=capacity.rule_capacity,
+        ),
+        event_model.snap_amount,
+        event_model.snap_currency,
+    )
+    status = decision.status
+    reason_code = decision.reason_code
+    proposal_partial = decision.proposal_partial
+    plan = [
+        _PlannedItem(goal=goals[line.goal_id], position=line.position, planned=line.planned)
+        for line in decision.plan
+    ]
+    items_to_apply = [
+        (
+            _PlannedItem(goal=goals[line.goal_id], position=line.position, planned=line.planned),
+            applied,
         )
-        total = sum((item.planned for item in plan), ZERO)
-        available = capacity.rule_capacity
-
-        if not plan:
-            status, reason_code = STATUS_SKIPPED, REASON_NOTHING_TO_ALLOCATE
-        elif available >= total:
-            status = STATUS_AWAITING_CONFIRMATION if is_confirm else STATUS_EXECUTED
-            items_to_apply = [(item, item.planned) for item in plan]
-        elif rule_model.allow_partial and available > ZERO:
-            # Deterministic Goal-priority order until capacity is exhausted.
-            status = STATUS_AWAITING_CONFIRMATION if is_confirm else STATUS_EXECUTED_PARTIAL
-            proposal_partial = is_confirm
-            remaining = available
-
-            for item in plan:
-                applied = min(item.planned, remaining)
-
-                if applied > ZERO:
-                    items_to_apply.append((item, applied))
-                    remaining -= applied
-        else:
-            status, reason_code = STATUS_SKIPPED, REASON_INSUFFICIENT_CAPACITY
+        for line, applied in decision.selected
+    ]
 
     params_snapshot = _params_snapshot(rule_model, targets)
 

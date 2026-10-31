@@ -121,6 +121,10 @@
       "code": "financial_rule_not_found",
       "status": 404
     },
+    "FinancialRulePreviewNotAvailableError": {
+      "code": "financial_rule_preview_not_available",
+      "status": 409
+    },
     "FinancialRuleSubjectArchivedError": {
       "code": "financial_rule_subject_archived",
       "status": 409
