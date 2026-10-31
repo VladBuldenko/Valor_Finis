@@ -24,18 +24,25 @@ export function getGoalErrorMessage(
     return fallback;
   }
 
-  const match = error.message.match(/^API request failed: \d+ (.*)$/s);
+  const match = error.message.match(/^API request failed: (\d+) (.*)$/s);
 
   if (match) {
+    // A server failure's body is never shown (it can carry diagnostics).
+    if (Number(match[1]) >= 500) {
+      return fallback;
+    }
+
     try {
-      const body = JSON.parse(match[1]) as { detail?: unknown };
+      const body = JSON.parse(match[2]) as { detail?: unknown };
 
       if (typeof body.detail === "string") {
         return body.detail;
       }
     } catch {
-      // Response body wasn't JSON -- fall through to the raw message below.
+      // Response body wasn't JSON: never show the raw wrapper text.
     }
+
+    return fallback;
   }
 
   return error.message;

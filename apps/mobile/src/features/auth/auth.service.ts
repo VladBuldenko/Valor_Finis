@@ -1,4 +1,5 @@
 import { supabase } from "../../lib/supabase";
+import { navigationIntent } from "./navigation-intent";
 
 /**
  * Signs in a user with email and password through Supabase Auth.
@@ -10,6 +11,8 @@ export async function signInWithEmail(
   email: string,
   password: string,
 ) {
+  // The exported client serializes this with every other session change
+  // (api/auth-gateway.ts).
   const { data, error } = await supabase.auth.signInWithPassword({
     email: email.trim(),
     password,
@@ -28,6 +31,9 @@ export async function signInWithEmail(
  * Auth state changes are handled globally by AuthProvider.
  */
 export async function signOut(): Promise<void> {
+  // A deliberate sign-out never restores the previous location on next sign-in.
+  navigationIntent.discard();
+
   const { error } = await supabase.auth.signOut();
 
   if (error) {

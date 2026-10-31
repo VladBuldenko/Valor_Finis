@@ -13,12 +13,14 @@ import {
   View,
 } from "react-native";
 
+import { isCurrentQueryClient } from "../../lib/session-runtime";
 import {
   getReceiptById,
   processReceipt,
   uploadReceipt,
 } from "./receipt.service";
 import type { PickedReceiptImage } from "./receipt.types";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 export function ReceiptUploadScreen() {
   const queryClient = useQueryClient();
@@ -41,10 +43,7 @@ export function ReceiptUploadScreen() {
     onError: (error) => {
       setSelectedImage(null);
 
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to upload receipt.";
+      const message = getUserFacingErrorMessage(error, "Unable to upload receipt.");
 
       Alert.alert("Upload failed", message);
     },
@@ -79,6 +78,11 @@ export function ReceiptUploadScreen() {
       try {
         const currentReceipt = await getReceiptById(receiptId);
 
+        // The user may have changed while the status was being fetched.
+        if (!isCurrentQueryClient(queryClient)) {
+          return;
+        }
+
         if (
           currentReceipt.status === "processed" ||
           currentReceipt.status === "confirmed"
@@ -103,12 +107,13 @@ export function ReceiptUploadScreen() {
         // the generic retry UI below.
       }
 
+      if (!isCurrentQueryClient(queryClient)) {
+        return;
+      }
+
       setFailedReceiptId(receiptId);
 
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to read this receipt. You can retry or enter the details manually.";
+      const message = getUserFacingErrorMessage(error, "Unable to read this receipt. You can retry or enter the details manually.");
 
       Alert.alert("Processing failed", message);
     },
@@ -165,10 +170,7 @@ export function ReceiptUploadScreen() {
         uri: asset.uri,
       });
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to select a receipt image.";
+      const message = getUserFacingErrorMessage(error, "Unable to select a receipt image.");
 
       Alert.alert("Selection failed", message);
     } finally {
@@ -209,10 +211,7 @@ export function ReceiptUploadScreen() {
         uri: asset.uri,
       });
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to capture a receipt photo.";
+      const message = getUserFacingErrorMessage(error, "Unable to capture a receipt photo.");
 
       Alert.alert("Camera failed", message);
     } finally {

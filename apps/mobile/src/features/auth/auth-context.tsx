@@ -7,6 +7,8 @@ import {
   } from "react";
   import type { Session } from "@supabase/supabase-js";
   
+  import { sessionBoundary } from "../../lib/session-runtime";
+  import { startAuthSession } from "./auth-session";
   import { supabase } from "../../lib/supabase";
   
   type AuthContextValue = {
@@ -30,47 +32,24 @@ import {
     );
     const [isLoading, setIsLoading] = useState(true);
   
-    useEffect(() => {
-      let isMounted = true;
-  
-      async function loadSession() {
-        const {
-          data: { session: initialSession },
-          error,
-        } = await supabase.auth.getSession();
-  
-        if (!isMounted) {
-          return;
-        }
-  
-        if (error) {
-          console.error(
-            "Unable to restore Supabase session:",
-            error,
-          );
-        }
-  
-        setSession(initialSession);
-        setIsLoading(false);
-      }
-  
-      void loadSession();
-  
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange(
-        (_event, nextSession) => {
-          setSession(nextSession);
-          setIsLoading(false);
-        },
-      );
-  
-      return () => {
-        isMounted = false;
-        subscription.unsubscribe();
-      };
-    }, []);
-  
+    useEffect(
+      // All lifecycle rules (restore vs. events, disposal, boundary authority)
+      // live in startAuthSession / the coordinator; this only mirrors state.
+      () =>
+        startAuthSession<Session>({
+          auth: supabase.auth,
+          boundary: sessionBoundary,
+          publish: ({ session: nextSession, isLoading: nextLoading }) => {
+            setSession(nextSession);
+            setIsLoading(nextLoading);
+          },
+          onRestoreError: (error) => {
+            console.error("Unable to restore Supabase session:", error);
+          },
+        }),
+      [],
+    );
+
     return (
       <AuthContext.Provider
         value={{

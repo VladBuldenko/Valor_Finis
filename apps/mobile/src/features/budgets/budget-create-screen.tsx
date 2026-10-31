@@ -25,6 +25,7 @@ import { validateBudgetForm } from "./budget-validation";
 import { createBudget } from "./budget.service";
 import { styles } from "./budgets.styles";
 import type { BudgetPeriod } from "./budget.types";
+import { getUserFacingErrorMessage } from "../../api/user-facing-error";
 
 const BUDGET_PERIODS: BudgetPeriod[] = ["weekly", "monthly", "yearly"];
 
@@ -104,10 +105,7 @@ export function BudgetCreateScreen() {
     },
 
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error
-          ? mutationError.message
-          : "Unable to create budget.";
+      const message = getUserFacingErrorMessage(mutationError, "Unable to create budget.");
 
       Alert.alert("Create budget failed", message);
     },
