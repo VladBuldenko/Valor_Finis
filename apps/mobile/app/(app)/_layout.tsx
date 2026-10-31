@@ -147,6 +147,30 @@ export default function AppLayout() {
           title: "Edit Goal",
         }}
       />
+      <Stack.Screen
+        name="rules"
+        options={{
+          title: "Rules",
+        }}
+      />
+      <Stack.Screen
+        name="rules/new"
+        options={{
+          title: "New Rule",
+        }}
+      />
+      <Stack.Screen
+        name="rules/[id]/index"
+        options={{
+          title: "Rule",
+        }}
+      />
+      <Stack.Screen
+        name="rules/[id]/edit"
+        options={{
+          title: "Edit Rule",
+        }}
+      />
     </Stack>
   );
 }

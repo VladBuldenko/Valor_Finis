@@ -106,3 +106,46 @@ arithmetic and never predicts a warning.
   nothing; a tracked contribution gets none because the backend sends none.
 
 Acceptance on physical devices and staging is **pending** (not run in this task).
+
+## F3: rules list and editor (VF-020F3, M01/M02, R-01..R-06)
+
+Design: [vf-020f3-design-sheet.md](../mvp/vf-020f3-design-sheet.md) (approved D1-D5). Visual standard: the Goals screens.
+
+**Navigation** (Expo Router, `app/(app)/rules/`, thin routes over `src/features/financial-rules/`):
+
+| Route | Screen | Surface |
+|---|---|---|
+| `/rules` | `RulesScreen`: list, loading / empty / loaded / error + Retry, pull-to-refresh, "New rule" | R-01 |
+| `/rules/new` | `RuleCreateScreen`: choose one of four types, then the editor (saved as a draft) | R-02..R-05 |
+| `/rules/[id]` | `RuleDetailScreen`: stored settings + lifecycle actions | R-06 |
+| `/rules/[id]/edit` | `RuleEditScreen`: the same editor prefilled | R-02..R-05 |
+
+Entry: a plain "Rules" button on the Dashboard (no count, no badge).
+
+**Editors:** income allocation (Account, mode with CONFIRM first and preselected, fixed/percent policy, percent, 1-50 Goals
+with amount or optional cap, income sources, stop-at-target, partial, start date); minimum floor (Account, amount);
+overcommitment alert (Account); budget alert (Budget). Logic is pure in `financial-rule-form.ts` (state, shape
+validation, discriminated create request, changed-fields-only PATCH plan; switching to the fixed policy sends
+`percent: null`; descriptions and dates clear with `null`). Inputs survive a failed save; Save is guarded against double
+submission (`createSubmitGuard`); nothing is retried automatically; a timeout on a save is reported as "outcome unknown".
+
+**Lifecycle** (`financial-rule-actions.ts`): Turn on / Pause / Turn off / Edit / Delete exactly as the status machine
+allows (delete only for Draft or Off). Status changes go only through `createRuleActionRunner`, which re-checks
+availability before any request. Pause, Turn off and Delete ask for confirmation. Backend 409/422 map through
+`describeRuleError` (stable code first); alert rules show "Alerts are not available yet in this environment" when the
+alerts schema is missing.
+
+**AUTO gate (until F5):** AUTO can be saved as a configuration on a draft or Off rule, but an AUTO allocation rule cannot
+be turned on (the button is disabled with an explanation and the runner refuses). A rule that is On or Paused can only be
+set to "Ask me first", enforced in the editor, in validation and in the PATCH builder, so editing cannot bypass the gate.
+F5 adds Preview and removes the gate.
+
+**Cache:** F1 invalidation sets plus Accounts when a floor rule is edited, deleted or changes status (the Account read
+model carries the enabled floor and rule capacity). The pickers share the Accounts, Goals and Budgets cache entries.
+
+**Notice before saving:** editing an On or Paused allocation rule in any field except name, description or order shows
+"Changing this rule replaces any suggestions that are still waiting for you." (F1 `isMaterialRuleEdit` now treats
+`execution_order` as non-material, matching the backend.)
+
+**Deferred:** Preview and AUTO enable (F5); Inbox, proposals, alerts list, acknowledge and mounting the evaluation
+trigger (F4); execution history and reasons (F6). Device and staging acceptance is pending.
