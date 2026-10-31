@@ -125,6 +125,25 @@ export type GoalTransaction = {
   account_id: string | null;
 };
 
+// Mirrors backend GoalTransactionFloorWarning (VF-020E5/E7): the advisory
+// warning on a successful MANUAL LINKED contribution. All amounts are decimal
+// strings in the Goal's (= the Account's) currency. The backend alone decides
+// whether it is present; the client never predicts it.
+export type GoalTransactionFloorWarning = {
+  code: "minimum_unallocated_floor";
+  minimum_unallocated_floor: string;
+  projected_reservable_amount: string;
+  projected_rule_capacity: string;
+};
+
+// Mirrors backend GoalTransactionCreatedResponse: the unchanged transaction
+// plus the additive, non-persisted warnings list. Only the POST response has
+// it; the historical GET type (GoalTransaction) is unchanged. `warnings` is
+// optional so a response from a server without the field is still valid.
+export type GoalTransactionCreated = GoalTransaction & {
+  warnings?: GoalTransactionFloorWarning[];
+};
+
 // Mirrors backend GoalTransactionCreate. Only contribution and withdrawal
 // are reachable here -- the type is deliberately narrower than
 // GoalTransaction['type'] above, since opening_balance is

@@ -82,3 +82,27 @@ not an unattended scheduler (copy rule C1).
 ## Not done here
 
 No screens, no mounting of the trigger, no React hooks. Later slices mount the trigger and consume the keys.
+
+## F2: floor warning and Account capacity (VF-020F2, M08/M09)
+
+No backend change. Every amount is the backend's decimal string, rendered as returned; the client does no money
+arithmetic and never predicts a warning.
+
+- **Account type** (`accounts/account.types.ts`): `minimum_unallocated_floor`, `active_rule_holds`, `rule_capacity`
+  (all decimal strings; `rule_capacity` is signed).
+- **Account detail** (`accounts/account-detail-screen.tsx`, rows from `account-capacity-presentation.ts`): Available to
+  reserve, Minimum unallocated floor, Active rule holds, Available for rules, each in the Account's own currency with a
+  one-line explanation and an accessible name. The floor is shown as a threshold that removes no money; a hold is not a
+  completed reservation; the balance does not change when money is earmarked. A negative `rule_capacity` is shown as
+  returned with a "Below zero" hint (also in the accessible name). There is no cross-Account total.
+- **POST response** (`goals/goal.types.ts`, `goal.service.ts`): `GoalTransactionCreated = GoalTransaction & { warnings?:
+  GoalTransactionFloorWarning[] }`; the historical GET type is unchanged. A warning has `code`
+  `"minimum_unallocated_floor"`, `minimum_unallocated_floor`, `projected_reservable_amount`, `projected_rule_capacity`.
+- **Goal detail** (`goals/goal-transaction-warning.ts`, used by the mutation's `onSuccess`): 201 and the idempotent 200
+  replay are handled identically. The form is reset, then the warning (if the backend sent one) is shown in an `Alert`
+  BEFORE the cache refresh is awaited, so a slow refetch cannot lose it; then Goals, the Goal's transactions, Goal
+  Progress and (linked only) Accounts are invalidated as before. The warning never changes success into an error, and
+  nothing re-sends the request (same `client_request_id` and retry behaviour as before). `warnings: []` or no field shows
+  nothing; a tracked contribution gets none because the backend sends none.
+
+Acceptance on physical devices and staging is **pending** (not run in this task).
