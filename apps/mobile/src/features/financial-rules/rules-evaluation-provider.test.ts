@@ -52,11 +52,13 @@ function world() {
     return null;
   }
 
-  const tree = (userId: string | null): ReactElement =>
+  // debounceMs lets a test hold a session's own session-ready evaluation back
+  // (a very large value) or let it start promptly, instead of racing a timer.
+  const tree = (userId: string | null, debounceMs = 5): ReactElement =>
     createElement(SessionScope, { holder },
       createElement(RulesEvaluationProvider, {
         userId, isCurrentClient: holder.isCurrent, evaluate, subscribeAppState, getAppState,
-        timing: { debounceMs: 5, cooldownMs: 200 },
+        timing: { debounceMs, cooldownMs: 200 },
       }, createElement(Probe)));
 
   return {
@@ -64,6 +66,13 @@ function world() {
     setUser: (user: string | null) => { currentUser = user; },
     emit: (next: string) => { state.app = next; listeners.forEach((listener) => listener(next)); },
   };
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !condition(); i += 1) {
+    await sleep(10);
+  }
+  assert.ok(condition(), "condition was not reached");
 }
 
 async function mount(w: ReturnType<typeof world>, user: string | null) {
@@ -189,21 +198,24 @@ describe("session rotation, sign-out and stale responses", () => {
     assert.equal(w.seen.value?.status, "pending");
   });
 
-  it("an evaluation answering after sign-out invalidates nothing in the next user's cache and sets no status", async () => {
+  it("A's late answer after sign-out touches nothing of B's: no status, no invalidation, no extra POST", async () => {
     const w = world();
     const renderer = await mount(w, "user-a");
 
-    await sleep(30);
-    assert.equal(w.calls.length, 1);
+    await waitFor(() => w.calls.length === 1);
 
     const oldClient: QueryClient = w.holder.get();
 
     w.holder.rotate();
     w.setUser(null);
     await act(async () => { renderer.update(w.tree(null)); });
+    assert.equal(w.signals[0].aborted, true, "sign-out aborted A's request");
+    assert.equal(w.listeners.size, 0);
     w.setUser("user-b");
     w.holder.rotate();
-    await act(async () => { renderer.update(w.tree("user-b")); });
+    // B's own session-ready evaluation is held back (huge debounce), so B has
+    // deterministically not started anything when A's answer arrives.
+    await act(async () => { renderer.update(w.tree("user-b", 600_000)); });
 
     const next = w.holder.get();
 
@@ -213,7 +225,38 @@ describe("session rotation, sign-out and stale responses", () => {
     await act(async () => { w.gates[0].resolve(result({ processed: 3, outcomes: { executed: 1 } })); });
     assert.equal(next.getQueryState(financialRuleKeys.proposalList("user-b"))?.isInvalidated, false);
     assert.equal(next.getQueryState(financialRuleKeys.proposalList("user-a"))?.isInvalidated, false);
+    assert.equal(oldClient.getQueryState(financialRuleKeys.proposalList("user-a"))?.isInvalidated, false, "the stale answer did not even invalidate the old client");
     assert.equal(w.seen.value?.status, "not_attempted", "user A's answer set no status for user B");
+    assert.equal(w.calls.length, 1, "no POST was made for B yet, and none was duplicated");
+    await act(async () => { renderer.unmount(); });
+  });
+
+  it("B enters pending on its own and completes independently of A's late answer", async () => {
+    const w = world();
+    const renderer = await mount(w, "user-a");
+
+    await waitFor(() => w.calls.length === 1);
+    w.holder.rotate();
+    w.setUser("user-b");
+    await act(async () => { renderer.update(w.tree("user-b")); });
+    // Wait for B's own request instead of assuming how fast its timer fires.
+    await waitFor(() => w.calls.length === 2);
+    assert.deepEqual(w.calls.map((call) => call.user), ["user-a", "user-b"]);
+    assert.equal(w.signals[0].aborted, true, "A's trigger was disposed");
+    assert.equal(w.seen.value?.status, "pending");
+
+    const next = w.holder.get();
+
+    next.setQueryData(financialRuleKeys.proposalList("user-b"), {});
+    await act(async () => { w.gates[0].resolve(result({ processed: 3 })); });
+    assert.equal(w.seen.value?.status, "pending", "A's answer did not complete B");
+    assert.equal(next.getQueryState(financialRuleKeys.proposalList("user-b"))?.isInvalidated, false);
+    await act(async () => { w.gates[1].resolve(result({ processed: 1 })); });
+    assert.equal(w.seen.value?.status, "succeeded");
+    assert.equal(next.getQueryState(financialRuleKeys.proposalList("user-b"))?.isInvalidated, true, "B's own result invalidates B's cache");
+    await sleep(60);
+    assert.equal(w.calls.length, 2, "no duplicate evaluation POST");
+    assert.equal(w.listeners.size, 1);
   });
 
   it("sign-out disposes everything and the next user starts with no recorded status", async () => {
