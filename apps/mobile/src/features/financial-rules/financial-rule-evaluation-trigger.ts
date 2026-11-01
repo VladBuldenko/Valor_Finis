@@ -43,6 +43,8 @@ export type EvaluationTriggerDeps = {
   // Called only with a result that still belongs to the current session.
   onResult: (result: RuleEvaluationResult, userId: string) => void | Promise<void>;
   onError?: (error: unknown) => void;
+  // Called when a run actually starts (not for ignored or coalesced requests).
+  onStart?: () => void;
   debounceMs?: number;
   cooldownMs?: number;
   now?: () => number;
@@ -93,6 +95,7 @@ export function createEvaluationTrigger(deps: EvaluationTriggerDeps): Evaluation
     running = true;
     lastStartedAt = now();
     controller = new AbortController();
+    deps.onStart?.();
 
     try {
       const result = await deps.evaluate(controller.signal);
@@ -166,6 +169,21 @@ export function createEvaluationTrigger(deps: EvaluationTriggerDeps): Evaluation
   };
 }
 
+// What the last attempt in this session amounted to. "incomplete" is a
+// completed request that did not establish a full picture (events still
+// blocked, failed or dead, or alert evaluation failed): it is NOT a clear bill.
+export type EvaluationStatus = "not_attempted" | "pending" | "succeeded" | "incomplete" | "failed";
+
+export function statusOfResult(result: RuleEvaluationResult): EvaluationStatus {
+  const complete =
+    !result.blocked &&
+    result.failed_retryable === 0 &&
+    result.dead === 0 &&
+    !result.alerts_failed;
+
+  return complete ? "succeeded" : "incomplete";
+}
+
 export type RulesEvaluationDeps = {
   userId: string | null;
   queryClient: QueryClient;
@@ -173,6 +191,8 @@ export type RulesEvaluationDeps = {
   isCurrent: () => boolean;
   evaluate: (signal: AbortSignal) => Promise<RuleEvaluationResult>;
   onError?: (error: unknown) => void;
+  // Reported only while the session still owns the trigger.
+  onStatus?: (status: EvaluationStatus) => void;
   debounceMs?: number;
   cooldownMs?: number;
   now?: () => number;
@@ -184,8 +204,14 @@ export type RulesEvaluationDeps = {
 export function createRulesEvaluationTrigger(deps: RulesEvaluationDeps): EvaluationTrigger {
   return createEvaluationTrigger({
     ...deps,
+    onStart: () => deps.onStatus?.("pending"),
     onResult: async (result, userId) => {
       await applyRuleInvalidation(deps.queryClient, userId, { type: "evaluated", result });
+      deps.onStatus?.(statusOfResult(result));
+    },
+    onError: (error) => {
+      deps.onStatus?.("failed");
+      deps.onError?.(error);
     },
   });
 }

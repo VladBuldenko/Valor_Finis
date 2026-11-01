@@ -1,6 +1,8 @@
 # VF-020F4 — Inbox, proposals and alerts: implementation design sheet (for owner approval)
 
-Status: **PROPOSED, awaiting one bounded owner approval. No UI code has been written.**
+Status: **APPROVED by the owner (D1-D5, exactly as proposed); implemented in VF-020F4.**
+This approves the F4 implementation specification only. It is not acceptance of the broader DR-9 release gate, and
+J15/J16 staging and device acceptance remain PENDING.
 No approved high-fidelity specs for R-08/R-09/R-10 exist in the repository (inventory lists them; the state matrix has
 one paragraph for R-08). This sheet fixes the behaviour from the approved decisions (Q9, C1-C8), the F4 roadmap row and
 journeys J15/J16, and uses the F3 / Goals / Accounts screens as the visual baseline. No new package, no backend change.
@@ -119,7 +121,7 @@ source, saving (disabled + busy), conflict/stale (live-region message). All Pres
 including current state; alerts/errors use a polite live region; status is never colour-only; targets >= 44 pt.
 Copy follows C1-C8 and the F1 forbidden-copy scan (it also reads JSX text).
 
-## 9. Decisions needed (one bounded approval)
+## 9. Decisions (all approved as recommended)
 
 | # | Question | Recommendation |
 |---|---|---|

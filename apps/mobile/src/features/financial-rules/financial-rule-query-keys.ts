@@ -86,6 +86,23 @@ export const financialRuleKeys = {
       ...pageKey(filters),
     },
   ],
+  // Bounded Inbox sources (F4): one entry per source holding the accumulated
+  // bounded pages. Distinct from the plain list keys so the shapes never mix.
+  inboxProposals: (userId: string): QueryKeyTuple => [
+    ...financialRuleKeys.proposalsFamily(userId),
+    "inbox",
+  ],
+  inboxAlerts: (userId: string): QueryKeyTuple => [...financialRuleKeys.alertsFamily(userId), "inbox"],
+  inboxExecutions: (userId: string): QueryKeyTuple => [
+    ...financialRuleKeys.executionsFamily(userId),
+    "inbox",
+  ],
+  // The Alerts screen's paged feed ("To review" / "Reviewed").
+  alertFeed: (userId: string, acknowledged: boolean): QueryKeyTuple => [
+    ...financialRuleKeys.alertsFamily(userId),
+    "feed",
+    { acknowledged },
+  ],
   // A preview belongs to one rule VERSION and one exact sample: editing the
   // rule (version + 1) or changing the sample reaches a different entry, so a
   // stale preview can never be shown for a newer rule.
