@@ -85,3 +85,16 @@ export function extractStringLiterals(source: string): string[] {
 
   return literals;
 }
+
+// Visible text written directly between JSX tags (`<Text>Like this</Text>`),
+// which is copy a string-literal scan would miss. Comments are removed first.
+export function extractJsxText(source: string): string[] {
+  const code = stripComments(source);
+  const texts: string[] = [];
+
+  for (const match of code.matchAll(/>\s*([^<>{}]*[A-Za-z][^<>{}]*?)\s*</g)) {
+    texts.push(match[1].replace(/\s+/g, " ").trim());
+  }
+
+  return texts;
+}

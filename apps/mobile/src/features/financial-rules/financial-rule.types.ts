@@ -152,16 +152,20 @@ export type FinancialRuleCreate =
 
 // PATCH body: only the fields that changed. The backend accepts the subset
 // valid for the stored rule's type and rejects the rest with 422.
+//
+// The backend accepts an explicit null for exactly three fields, to CLEAR
+// them (NULLABLE_UPDATE_FIELDS): description, effective_from and percent.
+// Any other explicit null is a 422.
 export type FinancialRuleUpdate = {
   name?: string;
-  description?: string;
+  description?: string | null;
   source_account_id?: string;
   budget_id?: string;
   execution_mode?: ExecutionMode;
   execution_order?: number;
-  effective_from?: IsoDate;
+  effective_from?: IsoDate | null;
   policy?: RulePolicy;
-  percent?: DecimalString;
+  percent?: DecimalString | null;
   cap_at_target?: boolean;
   allow_partial?: boolean;
   income_sources?: IncomeSource[];

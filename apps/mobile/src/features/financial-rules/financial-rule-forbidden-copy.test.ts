@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { COPY, MODE_COPY } from "./financial-rule-copy.ts";
 import {
+  extractJsxText,
   extractStringLiterals,
   findForbiddenCopy,
   stripComments,
@@ -50,6 +51,13 @@ describe("the forbidden-copy rules themselves", () => {
     }
   });
 
+  it("reads visible JSX text, which a string-literal scan would miss", () => {
+    const source = "<Text style={s}>\n  Your total balance\n  is safe to spend\n</Text>{/* ok */}<Text>{value}</Text>";
+
+    assert.deepEqual(extractJsxText(source), ["Your total balance is safe to spend"]);
+    assert.ok(extractJsxText(source).flatMap(findForbiddenCopy).length > 0);
+  });
+
   it("strips comments but keeps '//' inside strings", () => {
     const source = 'const a = "http://x"; // safe to spend\n/* total balance */ const b = "ok";';
 
@@ -69,7 +77,8 @@ describe("the Smart Rules feature contains no forbidden copy", () => {
 
   for (const name of files) {
     it(name, () => {
-      const hits = extractStringLiterals(readFileSync(join(HERE, name), "utf8")).flatMap(findForbiddenCopy);
+      const source = readFileSync(join(HERE, name), "utf8");
+      const hits = [...extractStringLiterals(source), ...extractJsxText(source)].flatMap(findForbiddenCopy);
 
       assert.deepEqual(hits, []);
     });

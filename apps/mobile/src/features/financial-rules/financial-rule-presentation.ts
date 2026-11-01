@@ -83,9 +83,14 @@ export const executionModeInfo = (mode: ExecutionMode) => MODE_COPY[mode];
 export const rulePolicyLabel = (policy: RulePolicy): string => POLICY_COPY[policy].label;
 
 // A material rule edit bumps `version`, which invalidates previews. These are
-// the PATCH fields that are NOT material (name and description only); every
-// other field changes the rule's financial meaning.
-const NON_MATERIAL_FIELDS: ReadonlySet<string> = new Set(["name", "description"]);
+// the PATCH fields that are NOT material (backend MATERIAL_SCALAR_FIELDS):
+// name, description and evaluation order; every other field changes the
+// rule's financial meaning.
+const NON_MATERIAL_FIELDS: ReadonlySet<string> = new Set([
+  "name",
+  "description",
+  "execution_order",
+]);
 
 export function isMaterialRuleEdit(changedFields: readonly string[]): boolean {
   return changedFields.some((field) => !NON_MATERIAL_FIELDS.has(field));

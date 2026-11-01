@@ -44,7 +44,7 @@ const CODE_MAP = {
   },
   financial_rule_activation_not_available: {
     category: "activation_unavailable",
-    message: "This kind of rule cannot be turned on yet.",
+    message: "Alerts are not available yet in this environment, so this rule cannot be turned on.",
   },
   financial_rule_deletion_not_allowed: {
     category: "deletion_blocked",
