@@ -9,6 +9,7 @@ import {
   AuthProvider,
   useAuth,
 } from "../src/features/auth/auth-context";
+import { RulesEvaluationHost } from "../src/features/financial-rules/rules-evaluation-host";
 import { navigationIntent } from "../src/features/auth/navigation-intent";
 import { SessionScope } from "../src/lib/session-scope";
 import { sessionQueryClient } from "../src/lib/session-runtime";
@@ -73,7 +74,9 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <SessionScope holder={sessionQueryClient}>
-        <RootNavigator />
+        <RulesEvaluationHost>
+          <RootNavigator />
+        </RulesEvaluationHost>
       </SessionScope>
     </AuthProvider>
   );

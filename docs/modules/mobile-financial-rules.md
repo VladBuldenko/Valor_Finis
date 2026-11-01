@@ -149,3 +149,50 @@ model carries the enabled floor and rule capacity). The pickers share the Accoun
 
 **Deferred:** Preview and AUTO enable (F5); Inbox, proposals, alerts list, acknowledge and mounting the evaluation
 trigger (F4); execution history and reasons (F6). Device and staging acceptance is pending.
+
+## F4: Inbox, proposals and alerts (VF-020F4, M04-M06, R-08..R-10)
+
+Design: [vf-020f4-design-sheet.md](../mvp/vf-020f4-design-sheet.md) (approved D1-D5). No backend change, no new endpoint.
+
+**Routes** (`app/(app)/inbox/`): `/inbox` (`InboxScreen`), `/inbox/proposals/[id]` (`ProposalDetailScreen`),
+`/inbox/alerts` (`AlertsScreen`). The Dashboard has an "Inbox" button with the indicator marker.
+
+**Inbox sources** (`use-inbox-data.ts`, three independent queries with their own loading / empty / error + Retry):
+proposals `status=awaiting_confirmation`, alerts `acknowledged=false`, each fetched by `fetchBoundedPages` (page size 20,
+at most 3 requests = one initial page plus two more; completeness only from the backend's `total`), plus the last 5
+executions (informational, no link, never part of the indicator; full history is F6). Keys: `inboxProposals`,
+`inboxAlerts`, `inboxExecutions` (separate from the plain list keys); the Alerts screen's manual feed uses `alertFeed`
+so manual paging can never create a `clear`.
+
+**Indicator** (`inbox-data.ts` `deriveInboxIndicator`, one derivation shared by Dashboard and Inbox through
+`useInboxData` and `inboxIndicatorPresentation`):
+- `attention`: a loaded (successful source) open proposal not past `expires_at`, or an unacknowledged alert. A failed,
+  loading or incomplete other source cannot cancel it; items of a failed source are not trusted.
+- `clear`: proposals and alerts successful, complete and available, nothing actionable, and evaluation either not
+  attempted or fully succeeded.
+- `unknown`: everything else (failed/loading/incomplete/cap reached, alerts `available:false`, evaluation failed,
+  pending or incomplete).
+Markers are words ("Needs attention", "Up to date", "Status unknown") with distinct accessible names; no number, never
+"unread".
+
+**Proposal detail** (`inbox-proposal-actions.ts` `decideProposal`): one POST; Confirm/Decline behind dialogs; the result
+is the returned `status` (`proposalOutcome`); partial shows planned and applied amounts. A stale 409 or an ambiguous
+failure (timeout, network, unreadable 2xx, 5xx) triggers one GET of the proposal and a refresh before anything is
+claimed; the POST is never resent. Invalidation: the F1 `proposal_decided` set for the returned status, applied only while
+the session is still current.
+
+**Alerts**: "To review" / "Reviewed" filters, manual "Load more" (`nextAlertOffset`), reviewed and resolved shown
+separately, a deleted subject shown neutrally, `available:false` -> "Alerts are not available yet.", acknowledge is
+idempotent and invalidates alerts only.
+
+**Evaluation host** (`rules-evaluation-provider.ts`, bound in `rules-evaluation-host.tsx`, mounted once in
+`app/_layout.tsx` inside `SessionScope`): one F1 trigger and one AppState subscription per session / QueryClient
+generation, disposed on unmount (rotation or sign-out). Requests: session ready and background -> active
+(`foreground`), Inbox open (`inbox_open`), successful Income create (`income_recorded`). F1 debounce (750 ms),
+cooldown (30 s), one trailing run, discarded stale results and no POST retry apply. `useRulesEvaluation()` exposes
+`request` and the session's evaluation status (`not_attempted | pending | succeeded | incomplete | failed`; a blocked,
+failed or dead drain, or failed alert evaluation, is `incomplete`, never a clean success). Rules are checked when the app
+opens or refreshes and after income is recorded; nothing here claims unattended execution.
+
+**Pending:** J15/J16 on staging and physical devices, including the three-trigger exactly-once scenario (gate BR-12).
+**Deferred:** Preview and AUTO activation (F5); full execution history (F6).

@@ -171,6 +171,24 @@ export default function AppLayout() {
           title: "Edit Rule",
         }}
       />
+      <Stack.Screen
+        name="inbox/index"
+        options={{
+          title: "Inbox",
+        }}
+      />
+      <Stack.Screen
+        name="inbox/proposals/[id]"
+        options={{
+          title: "Suggestion",
+        }}
+      />
+      <Stack.Screen
+        name="inbox/alerts"
+        options={{
+          title: "Alerts",
+        }}
+      />
     </Stack>
   );
 }

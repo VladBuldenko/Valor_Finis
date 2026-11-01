@@ -20,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { useAuth } from "../auth/auth-context";
+import { useRulesEvaluation } from "../financial-rules/rules-evaluation-provider";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
 import { invalidateIncomeQueries } from "./income-cache";
@@ -45,6 +46,7 @@ function getTodayLocalDate(): string {
 export function IncomeCreateScreen() {
   const { session } = useAuth();
   const queryClient = useQueryClient();
+  const { request: requestRulesEvaluation } = useRulesEvaluation();
   const router = useRouter();
 
   const [amount, setAmount] = useState("");
@@ -77,6 +79,10 @@ export function IncomeCreateScreen() {
         session?.user.id,
         createdIncome.account_id !== null,
       );
+
+      // New income may be due for rules: ask the evaluation host (debounced;
+      // a no-op when signed out). Never blocks or fails the create.
+      requestRulesEvaluation("income_recorded");
 
       router.back();
     },

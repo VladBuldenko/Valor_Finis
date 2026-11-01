@@ -37,6 +37,8 @@ import {
 } from "../budgets/budget-status-presentation";
 import { getBudgets } from "../budgets/budget.service";
 import type { Budget } from "../budgets/budget.types";
+import { inboxIndicatorPresentation } from "../financial-rules/inbox-data";
+import { useInboxData } from "../financial-rules/use-inbox-data";
 import { getGoals } from "../goals/goal.service";
 import { styles } from "./dashboard.styles";
 import { getAuthErrorMessage } from "../../api/user-facing-error";
@@ -70,6 +72,8 @@ function riskTextStyle(riskStatus: BudgetStatusItem["risk_status"]) {
 export function DashboardScreen() {
   const { session } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  // The same shared Inbox data the Inbox screen reads (one derivation).
+  const inboxPresentation = inboxIndicatorPresentation(useInboxData().indicator);
 
   // The device's local calendar month, re-read whenever the Dashboard
   // regains focus (VF-019C), so returning to it after a month boundary
@@ -572,6 +576,17 @@ export function DashboardScreen() {
         <Link href="/goals" asChild>
           <Pressable style={styles.button}>
             <Text style={styles.buttonText}>Goals</Text>
+          </Pressable>
+        </Link>
+
+        <Link href="/inbox" asChild>
+          <Pressable
+            style={styles.button}
+            accessibilityRole="button"
+            accessibilityLabel={inboxPresentation.accessibilityLabel}
+          >
+            <Text style={styles.buttonText}>Inbox</Text>
+            <Text style={styles.buttonText}>{inboxPresentation.marker}</Text>
           </Pressable>
         </Link>
 
