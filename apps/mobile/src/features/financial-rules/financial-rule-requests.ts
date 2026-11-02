@@ -40,6 +40,9 @@ export type RequestSpec = {
   body?: string;
 };
 
+// Non-throwing form for values that arrive from outside the app (deep links).
+export const isUuid = (value: string): boolean => UUID_PATTERN.test(value);
+
 export function assertUuid(value: string, label: string): string {
   if (!UUID_PATTERN.test(value)) {
     throw new RangeError(`${label} must be a UUID.`);
