@@ -272,3 +272,10 @@ dead or stuck event is listed, and there is no retry or recovery action: the bac
 indicator is unaffected (history is not an input to it).
 
 **Pending:** J18 acceptance on staging and physical iOS/Android.
+
+## MF-3 note (pull-to-refresh and foreground)
+The Inbox pull now shows a real spinner and runs one refresh at a time (`useScreenRefresh`); the single debounced
+`request("inbox_open")` evaluation is unchanged. A return to the app refetches the mounted Smart Rules queries through
+the app-level focus bridge (GET only; the evaluation host keeps its own AppState subscription and is not duplicated). The
+Dashboard pull also re-reads the Inbox proposal and alert sources; the attention indicator logic is unchanged and a failed
+refresh makes it `unknown`, never `clear`.

@@ -17,7 +17,7 @@ actually provides. A state marked "n/a" does not apply to that surface.
 | Initial / empty | Empty arrays (`[]`) for lists; `available:false` for alerts without the E9A table | Static "No X yet." text per list; filter-aware on Accounts and Goals | Explain what the object is and offer the single next action; never imply an error. |
 | Loading | n/a | `ActivityIndicator` per query | Keep layout stable; do not show stale numbers as fresh. |
 | Loaded | Data | Rendered from cache | Show server figures only. |
-| Refreshing | TanStack background refetch | **No pull-to-refresh; no focus refetch config** | Provide an explicit refresh gesture and a visible "updating" cue that does not hide existing data. |
+| Refreshing | TanStack background refetch | Pull-to-refresh on lists and foreground refetch since MF-3 (`mf3-screen-checklist.md`) | Provide an explicit refresh gesture and a visible "updating" cue that does not hide existing data. |
 | Submitting | n/a | Button spinner, `isPending` guard on most forms | Disable repeat submit; keep entered values; never lose input on failure. |
 | Success | 2xx | Mostly navigation or silent cache update | Confirm the **outcome in domain words** (e.g. "Reserved", never "Transferred"). |
 | Validation failure | 422 `{"detail":[…]}` or rule 422 `{"detail":"…"}`; client-side validators exist per form | `Alert` with first message | Field-level messages near the field; keep the form. |
