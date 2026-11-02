@@ -172,6 +172,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="rules/[id]/preview"
+        options={{
+          title: "Example",
+        }}
+      />
+      <Stack.Screen
         name="inbox/index"
         options={{
           title: "Inbox",

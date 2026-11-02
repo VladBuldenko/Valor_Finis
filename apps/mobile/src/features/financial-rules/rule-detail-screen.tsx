@@ -21,6 +21,7 @@ import {
   createRuleActionRunner,
   createSubmitGuard,
   getRuleActionAvailability,
+  isAutoEnableBlocked,
 } from "./financial-rule-actions";
 import { COPY, SOURCE_COPY } from "./financial-rule-copy";
 import { describeRuleError } from "./financial-rule-errors";
@@ -123,6 +124,13 @@ export function RuleDetailScreen() {
   }
 
   function requestAction(rule: FinancialRule, action: RuleAction | "delete") {
+    if (action === "enable" && isAutoEnableBlocked(rule)) {
+      // An automatic rule is only ever turned on from its example screen.
+      router.push({ pathname: "/rules/[id]/preview", params: { id: rule.id } });
+
+      return;
+    }
+
     if (action === "enable") {
       perform(rule, action);
 
@@ -158,6 +166,7 @@ export function RuleDetailScreen() {
   const availability = getRuleActionAvailability(rule);
   const status = ruleStatusInfo(rule.status);
   const busy = actionMutation.isPending;
+  const autoNeedsExample = isAutoEnableBlocked(rule);
   const accountOf = (accountId: string) => (accounts.data ?? []).find((account) => account.id === accountId);
   const goalName = (goalId: string) => (goals.data ?? []).find((goal) => goal.id === goalId)?.name ?? "Unavailable Goal";
 
@@ -228,13 +237,13 @@ export function RuleDetailScreen() {
           <>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={ruleActionLabel("enable")}
-              accessibilityState={{ disabled: busy || !availability.enable.available, busy }}
-              disabled={busy || !availability.enable.available}
-              style={[styles.button, (busy || !availability.enable.available) && styles.disabledButton]}
+              accessibilityLabel={autoNeedsExample ? "Turn on, example first" : ruleActionLabel("enable")}
+              accessibilityState={{ disabled: busy || (!autoNeedsExample && !availability.enable.available), busy }}
+              disabled={busy || (!autoNeedsExample && !availability.enable.available)}
+              style={[styles.button, (busy || (!autoNeedsExample && !availability.enable.available)) && styles.disabledButton]}
               onPress={() => requestAction(rule, "enable")}
             >
-              <Text style={styles.buttonText}>{ruleActionLabel("enable")}</Text>
+              <Text style={styles.buttonText}>{autoNeedsExample ? "Turn on (example first)" : ruleActionLabel("enable")}</Text>
             </Pressable>
             {!availability.enable.available && availability.enable.reason ? (
               <Text style={styles.helperText}>{availability.enable.reason}</Text>
@@ -257,6 +266,14 @@ export function RuleDetailScreen() {
             </Pressable>
           ) : null,
         )}
+
+        {rule.rule_type === "INCOME_ALLOCATION" ? (
+          <Link href={{ pathname: "/rules/[id]/preview", params: { id: rule.id } }} asChild>
+            <Pressable accessibilityRole="button" accessibilityLabel="Show an example" disabled={busy} style={styles.editButton}>
+              <Text style={styles.editButtonText}>Example</Text>
+            </Pressable>
+          </Link>
+        ) : null}
 
         <Link href={{ pathname: "/rules/[id]/edit", params: { id: rule.id } }} asChild>
           <Pressable accessibilityRole="button" accessibilityLabel="Edit rule" disabled={busy} style={styles.editButton}>

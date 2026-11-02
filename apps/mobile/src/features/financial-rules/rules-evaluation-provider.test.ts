@@ -1,7 +1,7 @@
 // VF-020F4: the single evaluation host, mounted with the real TanStack hooks
 // and the real SessionScope / SessionQueryClient.
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 
 import { QueryClient } from "@tanstack/react-query";
 import { createElement, type ReactElement } from "react";
@@ -99,12 +99,21 @@ describe("one host per authenticated session", () => {
   });
 
   it("unmounting disposes the trigger: a pending request never fires and a running one is aborted (no rotation needed)", async () => {
-    const early = world();
-    const first = await mount(early, "user-a");
+    // The debounce timer is mocked so "unmounted before it fires" does not
+    // depend on how fast the machine runs.
+    mock.timers.enable({ apis: ["setTimeout"] });
 
-    await act(async () => { first.unmount(); });
-    await sleep(30);
-    assert.equal(early.calls.length, 0, "the pending debounce was cancelled");
+    const early = world();
+    let first!: TestRenderer.ReactTestRenderer;
+
+    try {
+      await act(async () => { first = TestRenderer.create(early.tree("user-a")); });
+      await act(async () => { first.unmount(); });
+      mock.timers.tick(10_000);
+      assert.equal(early.calls.length, 0, "the pending debounce was cancelled");
+    } finally {
+      mock.timers.reset();
+    }
 
     const running = world();
     const second = await mount(running, "user-a");
