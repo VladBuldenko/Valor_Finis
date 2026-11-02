@@ -31,6 +31,14 @@ export const COPY = {
   previewWouldApply: "If this rule were on and an income like this arrived, this much would be reserved right away.",
   previewWouldHold:
     "If an income like this arrived, a suggestion would be made and held for you to confirm. Nothing is reserved until you confirm.",
+  previewNoAllocation: "No allocation would be selected for this example.",
+  previewSourceNotUsed:
+    "This income source is not one the rule uses, so the rule would not run for it.",
+  previewOutOfDate: "Out of date: the rule or your balances changed. Show the example again.",
+  previewInputsChanged: "You changed the example. Show the example again to see it.",
+  previewTurnOnNeedsExample: "Show an example for this version of the rule first.",
+  previewTurnOnNotOffered: "This rule cannot be turned on from its current state.",
+  previewAutoOnly: "Only an automatic rule needs an example before it is turned on.",
   // Alerts degrade when the alerts feature is not set up in this environment.
   alertsUnavailable: "Alerts are not available yet.",
   evaluationBlocked: "Some income is still waiting to be checked. Try again in a moment.",

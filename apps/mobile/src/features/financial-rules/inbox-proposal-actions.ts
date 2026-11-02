@@ -36,7 +36,7 @@ export type DecisionDeps = {
 
 const FALLBACK = "Unable to complete that.";
 
-function isAmbiguous(error: unknown): boolean {
+export function isAmbiguous(error: unknown): boolean {
   if (!isApiError(error)) {
     return true;
   }

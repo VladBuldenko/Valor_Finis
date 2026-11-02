@@ -1,6 +1,8 @@
 # VF-020F5 — Rule preview (R-07) and safe AUTO activation: implementation design sheet (for owner approval)
 
-Status: **PROPOSED, awaiting one bounded owner approval of D1-D5.** Nothing below is implemented yet.
+Status: **APPROVED by the owner (D1-D5, exactly as proposed); implemented in VF-020F5.**
+This approves the R-07 implementation design only. It is not acceptance of the broader MVP release or the physical-device
+gates; J14 AUTO acceptance on staging and devices remains PENDING until actually tested.
 Scope: mobile only. The backend preview (BE-2, `POST /api/v1/financial-rules/{rule_id}/preview`) is merged and is the
 authoritative contract (`docs/mvp/vf-be2-preview-contract.md`); older statements that preview is missing are historical.
 Baseline: `main` `e14026995794949c9d9afe90a776d5c6e194d01b` (F1-F4, BE-2 merged).

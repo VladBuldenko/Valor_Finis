@@ -195,4 +195,44 @@ failed or dead drain, or failed alert evaluation, is `incomplete`, never a clean
 opens or refreshes and after income is recorded; nothing here claims unattended execution.
 
 **Pending:** J15/J16 on staging and physical devices, including the three-trigger exactly-once scenario (gate BR-12).
-**Deferred:** Preview and AUTO activation (F5); full execution history (F6).
+**Deferred:** full execution history (F6). (Preview and AUTO activation: see F5 below.)
+
+## F5 - Rule preview and safe AUTO activation (VF-020F5)
+
+Design: `docs/mvp/vf-020f5-design-sheet.md` (D1-D5 approved). The backend contract is `docs/mvp/vf-be2-preview-contract.md`
+(BE-2, merged); the backend is unchanged.
+
+**Screen** `app/(app)/rules/[id]/preview.tsx` -> `rule-preview-screen.tsx`. Entry: the "Example" button on the Rule
+detail for `INCOME_ALLOCATION` rules (any status); "Turn on (example first)" for an AUTO rule opens it. The user types an
+amount (no default; shape-validated by `buildPreviewRequest`) and optionally a source, and asks with "Show example" (never
+automatic). `requestRulePreview` sends one `POST .../preview`, never retried, and drops an answer that is for another
+rule version, not hypothetical, or arrives after the session changed. `rule-preview-view.ts` turns the response into text
+without any arithmetic: every amount is the backend's decimal string; Goal rows keep the server order; outcomes
+(`full|partial|skipped|blocked`), effects (`would_apply|would_hold|none`), `reason_code`, `source_selected_by_rule:false`
+and the standing limitations (sample income not recorded, other rules not simulated, real-event eligibility not simulated)
+are all shown; every state is headed "Example only".
+
+**AUTO authorization** (`preview-authorization.ts`): transient client state, never sent to the server. A proof exists
+only after the successful preview was displayed (`markViewed` runs from an effect after render, once Goals/Accounts have
+settled) and is scoped to user + rule id + rule version + exact sample. It is revoked by: a material edit, delete or
+status change of the rule (F1 invalidation), a different sample, a Goal/Account cache change (a fingerprint of both
+families), the preview entry being replaced/invalidated, and a new QueryClient (sign-out / user change gives a fresh,
+empty store; the old one is unreachable). A hand-built proof is rejected (proofs are issued only by the store).
+
+**Two independent enforcement points.** UI: `turnOnBlockReason` disables the control with a readable reason unless every
+fact holds. Runner: `createRuleActionRunner(api, gate).run(rule, "enable", {proof, isCurrent})` refuses an AUTO
+allocation enable without a valid proof, re-reads the rule (`getRule`), refuses a changed version, mode or status
+(`ActionStaleError`, authorization revoked), re-checks the session after the read, and only then sends one POST. A runner
+without a gate fails closed. `isAutoEnableBlocked` is unchanged; `getRuleActionAvailability(rule, {autoAuthorized})` opens
+the AUTO enable only for an authorized state. CONFIRM needs no preview and is not re-read. The editor still offers only
+CONFIRM for enabled/paused rules, so a PATCH cannot turn an enabled CONFIRM rule into AUTO.
+
+**Activation** (`auto-activation.ts`): a deliberate dialog (internal Goal reservations without per-income confirmation, no
+bank transfer, checked on open/refresh and after income, the example was hypothetical) then `activateAutoRule`. Results:
+`activated` (backend status shown), `unexpected_status`, `needs_new_preview`, `not_checked` (re-read failed, nothing
+sent), `failed`, `unknown_resolved` / `unknown_pending` (ambiguous POST: never resent; one read-back), `session_changed`.
+Invalidation: the F1 `rule_status_changed` set, only while the session is current. The preview is an advisory snapshot:
+the backend has no expected-version token, so a change between the re-read and the POST is not excluded, and the copy
+does not claim otherwise.
+
+**Pending:** J14 AUTO acceptance on staging and physical iOS/Android. **Deferred:** F6 execution history.
