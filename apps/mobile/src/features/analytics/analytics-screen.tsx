@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ActivityIndicator,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Text,
   View,
 } from "react-native";
 
+import { QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import {
   formatAmount,
@@ -113,21 +115,13 @@ export function AnalyticsScreen() {
   const [selectedPeriod, setSelectedPeriod] =
     useState<SpendingTrendPeriod>("month");
 
-  const {
-    data: forecast,
-    isLoading: isForecastLoading,
-    error: forecastError,
-  } = useQuery({
+  const forecastQuery = useQuery({
     queryKey: ["analytics", "spending-forecast", session?.user.id],
     queryFn: getSpendingForecast,
     enabled: Boolean(session),
   });
 
-  const {
-    data: trend,
-    isLoading: isTrendLoading,
-    error: trendError,
-  } = useQuery({
+  const trendQuery = useQuery({
     queryKey: [
       "analytics",
       "spending-trend",
@@ -138,11 +132,7 @@ export function AnalyticsScreen() {
     enabled: Boolean(session),
   });
 
-  const {
-    data: categoryTrend,
-    isLoading: isCategoryTrendLoading,
-    error: categoryTrendError,
-  } = useQuery({
+  const categoryTrendQuery = useQuery({
     queryKey: [
       "analytics",
       "category-trend",
@@ -154,23 +144,26 @@ export function AnalyticsScreen() {
       getCategoryTrend(CATEGORY_TREND_PERIOD, CATEGORY_TREND_COUNT),
     enabled: Boolean(session),
   });
+  const refresh = useScreenRefresh(() => [
+    refetcherOf(forecastQuery),
+    refetcherOf(trendQuery),
+    refetcherOf(categoryTrendQuery),
+  ]);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Analytics</Text>
 
         {/* Section A: current-month spending forecast (VF-015D). */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Spending forecast</Text>
 
-          {isForecastLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : forecastError ? (
-            <Text style={styles.errorText}>
-              Unable to load spending forecast.
-            </Text>
-          ) : forecast ? (
+          <QueryBoundary query={forecastQuery} what="spending forecast" isEmpty={() => false}>
+            {(forecast) => (
             <>
               <Text style={styles.secondaryText}>
                 {formatForecastStatusLabel(forecast.forecast_status)}
@@ -224,7 +217,8 @@ export function AnalyticsScreen() {
                 </>
               )}
             </>
-          ) : null}
+            )}
+          </QueryBoundary>
         </View>
 
         {/* Section B: historical spending trend (VF-015B). */}
@@ -257,13 +251,8 @@ export function AnalyticsScreen() {
             })}
           </View>
 
-          {isTrendLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : trendError ? (
-            <Text style={styles.errorText}>
-              Unable to load spending trend.
-            </Text>
-          ) : trend ? (
+          <QueryBoundary query={trendQuery} what="spending trend" isEmpty={() => false}>
+            {(trend) => (
             <>
               <View style={styles.bucketList}>
                 {trend.buckets.map((bucket) => (
@@ -282,20 +271,16 @@ export function AnalyticsScreen() {
                 />
               ) : null}
             </>
-          ) : null}
+            )}
+          </QueryBoundary>
         </View>
 
         {/* Section C: category spending trends (VF-015C). */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Category trends</Text>
 
-          {isCategoryTrendLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : categoryTrendError ? (
-            <Text style={styles.errorText}>
-              Unable to load category trends.
-            </Text>
-          ) : categoryTrend ? (
+          <QueryBoundary query={categoryTrendQuery} what="category trends" isEmpty={() => false}>
+            {(categoryTrend) => (
             categoryTrend.categories.length === 0 ? (
               <Text style={styles.secondaryText}>
                 No category spending in this period yet.
@@ -327,7 +312,8 @@ export function AnalyticsScreen() {
                 </View>
               ))
             )
-          ) : null}
+            )}
+          </QueryBoundary>
         </View>
       </ScrollView>
     </SafeAreaView>

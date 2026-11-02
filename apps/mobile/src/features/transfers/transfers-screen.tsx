@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
@@ -17,6 +18,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { getAccounts } from "../accounts/account.service";
 import type { Account } from "../accounts/account.types";
+import { InlineError, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { formatLocalCalendarDate } from "./local-calendar-date";
 import { invalidateTransferQueries } from "./transfer-cache";
@@ -62,11 +65,7 @@ export function TransfersScreen() {
   const { session } = useAuth();
   const queryClient = useQueryClient();
 
-  const {
-    data: transfers = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const transfersQuery = useQuery({
     queryKey: ["account-transfers", session?.user.id],
     queryFn: getAccountTransfers,
     enabled: Boolean(session),
@@ -75,15 +74,15 @@ export function TransfersScreen() {
   // Supplementary data used only for Account names and the "Blocked"
   // badge. Transfers are the canonical list here, so a failure of this
   // query never hides them -- it shows a small notice and neutral labels.
-  const {
-    data: accounts = [],
-    isLoading: isAccountsLoading,
-    error: accountsError,
-  } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
+  const accounts = accountsQuery.data ?? [];
+  // Names stay neutral until Accounts have loaded (also if that read failed).
+  const isAccountsLoading = accountsQuery.data === undefined;
+  const refresh = useScreenRefresh(() => [refetcherOf(transfersQuery), refetcherOf(accountsQuery)]);
 
   const accountsById = new Map<string, Account>(
     accounts.map((account) => [account.id, account]),
@@ -189,7 +188,10 @@ export function TransfersScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Transfers</Text>
 
         <Link href="/transfers/new" asChild>
@@ -198,19 +200,18 @@ export function TransfersScreen() {
           </Pressable>
         </Link>
 
-        {accountsError ? (
-          <Text style={styles.noticeText}>
-            Account names are unavailable right now.
-          </Text>
+        {accountsQuery.isError && accountsQuery.data === undefined ? (
+          <InlineError
+            what="account names"
+            error={accountsQuery.error}
+            kind="partial"
+            retrying={accountsQuery.isFetching}
+            onRetry={() => void accountsQuery.refetch()}
+          />
         ) : null}
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load transfers.</Text>
-        ) : transfers.length === 0 ? (
-          <Text style={styles.secondaryText}>No transfers yet.</Text>
-        ) : (
+        <QueryBoundary query={transfersQuery} what="transfers" empty="No transfers yet.">
+          {(transfers) => (
           <View style={styles.list}>
             {/* Backend order, never re-sorted here. */}
             {transfers.map((transfer) => {
@@ -342,7 +343,8 @@ export function TransfersScreen() {
               );
             })}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

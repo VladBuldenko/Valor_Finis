@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getApiErrorMessage } from "../../api/api-error-message";
+import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
@@ -106,6 +107,8 @@ export function IncomeEditScreen() {
     data: income,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["income", session?.user.id],
     queryFn: getIncome,
@@ -118,6 +121,8 @@ export function IncomeEditScreen() {
     data: accounts = [],
     isLoading: isAccountsLoading,
     error: accountsError,
+    refetch: refetchAccounts,
+    isFetching: isAccountsFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -210,16 +215,16 @@ export function IncomeEditScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="income" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && income === undefined) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load income.</Text>
+          <LoadError what="income" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         </View>
       </SafeAreaView>
     );
@@ -371,15 +376,18 @@ export function IncomeEditScreen() {
             <Text style={styles.label}>Account</Text>
 
             {isAccountsLoading ? (
-              <ActivityIndicator style={styles.loader} />
+              <LoadingState what="accounts" />
             ) : accountsError ? (
               // Without the Account list the current link cannot be shown
               // or changed safely, so the selection stays as loaded and
               // account_id is simply not part of any PATCH.
-              <Text style={styles.errorText}>
+              <>
+            <Text style={styles.errorText}>
                 Unable to load accounts. The account link will stay
                 unchanged.
               </Text>
+            <RetryAction what="accounts" retrying={isAccountsFetching} onRetry={() => void refetchAccounts()} />
+          </>
             ) : (
               <AccountPicker
                 accounts={accounts}

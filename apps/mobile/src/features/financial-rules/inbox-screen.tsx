@@ -22,6 +22,7 @@ import {
 import { inboxIndicatorPresentation } from "./inbox-data";
 import { styles } from "./rules.styles";
 import { useRulesEvaluation } from "./rules-evaluation-provider";
+import { useScreenRefresh } from "../../lib/screen-refresh";
 import { useInboxData } from "./use-inbox-data";
 
 const formatTime = (iso: string): string => new Date(iso).toLocaleString();
@@ -46,6 +47,13 @@ export function InboxScreen() {
   const { request } = useRulesEvaluation();
   const { proposals, alerts, executions, evaluation, indicator } = useInboxData();
   const presentation = inboxIndicatorPresentation(indicator);
+  // Reads only; the evaluation request below is the existing single path. One
+  // pull at a time, and the spinner follows the real refetches.
+  const refresh = useScreenRefresh(() => [
+    () => queryClient.invalidateQueries({ queryKey: ["rule-proposals"] }),
+    () => queryClient.invalidateQueries({ queryKey: ["rule-alerts"] }),
+    () => queryClient.invalidateQueries({ queryKey: ["rule-executions"] }),
+  ]);
 
   // Opening the Inbox asks for an evaluation (debounced, cooldown-limited).
   useEffect(() => {
@@ -62,11 +70,9 @@ export function InboxScreen() {
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl
-            refreshing={false}
+            refreshing={refresh.refreshing}
             onRefresh={() => {
-              void queryClient.invalidateQueries({ queryKey: ["rule-proposals"] });
-              void queryClient.invalidateQueries({ queryKey: ["rule-alerts"] });
-              void queryClient.invalidateQueries({ queryKey: ["rule-executions"] });
+              refresh.onRefresh();
               request("inbox_open");
             }}
           />

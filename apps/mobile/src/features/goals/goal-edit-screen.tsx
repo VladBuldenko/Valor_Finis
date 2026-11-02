@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getGoalErrorMessage } from "./goal-error-message";
 import { validateGoalEditForm } from "./goal-edit-validation";
@@ -55,6 +56,8 @@ export function GoalEditScreen() {
     data: goal,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["goals", session?.user.id],
     queryFn: getGoals,
@@ -117,16 +120,16 @@ export function GoalEditScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="goal" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && goal === undefined) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load goal.</Text>
+          <LoadError what="goal" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         </View>
       </SafeAreaView>
     );

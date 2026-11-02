@@ -12,6 +12,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   TextInput,
@@ -22,6 +23,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
+import { LoadError, LoadingState, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "./expense-cache";
@@ -68,38 +71,36 @@ export function ExpensesScreen() {
   const [isCategoryPickerVisible, setIsCategoryPickerVisible] =
     useState(false);
 
-  const {
-    data: expenses = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const expensesQuery = useQuery({
     queryKey: ["expenses", session?.user.id],
     queryFn: getExpenses,
     enabled: Boolean(session),
   });
 
-  const {
-    data: categories = [],
-    isLoading: isCategoriesLoading,
-    error: categoriesError,
-  } = useQuery({
+  const categoriesQuery = useQuery({
     queryKey: ["categories", session?.user.id],
     queryFn: getCategories,
     enabled: Boolean(session),
   });
+  const categories = categoriesQuery.data ?? [];
+  const isCategoriesLoading = categoriesQuery.data === undefined && !categoriesQuery.isError;
 
   // Same query key/data as the Accounts screen -- no separate Account
   // request path. Used only to offer link destinations, never to compute
   // or display balances.
-  const {
-    data: accounts = [],
-    isLoading: isAccountsLoading,
-    error: accountsError,
-  } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
+  const accounts = accountsQuery.data ?? [];
+  const isAccountsLoading = accountsQuery.data === undefined && !accountsQuery.isError;
+  // Pull-to-refresh only re-reads the three lists; the form keeps its values.
+  const refresh = useScreenRefresh(() => [
+    refetcherOf(expensesQuery),
+    refetcherOf(categoriesQuery),
+    refetcherOf(accountsQuery),
+  ]);
 
   const selectedCategoryLabel =
     selectedCategoryId === null
@@ -183,6 +184,7 @@ export function ExpensesScreen() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
         >
           <Text style={styles.title}>Expenses</Text>
 
@@ -230,9 +232,14 @@ export function ExpensesScreen() {
             <Text style={styles.label}>Category</Text>
 
             {isCategoriesLoading ? (
-              <ActivityIndicator style={styles.loader} />
-            ) : categoriesError ? (
-              <Text style={styles.errorText}>Unable to load categories.</Text>
+              <LoadingState what="categories" />
+            ) : categoriesQuery.isError && categoriesQuery.data === undefined ? (
+              <LoadError
+                what="categories"
+                error={categoriesQuery.error}
+                retrying={categoriesQuery.isFetching}
+                onRetry={() => void categoriesQuery.refetch()}
+              />
             ) : (
               <Pressable
                 style={styles.selectControl}
@@ -278,12 +285,19 @@ export function ExpensesScreen() {
                 all -- the picker (and any current selection) otherwise stays
                 visible, and nothing is ever linked invisibly. */}
             {isAccountsLoading ? (
-              <ActivityIndicator style={styles.loader} />
-            ) : accountsError && accounts.length === 0 ? (
-              <Text style={styles.errorText}>
-                Unable to load accounts. You can still add this expense
-                without an account.
-              </Text>
+              <LoadingState what="accounts" />
+            ) : accountsQuery.isError && accountsQuery.data === undefined ? (
+              <>
+                <LoadError
+                  what="accounts"
+                  error={accountsQuery.error}
+                  retrying={accountsQuery.isFetching}
+                  onRetry={() => void accountsQuery.refetch()}
+                />
+                <Text style={styles.helperText}>
+                  You can still add this expense without an account.
+                </Text>
+              </>
             ) : (
               <AccountPicker
                 accounts={accounts}
@@ -312,13 +326,8 @@ export function ExpensesScreen() {
 
           <Text style={styles.listSectionTitle}>Recent expenses</Text>
 
-          {isLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : error ? (
-            <Text style={styles.errorText}>Unable to load expenses.</Text>
-          ) : expenses.length === 0 ? (
-            <Text style={styles.secondaryText}>No expenses yet.</Text>
-          ) : (
+          <QueryBoundary query={expensesQuery} what="expenses" empty="No expenses yet.">
+            {(expenses) => (
             <View style={styles.list}>
               {expenses.map((expense) => (
                 <Link
@@ -343,7 +352,8 @@ export function ExpensesScreen() {
                 </Link>
               ))}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </ScrollView>
       </KeyboardAvoidingView>
 

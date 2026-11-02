@@ -10,6 +10,7 @@ import {
   Alert,
   Pressable,
   SafeAreaView,
+  RefreshControl,
   ScrollView,
   Text,
   View,
@@ -17,6 +18,8 @@ import {
 
 import { getGoalProgress } from "../analytics/analytics.service";
 import type { GoalProgressItem } from "../analytics/analytics.types";
+import { InlineError, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getGoalErrorMessage } from "./goal-error-message";
 import { isZeroMoney } from "./goal-partitions";
@@ -71,28 +74,19 @@ export function GoalsScreen() {
 
   const [listView, setListView] = useState<GoalListView>("current");
 
-  const {
-    data: goals = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const goalsQuery = useQuery({
     queryKey: ["goals", session?.user.id],
     queryFn: getGoals,
     enabled: Boolean(session),
   });
 
-  const visibleGoals = goals.filter((goal) =>
-    matchesGoalListView(goal, listView),
-  );
-
-  const {
-    data: goalProgress = [],
-    error: goalProgressError,
-  } = useQuery({
+  const goalProgressQuery = useQuery({
     queryKey: ["analytics", "goal-progress", session?.user.id],
     queryFn: getGoalProgress,
     enabled: Boolean(session),
   });
+  const goalProgress = goalProgressQuery.data ?? [];
+  const refresh = useScreenRefresh(() => [refetcherOf(goalsQuery), refetcherOf(goalProgressQuery)]);
 
   // goal_id on GoalProgressItem is the verified, reliable join key back to
   // a goal's own id -- the analytics service computes exactly one progress
@@ -157,7 +151,10 @@ export function GoalsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Goals</Text>
 
         <Link href="/goals/new" asChild>
@@ -217,23 +214,25 @@ export function GoalsScreen() {
           </Pressable>
         </View>
 
-        {goalProgressError ? (
-          <Text style={styles.noticeText}>
-            Goal progress is temporarily unavailable.
-          </Text>
+        {goalProgressQuery.isError ? (
+          <InlineError
+            what="goal progress"
+            error={goalProgressQuery.error}
+            kind="partial"
+            retrying={goalProgressQuery.isFetching}
+            onRetry={() => void goalProgressQuery.refetch()}
+          />
         ) : null}
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load goals.</Text>
-        ) : visibleGoals.length === 0 ? (
-          <Text style={styles.secondaryText}>
-            {getGoalsEmptyMessage(listView, goals.length)}
-          </Text>
-        ) : (
+        <QueryBoundary
+          query={goalsQuery}
+          what="goals"
+          isEmpty={(goals) => !goals.some((goal) => matchesGoalListView(goal, listView))}
+          empty={getGoalsEmptyMessage(listView, goalsQuery.data?.length ?? 0)}
+        >
+          {(goals) => (
           <View style={styles.list}>
-            {visibleGoals.map((goal) => {
+            {goals.filter((goal) => matchesGoalListView(goal, listView)).map((goal) => {
               const progress = goalProgressById.get(goal.id);
 
               return (
@@ -319,7 +318,8 @@ export function GoalsScreen() {
               );
             })}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

@@ -3,12 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { InlineError, LoadingState } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { formatAmount } from "./analytics-presentation";
 import { getFinancialOverview, getIncomeExpenseTrend } from "./analytics.service";
@@ -141,13 +144,7 @@ export function FinancialOverviewScreen() {
 
   // Every key carries the user id, and both queries run only with a
   // session, so one account's figures can never show for another.
-  const {
-    data: overview,
-    isLoading: isOverviewLoading,
-    error: overviewError,
-    refetch: refetchOverview,
-    isFetching: isOverviewFetching,
-  } = useQuery({
+  const overviewQuery = useQuery({
     queryKey: [
       "analytics",
       "financial-overview",
@@ -159,13 +156,7 @@ export function FinancialOverviewScreen() {
     enabled: Boolean(session),
   });
 
-  const {
-    data: trend,
-    isLoading: isTrendLoading,
-    error: trendError,
-    refetch: refetchTrend,
-    isFetching: isTrendFetching,
-  } = useQuery({
+  const trendQuery = useQuery({
     queryKey: [
       "analytics",
       "income-expense-trend",
@@ -175,6 +166,18 @@ export function FinancialOverviewScreen() {
     queryFn: () => getIncomeExpenseTrend(FINANCIAL_HISTORY_MONTHS),
     enabled: Boolean(session),
   });
+  const {
+    data: overview,
+    isLoading: isOverviewLoading,
+    refetch: refetchOverview,
+    isFetching: isOverviewFetching,
+  } = overviewQuery;
+  const { data: trend, isLoading: isTrendLoading, refetch: refetchTrend, isFetching: isTrendFetching } = trendQuery;
+  // A failure only replaces the section while nothing is loaded; a failed
+  // refresh keeps the figures and says so above them.
+  const overviewError = overviewQuery.data === undefined ? overviewQuery.error : null;
+  const trendError = trendQuery.data === undefined ? trendQuery.error : null;
+  const refresh = useScreenRefresh(() => [refetcherOf(overviewQuery), refetcherOf(trendQuery)]);
 
   // Never moves before EARLIEST_OVERVIEW_MONTH -- enforced here as well as
   // by the disabled control.
@@ -204,7 +207,10 @@ export function FinancialOverviewScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Financial Overview</Text>
 
         <View style={styles.monthSelector}>
@@ -240,7 +246,7 @@ export function FinancialOverviewScreen() {
           <Text style={styles.sectionTitle}>Income and expenses</Text>
 
           {isOverviewLoading ? (
-            <ActivityIndicator style={styles.loader} />
+            <LoadingState what="this month" />
           ) : overviewError ? (
             <>
               <Text style={styles.errorText}>
@@ -253,6 +259,15 @@ export function FinancialOverviewScreen() {
             </>
           ) : overview ? (
             <>
+              {overviewQuery.isError ? (
+                <InlineError
+                  what="this month"
+                  error={overviewQuery.error}
+                  kind="refresh"
+                  retrying={isOverviewFetching}
+                  onRetry={() => void refetchOverview()}
+                />
+              ) : null}
               <Text style={styles.secondaryText}>{formatOverviewPeriodNote(overview)}</Text>
 
               {overview.data_status === "incomplete_data" ? (
@@ -291,7 +306,7 @@ export function FinancialOverviewScreen() {
           </Text>
 
           {isTrendLoading ? (
-            <ActivityIndicator style={styles.loader} />
+            <LoadingState what="monthly history" />
           ) : trendError ? (
             <>
               <Text style={styles.errorText}>Unable to load monthly history.</Text>
@@ -302,7 +317,18 @@ export function FinancialOverviewScreen() {
             </>
           ) : trend ? (
             // Backend order (oldest first), never re-sorted or filtered.
-            trend.buckets.map((bucket) => (
+            [
+              trendQuery.isError ? (
+                <InlineError
+                  key="refresh-error"
+                  what="monthly history"
+                  error={trendQuery.error}
+                  kind="refresh"
+                  retrying={isTrendFetching}
+                  onRetry={() => void refetchTrend()}
+                />
+              ) : null,
+              ...trend.buckets.map((bucket) => (
               <View key={bucket.period_start} style={styles.bucketBlock}>
                 <Text style={styles.bucketTitle}>
                   {formatPeriodMonthLabel(bucket.period_start)}
@@ -318,7 +344,8 @@ export function FinancialOverviewScreen() {
 
                 <FinancialFigures figures={bucket} currency={trend.base_currency} />
               </View>
-            ))
+            )),
+            ]
           ) : null}
         </View>
       </ScrollView>

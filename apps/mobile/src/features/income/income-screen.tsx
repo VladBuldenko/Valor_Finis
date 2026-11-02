@@ -1,14 +1,16 @@
 import { Link } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { InlineError, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getAccounts } from "../accounts/account.service";
 import type { Account } from "../accounts/account.types";
@@ -50,11 +52,7 @@ function getLinkedAccountLabel(
 export function IncomeScreen() {
   const { session } = useAuth();
 
-  const {
-    data: incomeRecords = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const incomeQuery = useQuery({
     queryKey: ["income", session?.user.id],
     queryFn: getIncome,
     enabled: Boolean(session),
@@ -62,15 +60,22 @@ export function IncomeScreen() {
 
   // Same query key/data as the Accounts screen, so an Account rename or
   // archive is reflected here without a separate fetch path.
-  const { data: accounts = [], isLoading: isAccountsLoading } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
+  const accounts = accountsQuery.data ?? [];
+  // A failed Accounts read must not turn into "Linked account unavailable".
+  const accountNamesUnknown = accountsQuery.data === undefined;
+  const refresh = useScreenRefresh(() => [refetcherOf(incomeQuery), refetcherOf(accountsQuery)]);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Income</Text>
 
         <Link href="/income/new" asChild>
@@ -79,19 +84,24 @@ export function IncomeScreen() {
           </Pressable>
         </Link>
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load income.</Text>
-        ) : incomeRecords.length === 0 ? (
-          <Text style={styles.secondaryText}>No income yet.</Text>
-        ) : (
+        {accountsQuery.isError && accountNamesUnknown ? (
+          <InlineError
+            what="account names"
+            error={accountsQuery.error}
+            kind="partial"
+            retrying={accountsQuery.isFetching}
+            onRetry={() => void accountsQuery.refetch()}
+          />
+        ) : null}
+
+        <QueryBoundary query={incomeQuery} what="income" empty="No income yet.">
+          {(incomeRecords) => (
           <View style={styles.list}>
             {incomeRecords.map((income) => {
               const linkedAccountLabel = getLinkedAccountLabel(
                 income,
                 accounts,
-                isAccountsLoading,
+                accountNamesUnknown,
               );
 
               return (
@@ -133,7 +143,8 @@ export function IncomeScreen() {
               );
             })}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

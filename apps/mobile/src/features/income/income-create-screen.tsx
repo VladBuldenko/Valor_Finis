@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getApiErrorMessage } from "../../api/api-error-message";
+import { LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { useRulesEvaluation } from "../financial-rules/rules-evaluation-provider";
 import { AccountPicker } from "../accounts/account-picker";
@@ -62,6 +63,8 @@ export function IncomeCreateScreen() {
     data: accounts = [],
     isLoading: isAccountsLoading,
     error: accountsError,
+    refetch: refetchAccounts,
+    isFetching: isAccountsFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -209,12 +212,15 @@ export function IncomeCreateScreen() {
             <Text style={styles.label}>Account</Text>
 
             {isAccountsLoading ? (
-              <ActivityIndicator style={styles.loader} />
+              <LoadingState what="accounts" />
             ) : accountsError ? (
-              <Text style={styles.errorText}>
+              <>
+            <Text style={styles.errorText}>
                 Unable to load accounts. You can still add this income
                 without an account.
               </Text>
+            <RetryAction what="accounts" retrying={isAccountsFetching} onRetry={() => void refetchAccounts()} />
+          </>
             ) : (
               <AccountPicker
                 accounts={accounts}

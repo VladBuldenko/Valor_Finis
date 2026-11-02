@@ -20,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
+import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "../expenses/expense-cache";
@@ -49,6 +50,8 @@ export function ReceiptReviewScreen() {
     data: receipt,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["receipts", "detail", id],
     queryFn: () => getReceiptById(id),
@@ -59,6 +62,8 @@ export function ReceiptReviewScreen() {
     data: categories = [],
     isLoading: isCategoriesLoading,
     error: categoriesError,
+    refetch: refetchCategories,
+    isFetching: isCategoriesFetching,
   } = useQuery({
     queryKey: ["categories", session?.user.id],
     queryFn: getCategories,
@@ -71,6 +76,8 @@ export function ReceiptReviewScreen() {
     data: accounts = [],
     isLoading: isAccountsLoading,
     error: accountsError,
+    refetch: refetchAccounts,
+    isFetching: isAccountsFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -190,15 +197,15 @@ export function ReceiptReviewScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView>
-        <ActivityIndicator />
+        <LoadingState what="receipt" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && receipt === undefined) {
     return (
       <SafeAreaView>
-        <Text>Unable to load receipt.</Text>
+        <LoadError what="receipt" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         <Button title="Back" onPress={() => router.back()} />
       </SafeAreaView>
     );
@@ -261,9 +268,9 @@ export function ReceiptReviewScreen() {
         <Text>Category</Text>
 
         {isCategoriesLoading ? (
-          <ActivityIndicator />
-        ) : categoriesError ? (
-          <Text>Unable to load categories.</Text>
+          <LoadingState what="categories" />
+        ) : categoriesError && categories.length === 0 ? (
+          <LoadError what="categories" error={categoriesError} retrying={isCategoriesFetching} onRetry={() => void refetchCategories()} />
         ) : categories.length === 0 ? (
           <Text>No categories available.</Text>
         ) : (
@@ -332,12 +339,15 @@ export function ReceiptReviewScreen() {
             in that state nothing was ever selectable, so the receipt is
             confirmed unlinked and no selection is ever sent invisibly. */}
         {isAccountsLoading ? (
-          <ActivityIndicator />
+          <LoadingState what="accounts" />
         ) : accountsError && accounts.length === 0 ? (
-          <Text>
+          <>
+            <Text>
             Unable to load accounts. You can still confirm this receipt
             without an account.
           </Text>
+            <RetryAction what="accounts" retrying={isAccountsFetching} onRetry={() => void refetchAccounts()} />
+          </>
         ) : (
           <AccountPicker
             accounts={accounts}
