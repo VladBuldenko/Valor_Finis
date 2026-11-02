@@ -275,6 +275,14 @@ export function RuleDetailScreen() {
           </Link>
         ) : null}
 
+        {rule.rule_type === "INCOME_ALLOCATION" ? (
+          <Link href={{ pathname: "/rules/history", params: { rule_id: rule.id } }} asChild>
+            <Pressable accessibilityRole="button" accessibilityLabel="Show this rule's history" style={styles.editButton}>
+              <Text style={styles.editButtonText}>History</Text>
+            </Pressable>
+          </Link>
+        ) : null}
+
         <Link href={{ pathname: "/rules/[id]/edit", params: { id: rule.id } }} asChild>
           <Pressable accessibilityRole="button" accessibilityLabel="Edit rule" disabled={busy} style={styles.editButton}>
             <Text style={styles.editButtonText}>Edit rule</Text>

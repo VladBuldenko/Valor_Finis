@@ -147,8 +147,8 @@ model carries the enabled floor and rule capacity). The pickers share the Accoun
 "Changing this rule replaces any suggestions that are still waiting for you." (F1 `isMaterialRuleEdit` now treats
 `execution_order` as non-material, matching the backend.)
 
-**Deferred:** Preview and AUTO enable (F5); Inbox, proposals, alerts list, acknowledge and mounting the evaluation
-trigger (F4); execution history and reasons (F6). Device and staging acceptance is pending.
+**Deferred (at F3):** Preview and AUTO enable (F5); Inbox, proposals, alerts list, acknowledge and mounting the evaluation
+trigger (F4); execution history and reasons (F6) - all since delivered. Device and staging acceptance is pending.
 
 ## F4: Inbox, proposals and alerts (VF-020F4, M04-M06, R-08..R-10)
 
@@ -160,7 +160,7 @@ Design: [vf-020f4-design-sheet.md](../mvp/vf-020f4-design-sheet.md) (approved D1
 **Inbox sources** (`use-inbox-data.ts`, three independent queries with their own loading / empty / error + Retry):
 proposals `status=awaiting_confirmation`, alerts `acknowledged=false`, each fetched by `fetchBoundedPages` (page size 20,
 at most 3 requests = one initial page plus two more; completeness only from the backend's `total`), plus the last 5
-executions (informational, no link, never part of the indicator; full history is F6). Keys: `inboxProposals`,
+executions (informational rows with no action, never part of the indicator; a "See all activity" link opens the full history, F6). Keys: `inboxProposals`,
 `inboxAlerts`, `inboxExecutions` (separate from the plain list keys); the Alerts screen's manual feed uses `alertFeed`
 so manual paging can never create a `clear`.
 
@@ -195,7 +195,7 @@ failed or dead drain, or failed alert evaluation, is `incomplete`, never a clean
 opens or refreshes and after income is recorded; nothing here claims unattended execution.
 
 **Pending:** J15/J16 on staging and physical devices, including the three-trigger exactly-once scenario (gate BR-12).
-**Deferred:** full execution history (F6). (Preview and AUTO activation: see F5 below.)
+**Deferred:** none in F4. (Preview and AUTO activation: see F5; execution history: see F6 below.)
 
 ## F5 - Rule preview and safe AUTO activation (VF-020F5)
 
@@ -235,4 +235,40 @@ Invalidation: the F1 `rule_status_changed` set, only while the session is curren
 the backend has no expected-version token, so a change between the re-read and the POST is not excluded, and the copy
 does not claim otherwise.
 
-**Pending:** J14 AUTO acceptance on staging and physical iOS/Android. **Deferred:** F6 execution history.
+**Pending:** J14 AUTO acceptance on staging and physical iOS/Android.
+
+## F6 - Execution history (VF-020F6)
+**Screen** `app/(app)/rules/history.tsx` -> `rule-history-screen.tsx` (+ `rule-history-card.tsx`), registered as
+`rules/history` ("History"). Entries (navigation only): the Rules list "History" button, the Inbox "Recent activity"
+"See all activity" link, and "History" on an `INCOME_ALLOCATION` rule's detail (`?rule_id=<id>`; a malformed id shows a
+notice and all rules, it never throws). It reads `GET /rule-executions` through `financialRulesService.listExecutions`
+and the Rules/Goals lists for names; nothing else. It calls no mutation and never asks for an evaluation (it only reads
+the coarse evaluation status for one line of context).
+
+**Data** (`use-execution-history.ts`, `execution-history-data.ts`): one `useInfiniteQuery` per user and filter pair, key
+`["rule-executions", user, "history", {rule_id, status, limit: 20}]` (`financialRuleKeys.executionHistory`, under the
+executions family so existing F1 invalidation refreshes it; distinct from `executionList` and the Inbox's
+`inboxExecutions`). Page offsets are the pageParams, not key parts. "Load more" is manual: the next offset is the number
+of rows RECEIVED, an empty page ends paging, rows are de-duplicated by id (first occurrence wins). The list is newest
+first and offset-paged, so a run recorded while paging can shift rows down; the screen says newer runs can appear and
+offers pull-to-refresh, and does not claim a snapshot or a gap-free view. `deriveHistoryState` is the single place that
+chooses loading / error / empty / list and the footer (load more, loading, next-page error, end, stalled), so a failure is
+never shown as "no history" and a failed later page keeps the loaded rows.
+
+**Presentation** (`execution-history-view.ts`): all eight statuses by text; amounts are the server's decimal strings
+(planned and applied per Goal in stored order; a null `applied_amount` is "Not applied", never a number; no totals);
+`source_received_at` (a calendar date) is formatted from its own parts, never through `Date`; the recorded capacity
+figures are labelled "then" and shown without the income currency when the run was blocked for `currency_mismatch`.
+Reasons: the ten codes the backend persists (`insufficient_capacity`, `nothing_to_allocate`, `source_account_archived`,
+`target_goal_archived`, `currency_mismatch`, `superseded`, `stale`, `source_changed`, `source_deleted`, `rule_inactive`)
+via `reasonText`; `income_source_not_selected` is mapped but is never stored on an execution (preview only); `rejected`
+and `expired` carry no reason and are explained from the status; an unknown code gets the neutral text and is never
+echoed. Only known audit codes are translated (with a known actor); `details` and ids are never shown. Rule and Goal
+names are looked up now and labelled "(current name)"; a missing one is described as no longer listed only once the
+list has loaded.
+
+**Limits.** History shows recorded executions only. No evaluation counters are shown (the app does not retain them), no
+dead or stuck event is listed, and there is no retry or recovery action: the backend offers none. The Inbox attention
+indicator is unaffected (history is not an input to it).
+
+**Pending:** J18 acceptance on staging and physical iOS/Android.

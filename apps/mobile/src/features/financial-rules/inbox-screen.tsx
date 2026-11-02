@@ -176,6 +176,11 @@ export function InboxScreen() {
             </View>
           );
         })}
+        <Link href="/rules/history" asChild>
+          <Pressable accessibilityRole="button" accessibilityLabel="See all activity" style={styles.editButton}>
+            <Text style={styles.editButtonText}>See all activity</Text>
+          </Pressable>
+        </Link>
       </ScrollView>
     </SafeAreaView>
   );

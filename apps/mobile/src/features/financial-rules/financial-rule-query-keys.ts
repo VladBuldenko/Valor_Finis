@@ -86,6 +86,23 @@ export const financialRuleKeys = {
       ...pageKey(filters),
     },
   ],
+  // The full execution history (F6): ONE infinite-query entry per filter pair
+  // and page size, holding every loaded page. Each page's offset lives in the
+  // entry's pageParams, so a different filter is a different entry and pages of
+  // one filter can never populate another. Distinct from executionList (plain
+  // pages) and inboxExecutions so the cached data shapes never mix.
+  executionHistory: (
+    userId: string,
+    filters: { rule_id?: string; status?: ExecutionStatus; limit: number },
+  ): QueryKeyTuple => [
+    ...financialRuleKeys.executionsFamily(userId),
+    "history",
+    {
+      rule_id: filters.rule_id ?? null,
+      status: (filters.status ?? null) as ExecutionStatus | null,
+      limit: filters.limit,
+    },
+  ],
   // Bounded Inbox sources (F4): one entry per source holding the accumulated
   // bounded pages. Distinct from the plain list keys so the shapes never mix.
   inboxProposals: (userId: string): QueryKeyTuple => [

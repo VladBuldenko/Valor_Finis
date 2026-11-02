@@ -45,6 +45,12 @@ export function RulesScreen() {
           </Pressable>
         </Link>
 
+        <Link href="/rules/history" asChild>
+          <Pressable accessibilityRole="button" accessibilityLabel="History" style={styles.editButton}>
+            <Text style={styles.editButtonText}>History</Text>
+          </Pressable>
+        </Link>
+
         {query.isLoading ? <ActivityIndicator style={styles.loader} accessibilityLabel="Loading rules" /> : null}
 
         {query.isError ? (
