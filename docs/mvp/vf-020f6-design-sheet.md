@@ -1,6 +1,9 @@
 # VF-020F6 — Execution history (R-11 / M07 / J18): implementation design sheet (for owner approval)
 
-Status: **PROPOSED — awaiting owner approval.** No UI code exists on this branch; only this sheet.
+Status: **APPROVED by the owner (D1–D5 exactly as proposed, plus the two decisions below); implemented in VF-020F6.**
+Owner decisions recorded with the approval: (1) `useInfiniteQuery` with user-scoped keys containing the rule/status filters and
+page size, per-page offsets kept in `pageParams` (no separate `useQuery` per page); (2) no evaluation counters in F6 — the F4
+evaluation provider is not modified and no dead-event retry or recovery is implemented.
 Approval covers the R-11 implementation design only. It is not acceptance of the broader MVP release; J18 acceptance on
 staging and physical iOS/Android stays PENDING until actually tested.
 Scope: mobile only. The backend list (`GET /api/v1/rule-executions`) is merged and authoritative.
