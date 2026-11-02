@@ -69,6 +69,29 @@ describe("a proof needs a viewed, successful preview of the current inputs", () 
     assert.equal(store.proofFor(subject({ inputs: { amount: "3000.00", source: null } })), null);
   });
 
+  it("a second sample that was fetched but never viewed gets no proof, even with the same timestamp", () => {
+    const client = new QueryClient();
+    const other: PreviewInputs = { amount: "500.00", source: "salary" };
+
+    client.setQueryData(previewKeyFor(subject()), preview(), { updatedAt: 1000 });
+    client.setQueryData(previewKeyFor(subject({ inputs: other })), preview(), { updatedAt: 1000 });
+
+    const store = previewAuthorizations(client);
+
+    assert.equal(store.markViewed(subject()), true);
+    assert.ok(store.proofFor(subject()));
+    assert.equal(store.proofFor(subject({ inputs: other })), null);
+    assert.equal(store.proofFor(subject({ inputs: { amount: "3000.00", source: null } })), null);
+  });
+
+  it("an invalidated preview cannot even be recorded as viewed", async () => {
+    const client = new QueryClient();
+
+    client.setQueryData(previewKeyFor(subject()), preview());
+    await client.invalidateQueries({ queryKey: [...previewKeyFor(subject())] });
+    assert.equal(previewAuthorizations(client).markViewed(subject()), false);
+  });
+
   it("a non-hypothetical or other-rule or other-version payload is never recorded", () => {
     for (const bad of [
       { hypothetical: false as unknown as true },
