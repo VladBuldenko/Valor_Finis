@@ -160,6 +160,12 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="rules/history"
+        options={{
+          title: "History",
+        }}
+      />
+      <Stack.Screen
         name="rules/[id]/index"
         options={{
           title: "Rule",

@@ -53,10 +53,16 @@ describe("independent sources and per-source Retry", () => {
     assert.match(inbox, /!alertsUnavailable && alertItems\.length === 0/);
   });
 
-  it("recent activity is informational: no link or action on executions", () => {
+  it("recent activity is informational: no link or action on an execution row; the only navigation is the section's 'See all activity' link to the history (VF-020F6)", () => {
     const section = inbox.slice(inbox.indexOf("Recent activity"));
+    const rows = section.slice(section.indexOf(".map("), section.indexOf("</ScrollView>"));
+    const rowsOnly = rows.slice(0, rows.indexOf('<Link href="/rules/history"'));
 
-    assert.doesNotMatch(section, /<Link|<Pressable|onPress/);
+    assert.doesNotMatch(rowsOnly, /<Link|<Pressable|onPress/);
+    assert.equal((section.match(/<Link/g) ?? []).length, 1);
+    assert.equal((section.match(/<Pressable/g) ?? []).length, 1);
+    assert.doesNotMatch(section, /onPress/);
+    assert.match(section, /<Link href="\/rules\/history" asChild>[\s\S]*?See all activity/);
   });
 
   it("opens the Inbox with an evaluation request", () => {
