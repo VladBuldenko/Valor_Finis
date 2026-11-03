@@ -7,6 +7,11 @@ Fingerprint = `fp1:` + first 16 hex characters of SHA-256 of the lower-cased `sc
 computed with `node tools/qa/staging-fingerprint.mjs`. A fingerprint is not a secret. Never write a hostname, URL, key or
 project reference in this file.
 
+An `ACTIVE` staging entry is valid only while the denylist holds at least one entry the owner has recorded (a valid
+fingerprint, `Recorded by` and a `Recorded on` date). Without it a staging match cannot rule production out, so the helper
+refuses to print `VERIFIED` and the validator rejects any `VERIFIED` run or `PASS` row. The initial register, with no
+`ACTIVE` entry and an empty denylist, is valid.
+
 Status as of 2026-11-03: **no staging environment exists** (QA-1 not complete). The owner has recorded no production
 fingerprint here yet. Both tables are therefore empty, and no run can be `VERIFIED`.
 
