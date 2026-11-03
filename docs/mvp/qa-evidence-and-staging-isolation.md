@@ -91,6 +91,9 @@ records the production denylist entries. Until the owner does, the helper has no
 One of these two lines, copied verbatim into `run-record.md`:
 
 - `Staging isolation: VERIFIED. Fingerprint check <artifact path> matched <STG id>; corroboration <list>.`
+  The validator reads `<STG id>` out of this statement (the token between `matched` and `;`) and requires it to be **exactly**
+  the run record's `Staging environment identifier`. Merely mentioning the ID elsewhere in the line does not count, and `STG-1`
+  is not `STG-10`. A `VERIFIED` line that does not follow this shape is rejected.
 - `Staging isolation: NOT VERIFIED. <reason>.` A run with this line cannot produce a `PASS`; the validator rejects any
   `PASS` row whose run record carries it.
 
@@ -185,7 +188,7 @@ Checks: exactly J01–J20 once per platform and 40 rows in the template; every m
 duplicated or renamed; no `PASS` or `FAIL` without the required evidence; `WAIVED` only for J18 with a signed register entry;
 no stale OS floor outside a recorded exception; no production endpoint, token or credential pattern in QA files;
 run records carry a staging isolation line; every `PASS` or `FAIL` row names the **same** staging identifier as its run record,
-and that identifier is an `ACTIVE` register entry named by the run's isolation line; no run is `VERIFIED` while the denylist
+and that identifier is an `ACTIVE` register entry equal to the ID the run's isolation line reports as matched (exact equality); no run is `VERIFIED` while the denylist
 has no owner-approved entry; a `WAIVED` row is accepted only on a platform its signed waiver lists. The validator checks
 **structure and consistency**. It cannot prove that a test was really run, that an owner really signed, or that a
 screenshot is genuine; review of the run by the owner remains required.
