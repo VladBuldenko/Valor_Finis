@@ -17,7 +17,7 @@ Why:
 from typing import Callable, Mapping, Optional
 
 from staging_ops.bootstrap import build_to_head, verify_target
-from staging_ops.errors import StagingRefused
+from staging_ops.errors import StagingRefused, unexpected
 from staging_ops.evidence import EvidenceRecord, utc_now, write_evidence
 from staging_ops.identity import assert_same_identity
 from staging_ops.operations import Operations
@@ -106,6 +106,12 @@ def reset(
         record.code = error.code
         error.mutated = record.outcome == "FAILED"
         raise
+    except Exception as error:
+        failure = unexpected(error)
+        record.code = failure.code
+        record.details["error_type"] = type(error).__name__
+        failure.mutated = record.outcome == "FAILED"
+        raise failure from None
     finally:
         record.finished_at = utc_now(clock)
 

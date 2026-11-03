@@ -20,3 +20,13 @@ class StagingRefused(Exception):
         self.message = message
         # Set by the orchestrators: True when a mutation had already begun.
         self.mutated = False
+
+
+# Wraps any non-refusal exception so no driver or library message (which can
+# name a host or user) reaches the terminal, a log or an evidence record.
+# Parameters:
+# - error: the exception that stopped the operation.
+# Returns:
+# - A StagingRefused carrying only the exception type name.
+def unexpected(error: BaseException) -> StagingRefused:
+    return StagingRefused("UNEXPECTED", f"{type(error).__name__}: an unexpected error stopped the operation; details are withheld")

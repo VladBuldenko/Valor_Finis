@@ -95,3 +95,35 @@ class TestExitCodes:
         assert main(args(tmp_path, "seed", "--users-file", str(users)), h.good_environ(), ops.as_operations(), say=lambda _t: None) == EXIT_REFUSED
         assert ops.sessions == 0
         json.dumps({})
+
+
+class TestUnexpectedErrors:
+    class Leaky(h.FakeOps):
+        def _probe(self, configured):
+            raise RuntimeError(f'connection to server at "{h.STAGING_HOST}" failed for user svc_user password {h.PASSWORD}')
+
+    def test_a_driver_error_is_withheld_and_nothing_is_mutated(self, tmp_path, capsys):
+        ops = self.Leaky()
+        code = main(args(tmp_path, "bootstrap"), h.good_environ(), ops.as_operations(), say=print)
+        captured = capsys.readouterr()
+
+        assert code == EXIT_REFUSED and ops.mutations == 0
+        assert "UNEXPECTED" in captured.err and "RuntimeError" in captured.err
+
+        for secret in (h.PASSWORD, h.STAGING_HOST, "svc_user"):
+            assert secret not in captured.out + captured.err
+
+    def test_the_evidence_record_names_only_the_error_type(self, tmp_path):
+        main(args(tmp_path, "bootstrap"), h.good_environ(), self.Leaky().as_operations(), say=lambda _t: None)
+        (name,) = os.listdir(tmp_path / "evidence")
+        text = (tmp_path / "evidence" / name).read_text()
+
+        assert json.loads(text)["details"]["error_type"] == "RuntimeError"
+        assert h.PASSWORD not in text and h.STAGING_HOST not in text
+
+    def test_an_unexpected_error_after_the_mutation_began_exits_12(self, tmp_path):
+        class Late(h.FakeOps):
+            def _expected_tables(self):
+                raise ValueError("model import failed")
+
+        assert main(args(tmp_path, "bootstrap"), h.good_environ(), Late().as_operations(), say=lambda _t: None) == EXIT_FAILED

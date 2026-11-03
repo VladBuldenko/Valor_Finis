@@ -19,11 +19,11 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Callable, List, Mapping, Optional
 
 from staging_ops.bootstrap import bootstrap, verify_target
-from staging_ops.errors import StagingRefused
+from staging_ops.errors import StagingRefused, unexpected
 from staging_ops.evidence import EvidenceRecord, utc_now, write_evidence
 from staging_ops.identity import DatabaseFacts
 from staging_ops.operations import Operations, real_operations
@@ -45,7 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--approved-targets", required=True, help="operator-held approved-targets JSON, stored outside the repository")
     parser.add_argument("--evidence-dir", default=None, help="directory for the sanitized evidence record")
     parser.add_argument("--users-file", default=None, help="seed only: JSON mapping QA-A and QA-B to staging Auth user ids")
-    parser.add_argument("--as-of", default=None, help="seed only: business date (default: today, UTC)")
+    parser.add_argument("--as-of", default=None, help="seed only: business date (default: the server's local date, the one the domain services use)")
 
     return parser
 
@@ -68,6 +68,9 @@ def _identify(args, environ: Mapping[str, str], approved, operations: Operations
     except StagingRefused as error:
         record.code = error.code
         raise
+    except Exception as error:
+        record.code = "UNEXPECTED"
+        raise unexpected(error) from None
     finally:
         record.finished_at = utc_now()
 
@@ -121,7 +124,7 @@ def main(
             try:
                 with open(args.users_file, encoding="utf-8") as handle:
                     users = json.load(handle)
-                as_of = date.fromisoformat(args.as_of) if args.as_of else datetime.now(timezone.utc).date()
+                as_of = date.fromisoformat(args.as_of) if args.as_of else date.today()
             except (OSError, ValueError):
                 raise StagingRefused("USAGE", "the users file or --as-of is unreadable or malformed") from None
 
@@ -134,4 +137,3 @@ def main(
     say("OK")
 
     return EXIT_OK
-

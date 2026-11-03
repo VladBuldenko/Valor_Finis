@@ -92,7 +92,7 @@ def local_cluster(tmp_path_factory):
     data = str(base / "data")
     log = str(base / "server.log")
     port = _free_port()
-    subprocess.run([os.path.join(binaries, "initdb"), "-D", data, "-A", "trust", "-U", "postgres", "--no-sync"], check=True, capture_output=True)
+    subprocess.run([os.path.join(binaries, "initdb"), "-D", data, "-A", "trust", "-U", "postgres", "-E", "UTF8", "--locale=C", "--no-sync"], check=True, capture_output=True)
     options = f"-c listen_addresses=127.0.0.1 -c port={port} -c unix_socket_directories= -c fsync=off -c max_connections=40"
     subprocess.run([os.path.join(binaries, "pg_ctl"), "-D", data, "-o", options, "-l", log, "-w", "start"], check=True, capture_output=True)
 

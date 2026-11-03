@@ -24,7 +24,19 @@ from typing import Any, Mapping, Optional, Tuple
 
 from staging_ops.errors import StagingRefused
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+# The git working tree this package lives in, or None when it runs outside one
+# (for example in the API container image, where there is nothing to commit).
+def _repository_root() -> Optional[Path]:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".git").exists():
+            return parent
+
+    return None
+
+
+REPOSITORY_ROOT = _repository_root()
 
 SCHEMA_VERSION = 1
 STAGING_DATABASE_SUFFIX = "_staging"
@@ -241,7 +253,7 @@ def load_approved_targets(path: str) -> ApprovedTargets:
     except (OSError, RuntimeError):
         raise StagingRefused("CONFIG_MISSING", "the approved-targets file does not exist") from None
 
-    if resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents:
+    if REPOSITORY_ROOT is not None and (resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents):
         raise StagingRefused("CONFIG_LOCATION", "the approved-targets file must be stored outside the repository")
 
     info = os.stat(resolved)

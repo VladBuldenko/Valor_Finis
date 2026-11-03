@@ -101,3 +101,14 @@ class TestShape:
     )
     def test_overlap_with_the_denylist_is_contradictory(self, change):
         assert code_of(self.mutated(change)) == "CONFIG_CONTRADICTORY"
+
+
+class TestDocumentedExample:
+    def test_the_example_in_the_docs_is_valid_and_obviously_fake(self):
+        path = target_config.REPOSITORY_ROOT / "docs/operations/staging/approved-targets.example.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        loaded = parse_approved_targets(document)
+
+        assert loaded.staging[0].host.endswith(".invalid")
+        assert all(host.endswith(".invalid") for host in loaded.denylist.database_hosts)
+        assert document["staging"][0]["approved_on"] == "2000-01-01"

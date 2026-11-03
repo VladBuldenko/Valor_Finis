@@ -302,6 +302,28 @@ class TestSeedOnARealDatabase:
         assert balances["QA-A EUR Checking"] == Decimal("5000.00") + Decimal("3000.00") - Decimal("250.00") - Decimal("180.00")
         assert balances["QA-A USD Cash"] == Decimal("800.00")
 
+    def test_a_failed_verification_leaves_no_completion_marker(self, target, monkeypatch):
+        from staging_ops import seed_scenarios
+
+        cluster, name, environ, approved, spy = self.build(target)
+        monkeypatch.setitem(seed_scenarios.MINIMUM_ROWS["QA-A"], "rule_alerts", 99)
+
+        with pytest.raises(StagingRefused) as caught:
+            seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
+
+        assert caught.value.code == "SEED_VERIFICATION_FAILED" and caught.value.mutated
+
+        with contextlib.closing(cluster.connect(name)) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM accounts WHERE name = 'QA-SEED-STG-1'")
+            assert cursor.fetchone()[0] == 0
+
+        monkeypatch.undo()
+
+        with pytest.raises(StagingRefused) as again:
+            seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
+
+        assert again.value.code == "ACTOR_HAS_DATA", "a half-seeded actor needs the reset procedure, never a top-up"
+
     def test_a_second_run_changes_nothing(self, target):
         cluster, name, environ, approved, spy = self.build(target)
         seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
