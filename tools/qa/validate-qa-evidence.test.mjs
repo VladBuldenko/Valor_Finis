@@ -14,6 +14,7 @@ import {
   checkStagingRegister,
   findStaleFloors,
   originFingerprint,
+  parseIsolationMatch,
   parseRowBlocks,
   scanForSecrets,
   validateRepo,
@@ -550,6 +551,7 @@ describe("a complete run directory", () => {
     mutateProcedures = (text) => text,
     denylist = `| ${fpOf(9)} | production API | Owner | 2026-11-19 |`,
     secondStaging = false,
+    tenthStaging = false,
     runStaging = "STG-1",
     stg1Status = "ACTIVE",
   } = {}) {
@@ -563,6 +565,10 @@ describe("a complete run directory", () => {
 
     if (secondStaging) {
       rows.push(`| STG-2 | ACTIVE | ${fpOf(4)} | ${fpOf(5)} | ${fpOf(6)} | Owner | 2026-11-19 |`);
+    }
+
+    if (tenthStaging) {
+      rows.push(`| STG-10 | ACTIVE | ${fpOf(7)} | ${fpOf(8)} | ${fpOf(1)} | Owner | 2026-11-19 |`);
     }
 
     const register = readFileSync(join(evidence, "staging-register.md"), "utf8")
@@ -678,10 +684,56 @@ describe("a complete run directory", () => {
       assert.ok(inactive.some((message) => message.includes('"STG-1" is not an ACTIVE entry')));
     });
 
-    it("rejects an isolation line that names another staging environment", () => {
-      const root = makeRun({ secondStaging: true, mutate: passJ01, isolation: "Staging isolation: VERIFIED. Fingerprint check matched STG-2; corroboration seed marker." });
+    describe("isolation line identity is an exact match, not a substring", () => {
+      const line = (matched, tail = "corroboration seed marker.") => `Staging isolation: VERIFIED. Fingerprint check artifacts/staging-fingerprint.txt matched ${matched}; ${tail}`;
+      const mismatch = (errors, matched, run) => errors.some((message) => message.includes(`matched "${matched}" but the run's staging identifier is "${run}"`));
 
-      assert.ok(validateRepo(root, { today: TODAY }).errors.some((message) => message.includes("must name the run's staging identifier STG-1")));
+      it("accepts a line whose matched ID equals the run's ID, including a prefix-like ID", () => {
+        assert.deepEqual(validateRepo(makeRun({ secondStaging: true, mutate: passJ01, isolation: line("STG-1") }), { today: TODAY }).errors, []);
+        assert.deepEqual(
+          validateRepo(makeRun({ tenthStaging: true, runStaging: "STG-10", mutate: withStaging("STG-10"), isolation: line("STG-10") }), { today: TODAY }).errors,
+          [],
+        );
+      });
+
+      it("rejects a line that matched STG-10 for a run on STG-1", () => {
+        const errors = validateRepo(makeRun({ tenthStaging: true, mutate: passJ01, isolation: line("STG-10") }), { today: TODAY }).errors;
+
+        assert.ok(mismatch(errors, "STG-10", "STG-1"), errors.join("\n"));
+      });
+
+      it("rejects a line that matched STG-1 for a run on STG-10", () => {
+        const errors = validateRepo(makeRun({ tenthStaging: true, runStaging: "STG-10", mutate: withStaging("STG-10"), isolation: line("STG-1") }), { today: TODAY }).errors;
+
+        assert.ok(mismatch(errors, "STG-1", "STG-10"), errors.join("\n"));
+      });
+
+      it("rejects a line that mentions STG-1 but matched STG-2", () => {
+        const isolation = line("STG-2", "corroboration seed marker for STG-1.");
+        const errors = validateRepo(makeRun({ secondStaging: true, mutate: passJ01, isolation }), { today: TODAY }).errors;
+
+        assert.ok(mismatch(errors, "STG-2", "STG-1"), errors.join("\n"));
+      });
+
+      it("rejects a VERIFIED line that does not follow the documented statement", () => {
+        for (const isolation of [
+          "Staging isolation: VERIFIED. Fingerprint check passed for STG-1.",
+          "Staging isolation: VERIFIED. Fingerprint check artifacts/staging-fingerprint.txt matched STG-1.",
+          "Staging isolation: VERIFIED. Fingerprint check matched STG-1; corroboration seed marker.",
+          "Staging isolation: VERIFIED. Fingerprint check artifacts/staging-fingerprint.txt matched STG-1; corroboration .",
+        ]) {
+          const errors = validateRepo(makeRun({ mutate: passJ01, isolation }), { today: TODAY }).errors;
+
+          assert.ok(errors.some((message) => message.includes("a VERIFIED isolation line must read")), `${isolation}\n${errors.join("\n")}`);
+        }
+      });
+
+      it("extracts only the matched ID from the documented statement", () => {
+        assert.equal(parseIsolationMatch(line("STG-10")), "STG-10");
+        assert.equal(parseIsolationMatch(line("STG-2", "corroboration saw STG-1 data.")), "STG-2");
+        assert.equal(parseIsolationMatch("Staging isolation: NOT VERIFIED. Register not yet approved."), null);
+        assert.equal(parseIsolationMatch(undefined), null);
+      });
     });
   });
 

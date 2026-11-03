@@ -650,6 +650,17 @@ export function checkStagingRegister(text) {
   return errors;
 }
 
+// Documented VERIFIED statement: "Staging isolation: VERIFIED. Fingerprint check <artifact path> matched <STG id>;
+// corroboration <list>." Returns the matched environment ID, or null when the line does not follow that shape.
+// The ID is compared by equality; a substring test would let STG-1 match a line that matched STG-10 or STG-2.
+const VERIFIED_LINE = /^Staging isolation: VERIFIED\. Fingerprint check (\S+) matched ([^\s;]+); corroboration (\S.*)\.$/;
+
+export function parseIsolationMatch(line) {
+  const match = VERIFIED_LINE.exec(line ?? "");
+
+  return match ? match[2] : null;
+}
+
 export function checkRunRecord(text, runId) {
   const errors = [];
   const fields = new Map();
@@ -919,8 +930,14 @@ export function validateRepo(root, { today = new Date().toISOString().slice(0, 1
 
         if (!runStaging || runStaging.Status !== "ACTIVE") {
           errors.push(`${label}: run record staging identifier "${runStagingId}" is not an ACTIVE entry of the staging register`);
-        } else if (!record.isolationLine.includes(runStagingId)) {
-          errors.push(`${label}: the isolation line must name the run's staging identifier ${runStagingId}`);
+        } else {
+          const matched = parseIsolationMatch(record.isolationLine);
+
+          if (matched === null) {
+            errors.push(`${label}: a VERIFIED isolation line must read "Staging isolation: VERIFIED. Fingerprint check <artifact path> matched <STG id>; corroboration <list>."`);
+          } else if (matched !== runStagingId) {
+            errors.push(`${label}: the isolation line matched "${matched}" but the run's staging identifier is "${runStagingId}"`);
+          }
         }
 
         if (!denylistApproved) {
