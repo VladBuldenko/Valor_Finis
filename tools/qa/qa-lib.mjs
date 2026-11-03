@@ -58,10 +58,37 @@ const FINGERPRINT = /^fp1:[0-9a-f]{16}$/;
 // Lowest OS versions that Expo SDK 57 / React Native 0.86.3 allow (QA-0 verification).
 export const FLOORS = { ios: [16, 4], androidApi: 24 };
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 export const isBlank = (value) => value === undefined || value === "" || value === "—" || value === "-";
 const isTbd = (value) => /^TBD\b/i.test(value ?? "");
 
 // ------------------------------------------------------------------ parsing
+
+// Denylist entries the owner has recorded: a valid fingerprint, who recorded it and when.
+export function approvedDenylist(denylist) {
+  return denylist.filter(
+    (row) => FINGERPRINT.test(row.Fingerprint ?? "") && !isBlank(row["Recorded by"]) && ISO_DATE.test(row["Recorded on"] ?? ""),
+  );
+}
+
+// Platforms a waiver covers, from its "Platforms" cell (for example "iOS; Android").
+export function parseWaiverPlatforms(value) {
+  const platforms = new Set();
+  const invalid = [];
+
+  for (const token of (value ?? "").split(/[;,/]|\band\b/i).map((part) => part.trim()).filter((part) => part !== "")) {
+    if (/^ios$/i.test(token)) {
+      platforms.add(PLATFORMS.IOS);
+    } else if (/^android$/i.test(token)) {
+      platforms.add(PLATFORMS.AND);
+    } else {
+      invalid.push(token);
+    }
+  }
+
+  return { platforms, invalid };
+}
 
 export function splitRow(line) {
   const trimmed = line.trim();
@@ -297,6 +324,14 @@ export function checkResult(label, v, ctx) {
         fail(`waiver ${waiverRef} is not for J18`);
       }
 
+      const covered = parseWaiverPlatforms(waiver.Platforms);
+
+      if (covered.invalid.length > 0 || covered.platforms.size === 0) {
+        fail(`waiver ${waiverRef} must list its platforms as iOS, Android or "iOS; Android"`);
+      } else if (!isProcedure && !covered.platforms.has(v.Platform)) {
+        fail(`waiver ${waiverRef} covers ${[...covered.platforms].join(" and ")} but this row is ${v.Platform}`);
+      }
+
       if (!isBlank(waiver["Signed on"]) && !isRealDate(waiver["Signed on"], ctx.today)) {
         fail(`waiver ${waiverRef} has an invalid signing date`);
       }
@@ -332,6 +367,14 @@ export function checkResult(label, v, ctx) {
     fail(`staging identifier "${stagingId}" is not in the staging register`);
   } else if (entry && entry.Status !== "ACTIVE") {
     fail(`staging identifier "${stagingId}" is not ACTIVE`);
+  }
+
+  if (ctx.runStagingId !== undefined && stagingId !== ctx.runStagingId) {
+    fail(`staging identifier "${stagingId}" differs from the run record's "${ctx.runStagingId}"`);
+  }
+
+  if (ctx.denylistApproved === false) {
+    fail(`${status} is not allowed: the staging register has no owner-approved production denylist entry`);
   }
 
   if (ctx.isolationVerified === false) {
@@ -594,7 +637,14 @@ export function checkStagingRegister(text) {
       errors.push(`denylist entry "${entry.Fingerprint}" must be fp1:<16 hex>`);
     } else if (stagingPrints.has(entry.Fingerprint)) {
       errors.push(`fingerprint ${entry.Fingerprint} is both ACTIVE staging and on the production denylist`);
+    } else if (!approvedDenylist([entry]).length) {
+      errors.push(`denylist entry ${entry.Fingerprint} needs "Recorded by" and a "Recorded on" date (owner approval)`);
     }
+  }
+
+  // A staging match proves nothing about production unless the owner has said what production looks like.
+  if (staging.some((entry) => entry.Status === "ACTIVE") && approvedDenylist(denylist).length === 0) {
+    errors.push("an ACTIVE staging entry requires at least one owner-approved production denylist entry (fingerprint, Recorded by, Recorded on)");
   }
 
   return errors;
@@ -649,6 +699,7 @@ export function checkRunRecord(text, runId) {
   return {
     errors,
     isolationVerified: verified,
+    isolationLine: line,
     appSha: /^[0-9a-f]{40}$/.test(fields.get("App commit SHA") ?? "") ? fields.get("App commit SHA") : undefined,
     stagingId: fields.get("Staging environment identifier"),
   };
@@ -798,7 +849,8 @@ export function validateRepo(root, { today = new Date().toISOString().slice(0, 1
 
   const register = registerText === null ? { staging: [], denylist: [] } : parseStagingRegister(registerText);
   const waivers = waiverText === null ? [] : parseWaivers(waiverText);
-  const baseCtx = { today, fileExists, staging: register.staging, waivers };
+  const denylistApproved = approvedDenylist(register.denylist).length > 0;
+  const baseCtx = { today, fileExists, staging: register.staging, waivers, denylistApproved };
 
   if (registerText !== null) {
     errors.push(...checkStagingRegister(registerText).map((message) => `staging-register.md: ${message}`));
@@ -860,10 +912,27 @@ export function validateRepo(root, { today = new Date().toISOString().slice(0, 1
 
       errors.push(...record.errors.map((message) => `${label}: ${message}`));
 
+      const runStagingId = isBlank(record.stagingId) ? undefined : record.stagingId;
+
+      if (record.isolationVerified) {
+        const runStaging = register.staging.find((entry) => entry["Staging ID"] === runStagingId);
+
+        if (!runStaging || runStaging.Status !== "ACTIVE") {
+          errors.push(`${label}: run record staging identifier "${runStagingId}" is not an ACTIVE entry of the staging register`);
+        } else if (!record.isolationLine.includes(runStagingId)) {
+          errors.push(`${label}: the isolation line must name the run's staging identifier ${runStagingId}`);
+        }
+
+        if (!denylistApproved) {
+          errors.push(`${label}: "Staging isolation: VERIFIED" is not allowed while the register has no owner-approved production denylist entry`);
+        }
+      }
+
       const defectsPath = join(dir, "defects.md");
       const ctx = {
         ...baseCtx,
         appSha: record.appSha,
+        runStagingId,
         isolationVerified: record.isolationVerified,
         defects: existsSync(defectsPath) ? parseDefects(read(defectsPath)) : new Map(),
       };

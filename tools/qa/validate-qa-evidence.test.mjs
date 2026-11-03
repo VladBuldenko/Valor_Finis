@@ -264,6 +264,32 @@ describe("waivers", () => {
     assert.ok(checkAcceptance(waive("ACC-IOS-J18", "AUTO"), baseCtx({ waivers: [signed] }), "run").some((message) => message.includes("WAIVER-J18-<n>")));
   });
 
+  it("rejects an iOS-only waiver on the Android row and an Android-only waiver on the iOS row", () => {
+    const iosOnly = baseCtx({ waivers: [{ ...signed, Platforms: "iOS" }] });
+    const androidOnly = baseCtx({ waivers: [{ ...signed, Platforms: "Android" }] });
+
+    assert.deepEqual(checkAcceptance(waive("ACC-IOS-J18", "WAIVER-J18-1"), iosOnly, "run"), []);
+    assert.deepEqual(checkAcceptance(waive("ACC-AND-J18", "WAIVER-J18-1"), androidOnly, "run"), []);
+    assert.ok(checkAcceptance(waive("ACC-AND-J18", "WAIVER-J18-1"), iosOnly, "run").some((message) => message.includes("covers iOS but this row is Android")));
+    assert.ok(checkAcceptance(waive("ACC-IOS-J18", "WAIVER-J18-1"), androidOnly, "run").some((message) => message.includes("covers Android but this row is iOS")));
+  });
+
+  it("accepts a two-platform waiver on both rows", () => {
+    const both = baseCtx({ waivers: [{ ...signed, Platforms: "iOS and Android" }] });
+
+    assert.deepEqual(checkAcceptance(waive("ACC-IOS-J18", "WAIVER-J18-1"), both, "run"), []);
+    assert.deepEqual(checkAcceptance(waive("ACC-AND-J18", "WAIVER-J18-1"), both, "run"), []);
+  });
+
+  it("rejects a waiver whose Platforms cell is empty, unknown or free text", () => {
+    for (const Platforms of ["—", "everything", "iOS; Windows", "all"]) {
+      const ctx = baseCtx({ waivers: [{ ...signed, Platforms }] });
+      const errors = checkAcceptance(waive("ACC-IOS-J18", "WAIVER-J18-1"), ctx, "run");
+
+      assert.ok(errors.some((message) => message.includes("must list its platforms") || message.includes('has no "Platforms"')), `${Platforms}: ${errors}`);
+    }
+  });
+
   it("flags a signed register entry for any journey other than J18", () => {
     const root = makeRepo({ waivers: `| ${Object.keys(signed).join(" | ")} |\n|${Object.keys(signed).map(() => "---").join("|")}|\n| ${Object.values({ ...signed, Journey: "J05" }).join(" | ")} |` });
     const { errors } = validateRepo(root, { today: TODAY });
@@ -398,6 +424,28 @@ ${deny}
     assert.ok(checkStagingRegister(text).some((message) => message.includes("both ACTIVE staging and on the production denylist")));
   });
 
+  it("refuses an ACTIVE staging entry when the production denylist is empty or not owner-approved", () => {
+    const active = `| STG-1 | ACTIVE | ${fp(1)} | ${fp(2)} | ${fp(3)} | Owner | 2026-11-20 |`;
+    const required = "requires at least one owner-approved production denylist entry";
+
+    assert.ok(checkStagingRegister(register(active, "| (none) | — | — | — |")).some((message) => message.includes(required)));
+    assert.ok(checkStagingRegister(register(active, `| ${fp(9)} | production API | — | — |`)).some((message) => message.includes(required)));
+    assert.ok(checkStagingRegister(register(active, `| ${fp(9)} | production API | Owner | not-a-date |`)).some((message) => message.includes(required)));
+    assert.ok(checkStagingRegister(register(active, `| ${fp(9)} | production API | — | — |`)).some((message) => message.includes('needs "Recorded by"')));
+  });
+
+  it("accepts an ACTIVE staging entry with an owner-approved denylist entry", () => {
+    const active = `| STG-1 | ACTIVE | ${fp(1)} | ${fp(2)} | ${fp(3)} | Owner | 2026-11-20 |`;
+
+    assert.deepEqual(checkStagingRegister(register(active, `| ${fp(9)} | production API | Owner | 2026-11-19 |`)), []);
+  });
+
+  it("keeps the initial NOT PROVISIONED register with an empty denylist valid", () => {
+    const initial = register("| (none) | NOT PROVISIONED | — | — | — | — | — |", "| (none) | — | — | — |");
+
+    assert.deepEqual(checkStagingRegister(initial), []);
+  });
+
   it("accepts the committed, empty register", () => {
     assert.deepEqual(checkStagingRegister(readFileSync(join(repoRoot, "docs/mvp/qa-evidence/staging-register.md"), "utf8")), []);
   });
@@ -429,9 +477,24 @@ ${deny}
       assert.doesNotMatch(result.stdout + result.stderr, /example\.test|secret-key-value|\/v1/);
     });
 
+    it("never reports VERIFIED when the register has no owner-approved production denylist entry", () => {
+      const env = { EXPO_PUBLIC_API_URL: "https://api.example.test", EXPO_PUBLIC_SUPABASE_URL: "https://auth.example.test" };
+
+      for (const denylist of ["| (none) | — | — | — |", `| ${prodFp} | production API | — | — |`]) {
+        const file = join(dir, "register-no-denylist.md");
+        writeFileSync(file, register(`| STG-1 | ACTIVE | ${apiFp} | ${authFp} | ${fp(3)} | Owner | 2026-11-20 |`, denylist));
+        const result = spawnSync(process.execPath, [cli, "--register", file, "--staging", "STG-1"], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /no owner-approved production denylist entry/);
+        assert.match(result.stderr, /NOT VERIFIED/);
+        assert.doesNotMatch(result.stdout, /Staging isolation: VERIFIED/);
+      }
+    });
+
     it("refuses a plain http URL even when its fingerprint is the registered one", () => {
       const plain = join(dir, "register-http.md");
-      writeFileSync(plain, register(`| STG-1 | ACTIVE | ${originFingerprint("http://api.example.test")} | ${authFp} | ${fp(3)} | Owner | 2026-11-20 |`, "| (none) | — | — | — |"));
+      writeFileSync(plain, register(`| STG-1 | ACTIVE | ${originFingerprint("http://api.example.test")} | ${authFp} | ${fp(3)} | Owner | 2026-11-20 |`, `| ${prodFp} | production API | Owner | 2026-11-20 |`));
       const result = spawnSync(process.execPath, [cli, "--register", plain, "--staging", "STG-1"], {
         env: { PATH: process.env.PATH, EXPO_PUBLIC_API_URL: "http://api.example.test", EXPO_PUBLIC_SUPABASE_URL: "https://auth.example.test" },
         encoding: "utf8",
@@ -481,17 +544,30 @@ describe("a complete run directory", () => {
   const RUN = "QA4-20261120-01";
   const fpOf = (n) => `fp1:${String(n).repeat(16).slice(0, 16)}`;
 
-  function makeRun({ isolation = "Staging isolation: VERIFIED. Fingerprint check artifacts/staging-fingerprint.txt matched STG-1; corroboration seed marker.", mutate = (text) => text } = {}) {
+  function makeRun({
+    isolation = "Staging isolation: VERIFIED. Fingerprint check artifacts/staging-fingerprint.txt matched STG-1; corroboration seed marker.",
+    mutate = (text) => text,
+    mutateProcedures = (text) => text,
+    denylist = `| ${fpOf(9)} | production API | Owner | 2026-11-19 |`,
+    secondStaging = false,
+    runStaging = "STG-1",
+    stg1Status = "ACTIVE",
+  } = {}) {
     const root = makeRepo();
     const evidence = join(root, "docs/mvp/qa-evidence");
     const dir = join(evidence, RUN);
     mkdirSync(join(dir, "artifacts"), { recursive: true });
     writeFileSync(join(dir, "artifacts/ok.png"), "x");
 
-    const register = readFileSync(join(evidence, "staging-register.md"), "utf8").replace(
-      "| (none) | NOT PROVISIONED | — | — | — | — | — |",
-      `| STG-1 | ACTIVE | ${fpOf(1)} | ${fpOf(2)} | ${fpOf(3)} | Owner | 2026-11-19 |`,
-    );
+    const rows = [`| STG-1 | ${stg1Status} | ${fpOf(1)} | ${fpOf(2)} | ${fpOf(3)} | Owner | 2026-11-19 |`];
+
+    if (secondStaging) {
+      rows.push(`| STG-2 | ACTIVE | ${fpOf(4)} | ${fpOf(5)} | ${fpOf(6)} | Owner | 2026-11-19 |`);
+    }
+
+    const register = readFileSync(join(evidence, "staging-register.md"), "utf8")
+      .replace("| (none) | NOT PROVISIONED | — | — | — | — | — |", rows.join("\n"))
+      .replace("| (none) | — | — | — |", denylist);
     writeFileSync(join(evidence, "staging-register.md"), register);
 
     const fields = {
@@ -504,7 +580,7 @@ describe("a complete run directory", () => {
       "Build type": "expo-go",
       "Build channel": "local-lan",
       "Installation method": "Expo Go from the store, QR scan",
-      "Staging environment identifier": "STG-1",
+      "Staging environment identifier": runStaging,
       "Staging isolation line": isolation,
       Devices: "Device X, OS 99, reference, physical",
       "Network profile": "NW-W",
@@ -516,7 +592,7 @@ describe("a complete run directory", () => {
     };
     writeFileSync(join(dir, "run-record.md"), `| Field | Content |\n|---|---|\n${Object.entries(fields).map(([k, v]) => `| ${k} | ${v} |`).join("\n")}\n`);
     writeFileSync(join(dir, "defects.md"), "## Defects\n\n| Defect ID | Severity | Status | Row IDs | Summary | Evidence | Owner |\n|---|---|---|---|---|---|---|\n| (none) | — | — | — | — | — | — |\n");
-    writeFileSync(join(dir, "procedures.md"), readFileSync(join(root, "docs/mvp/qa-security-regression-procedures.md"), "utf8"));
+    writeFileSync(join(dir, "procedures.md"), mutateProcedures(readFileSync(join(root, "docs/mvp/qa-security-regression-procedures.md"), "utf8")));
     writeFileSync(join(dir, "acceptance.md"), mutate(readFileSync(join(root, "docs/mvp/qa-device-acceptance-template.md"), "utf8")));
 
     return root;
@@ -538,6 +614,75 @@ describe("a complete run directory", () => {
     const root = makeRun({ mutate: passJ01, isolation: "looks fine" });
 
     assert.ok(validateRepo(root, { today: TODAY }).errors.some((message) => message.includes('"Staging isolation line" must start with')));
+  });
+
+  it("refuses VERIFIED and every PASS when the register has no owner-approved production denylist entry", () => {
+    const root = makeRun({ mutate: passJ01, denylist: "| (none) | — | — | — |" });
+    const errors = validateRepo(root, { today: TODAY }).errors;
+
+    assert.ok(errors.some((message) => message.includes("requires at least one owner-approved production denylist entry")));
+    assert.ok(errors.some((message) => message.includes('"Staging isolation: VERIFIED" is not allowed while the register has no owner-approved')));
+    assert.ok(errors.some((message) => message.includes("PASS is not allowed: the staging register has no owner-approved production denylist entry")));
+  });
+
+  describe("staging identity binding with two ACTIVE staging environments", () => {
+    const withStaging = (stagingId) => (text) => passRow(passJ01(text), "ACC-IOS-J01", { "Staging environment identifier": stagingId });
+
+    it("accepts a result for the run's own staging environment", () => {
+      assert.deepEqual(validateRepo(makeRun({ secondStaging: true, mutate: withStaging("STG-1") }), { today: TODAY }).errors, []);
+    });
+
+    it("rejects a PASS row that names a different ACTIVE staging environment", () => {
+      const errors = validateRepo(makeRun({ secondStaging: true, mutate: withStaging("STG-2") }), { today: TODAY }).errors;
+
+      assert.ok(errors.some((message) => message.includes('staging identifier "STG-2" differs from the run record\'s "STG-1"')));
+    });
+
+    it("rejects a FAIL row that names a different ACTIVE staging environment", () => {
+      const mutate = (text) => passRow(passJ01(text), "ACC-IOS-J01", { Status: "FAIL", "Staging environment identifier": "STG-2", "Defect reference": "DEF-001" });
+      const root = makeRun({ secondStaging: true, mutate });
+      writeFileSync(
+        join(root, `docs/mvp/qa-evidence/${RUN}/defects.md`),
+        "## Defects\n\n| Defect ID | Severity | Status | Row IDs | Summary | Evidence | Owner |\n|---|---|---|---|---|---|---|\n| DEF-001 | Sev-3 | open | ACC-IOS-J01 | x | — | — |\n",
+      );
+
+      assert.ok(validateRepo(root, { today: TODAY }).errors.some((message) => message.includes("differs from the run record")));
+    });
+
+    it("rejects a procedure result that names a different ACTIVE staging environment", () => {
+      const mutateProcedures = (text) => {
+        const line = text.split("\n").find((entry) => entry.startsWith("| SPR-IOS-01 "));
+        const cells = line.split("|");
+        cells[4] = " PASS ";
+        cells[5] = " Device X, OS 99 ";
+        cells[6] = ` ${SHA} `;
+        cells[7] = " STG-2 ";
+        cells[8] = " observed ";
+        cells[9] = ` docs/mvp/qa-evidence/${RUN}/artifacts/ok.png `;
+        cells[10] = " none ";
+        cells[12] = " tester-1 ";
+        cells[13] = " 2026-11-20 ";
+
+        return text.replace(line, cells.join("|"));
+      };
+      const errors = validateRepo(makeRun({ secondStaging: true, mutateProcedures }), { today: TODAY }).errors;
+
+      assert.ok(errors.some((message) => message.includes("SPR-IOS-01") && message.includes("differs from the run record")), errors.join("\n"));
+    });
+
+    it("rejects a VERIFIED run whose own staging identifier is unknown or not ACTIVE", () => {
+      const unknown = validateRepo(makeRun({ runStaging: "STG-7", mutate: withStaging("STG-7") }), { today: TODAY }).errors;
+      const inactive = validateRepo(makeRun({ stg1Status: "RETIRED", mutate: passJ01 }), { today: TODAY }).errors;
+
+      assert.ok(unknown.some((message) => message.includes('"STG-7" is not an ACTIVE entry')));
+      assert.ok(inactive.some((message) => message.includes('"STG-1" is not an ACTIVE entry')));
+    });
+
+    it("rejects an isolation line that names another staging environment", () => {
+      const root = makeRun({ secondStaging: true, mutate: passJ01, isolation: "Staging isolation: VERIFIED. Fingerprint check matched STG-2; corroboration seed marker." });
+
+      assert.ok(validateRepo(root, { today: TODAY }).errors.some((message) => message.includes("must name the run's staging identifier STG-1")));
+    });
   });
 
   it("rejects a PASS whose build SHA differs from the run record", () => {

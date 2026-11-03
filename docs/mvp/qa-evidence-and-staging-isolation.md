@@ -70,7 +70,8 @@ a one-way **origin fingerprint** (`fp1:` plus the first 16 hex characters of SHA
 reports only `set` or `not set`. It never prints the URL path, a query string, a credential in the URL or any key
 value. It exits non-zero when: a variable is missing; a value is not an `https` URL (a local `http` URL is refused for
 physical-device runs); a fingerprint matches any entry of the **production denylist**; or a fingerprint does not equal the named
-`ACTIVE` staging entry. The output is saved as `artifacts/staging-fingerprint.txt` and linked from `run-record.md`.
+`ACTIVE` staging entry; or the register holds no owner-approved production denylist entry (without one, a staging match
+does not rule production out). The output is saved as `artifacts/staging-fingerprint.txt` and linked from `run-record.md`.
 
 The register (`qa-evidence/staging-register.md`) holds fingerprints, not hostnames. Fingerprints are not secrets; they let a
 reviewer confirm a match without the repository ever naming an endpoint. The **owner** approves each staging entry and
@@ -183,7 +184,9 @@ node --test tools/qa/validate-qa-evidence.test.mjs   # the validator's own tests
 Checks: exactly J01–J20 once per platform and 40 rows in the template; every mandatory field present and none
 duplicated or renamed; no `PASS` or `FAIL` without the required evidence; `WAIVED` only for J18 with a signed register entry;
 no stale OS floor outside a recorded exception; no production endpoint, token or credential pattern in QA files;
-run records carry a staging isolation line and an `ACTIVE` staging identifier on every `PASS`. The validator checks
+run records carry a staging isolation line; every `PASS` or `FAIL` row names the **same** staging identifier as its run record,
+and that identifier is an `ACTIVE` register entry named by the run's isolation line; no run is `VERIFIED` while the denylist
+has no owner-approved entry; a `WAIVED` row is accepted only on a platform its signed waiver lists. The validator checks
 **structure and consistency**. It cannot prove that a test was really run, that an owner really signed, or that a
 screenshot is genuine; review of the run by the owner remains required.
 

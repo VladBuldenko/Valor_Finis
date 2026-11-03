@@ -5,10 +5,11 @@
 //
 // Usage: node tools/qa/staging-fingerprint.mjs --register <register.md> --staging <STG-id>
 // Exit code 0 = both origins match the named ACTIVE staging entry and no denylist entry.
-//           1 = mismatch, denylist hit, missing/invalid value or no ACTIVE staging entry.
+//           1 = mismatch, denylist hit, missing/invalid value, no ACTIVE staging entry
+//               or no owner-approved production denylist entry.
 import { readFileSync } from "node:fs";
 
-import { originFingerprint, parseStagingRegister } from "./qa-lib.mjs";
+import { approvedDenylist, originFingerprint, parseStagingRegister } from "./qa-lib.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(name);
@@ -31,6 +32,11 @@ const failures = [];
 
 if (!entry || entry.Status !== "ACTIVE") {
   failures.push(`${stagingId} is not an ACTIVE staging entry in the register`);
+}
+
+// Without owner-recorded production fingerprints a staging match cannot rule production out.
+if (approvedDenylist(denylist).length === 0) {
+  failures.push("the register has no owner-approved production denylist entry");
 }
 
 // Which variable is checked against which register column.
