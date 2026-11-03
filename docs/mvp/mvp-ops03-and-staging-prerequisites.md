@@ -58,7 +58,7 @@ performance baselines **without touching production**. It is a separate environm
 | 7 | Seed and reset (QA-1) | Scripts create named test users, Accounts, Goals, Budgets, rules; no real data. Bootstrap and reset obey the **identity guard of §2.5**: a `_test`/`_staging` name suffix is necessary but never sufficient. Seeds contain no secrets |
 | 8 | Mobile build channel | Environment variables `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` point only at staging; the build used for QA cannot reach production |
 | 9 | URL scheme | `apps/mobile/app.json` currently has the generic scheme `mobile`; an app-unique scheme is required before recovery deep links are enabled (task MF-4) |
-| 10 | Devices | At least one physical iOS and one physical Android device; simulators/emulators at the floors (iOS 15.1, API 24) per QA-0 |
+| 10 | Devices | At least one physical iOS and one physical Android device; simulators/emulators at the floors (iOS 15.1, API 24) per QA-0 [QA-0 superseded: pinned floors are iOS 16.4 and API 24, see qa-device-matrix.md] |
 | 11 | Dispatcher rehearsal | Local run of `python -m app.modules.financial_rules.dispatcher` against the staging or disposable DB only |
 
 ### 2.2 Security rules for staging
