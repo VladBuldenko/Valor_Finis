@@ -19,6 +19,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getAccountErrorMessage } from "./account-error-message";
 import { validateAccountEditForm } from "./account-edit-validation";
@@ -48,6 +49,8 @@ export function AccountEditScreen() {
     data: account,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -102,16 +105,16 @@ export function AccountEditScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="account" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && account === undefined) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load account.</Text>
+          <LoadError what="account" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         </View>
       </SafeAreaView>
     );

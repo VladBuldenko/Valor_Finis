@@ -19,6 +19,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
+import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "./expense-cache";
@@ -118,6 +119,8 @@ export function ExpenseDetailScreen() {
     data: expense,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["expenses", session?.user.id],
     queryFn: getExpenses,
@@ -130,6 +133,8 @@ export function ExpenseDetailScreen() {
     data: categories = [],
     isLoading: isCategoriesLoading,
     error: categoriesError,
+    refetch: refetchCategories,
+    isFetching: isCategoriesFetching,
   } = useQuery({
     queryKey: ["categories", session?.user.id],
     queryFn: getCategories,
@@ -142,6 +147,8 @@ export function ExpenseDetailScreen() {
     data: accounts = [],
     isLoading: isAccountsLoading,
     error: accountsError,
+    refetch: refetchAccounts,
+    isFetching: isAccountsFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -304,15 +311,15 @@ export function ExpenseDetailScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView>
-        <ActivityIndicator />
+        <LoadingState what="expense" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && expense === undefined) {
     return (
       <SafeAreaView>
-        <Text>Unable to load expense.</Text>
+        <LoadError what="expense" error={error} retrying={isFetching} onRetry={() => void refetch()} />
       </SafeAreaView>
     );
   }
@@ -334,9 +341,9 @@ export function ExpenseDetailScreen() {
         <Text>Category</Text>
 
         {isCategoriesLoading ? (
-          <ActivityIndicator />
-        ) : categoriesError ? (
-          <Text>Unable to load categories.</Text>
+          <LoadingState what="categories" />
+        ) : categoriesError && categories.length === 0 ? (
+          <LoadError what="categories" error={categoriesError} retrying={isCategoriesFetching} onRetry={() => void refetchCategories()} />
         ) : categories.length === 0 ? (
           <Text>No categories available.</Text>
         ) : (
@@ -407,11 +414,14 @@ export function ExpenseDetailScreen() {
             While it is shown the selection cannot change, so account_id
             is never part of the PATCH and the current link stays as-is. */}
         {isAccountsLoading ? (
-          <ActivityIndicator />
+          <LoadingState what="accounts" />
         ) : accountsError && accounts.length === 0 ? (
-          <Text>
+          <>
+            <Text>
             Unable to load accounts. The account link will stay unchanged.
           </Text>
+            <RetryAction what="accounts" retrying={isAccountsFetching} onRetry={() => void refetchAccounts()} />
+          </>
         ) : (
           <AccountPicker
             accounts={accounts}

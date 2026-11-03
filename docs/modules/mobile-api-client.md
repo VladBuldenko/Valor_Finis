@@ -210,14 +210,46 @@ the backend returns a stable snake_case `code` on every error body, extend the p
 (using `ApiError.code`, `status`, `kind`) and a neutral fallback for unknown or missing codes, so copy no longer depends
 on parsing `detail`.
 
+## Load failures, pull-to-refresh and foreground refetch (MF-3)
+
+Per-screen status: `docs/mvp/mf3-screen-checklist.md` (checked against the code by `features/mf3-screen-coverage.test.ts`).
+
+- **One reading of a query** (`lib/query-view.ts`, pure): data that is already loaded always wins; a failure with
+  nothing loaded is an error with Retry and is never rendered as an empty list; a failed refresh keeps the data and is
+  reported above it; a secondary read that fails (names, budget currency, goal progress) is a partial notice with its own
+  Retry and never hides the primary data. Text comes from `getUserFacingErrorMessage` (no raw backend text, URL or token).
+- **Shared presentation** (`components/query-states.tsx`): `QueryBoundary` (loading, `LoadError` + Retry, refresh notice,
+  empty, content), `InlineError`, `RetryAction`, `LoadingState`, `EmptyState`. Retry only calls the failed query's
+  `refetch`; it can never run a write. Roles and labels come from `retryA11y` / `loadingA11y` (alert + polite live region,
+  Retry is a button that is disabled and busy while it runs).
+- **Pull-to-refresh** (`lib/screen-refresh.ts`): `useScreenRefresh` re-reads the queries a screen shows. One refresh runs
+  at a time (further pulls are dropped), each refetch uses `cancelRefetch: false` so an in-flight read is reused, a failing
+  refetcher does not stop the others, and the spinner is real (true until every read ended). Forms are refreshed only
+  where a refresh cannot touch typed input; load failures on forms get Retry instead. Paginated lists (execution
+  history, alerts) refresh their infinite query and keep their paging; the Inbox keeps its single debounced evaluation
+  request.
+- **Foreground** (`lib/app-focus.ts`, `lib/app-focus-runtime.ts`, installed once in `app/_layout.tsx`): React Native has
+  no focus events, so nothing refetched on return. The bridge reports a real inactive/background -> active change to
+  TanStack's `focusManager` and the start state is not reported; repeated identical states are dropped. TanStack then
+  refetches only mounted queries whose data is stale (default `staleTime` 0, so every active query once per return;
+  fresh data is left alone). There is no cache-wide invalidation, nothing runs while signed out (no mounted queries), and
+  cleanup removes the listener without reporting a change. Three components listen to AppState, each for its own job:
+  Supabase token auto-refresh, the Smart Rules evaluation host (one debounced `evaluate`, unchanged) and this bridge
+  (GET refetch only); a scan test pins that list.
+- **Ownership**: after a user change the old client is retired and inert, and a Retry or refresh handler captured earlier
+  sends nothing even while the next user's session is live. A late answer for the previous user never reaches the new
+  user; a same-user token refresh neither rotates nor refetches by itself. Mutations keep exactly one network attempt;
+  a foreground never starts or resends a write.
+
 ## Known limits
 
 - Mounted-React evidence uses `react-test-renderer` (devDependency, deprecated upstream but the only DOM-free option)
   with the real TanStack hooks and the real `SessionScope`/boundary/transport, and a scripted `AuthGate`. It does not
   cover `AuthProvider`, Supabase, Expo Router, `Stack.Protected` or the navigation-intent restore effect; those need the
   staging/device drills (BR-7), which are NOT done.
-- Services do not yet forward TanStack's `signal` into `apiRequest`; unmounted queries are not aborted on the network
-  until MF-3.
+- The older feature services (accounts, goals, budgets, ...) still do not forward TanStack's `signal` into `apiRequest`,
+  so a request for an unmounted screen is not aborted on the network (it is ignored, and the Smart Rules services do
+  forward it). MF-3 did not change the services.
 - A callback body that resumes after a non-HTTP `await` must check `isCurrentQueryClient` before navigating.
 - A session that `getSession()` returns but the coordinator has not adopted (a lost or late auth event) is refused
   until the event arrives; there is no request-side recovery, by design.

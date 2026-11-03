@@ -18,6 +18,7 @@ import {
   View,
 } from "react-native";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { validateCategoryForm } from "./category-validation";
 import { getCategory, updateCategory } from "./category.service";
@@ -57,6 +58,8 @@ export function CategoryEditScreen() {
     data: category,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["categories", session?.user.id, id],
     queryFn: () => getCategory(id),
@@ -143,16 +146,16 @@ export function CategoryEditScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="category" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && category === undefined) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load category.</Text>
+          <LoadError what="category" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         </View>
       </SafeAreaView>
     );

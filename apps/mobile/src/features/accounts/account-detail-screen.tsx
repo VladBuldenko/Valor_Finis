@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   TextInput,
@@ -18,6 +19,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { LoadError, LoadingState, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import {
   normalizeAccountDecimalAmount,
@@ -134,27 +137,24 @@ export function AccountDetailScreen() {
   // counterparty Account names from it too. current_balance on the
   // resolved Account is already ledger-derived by the backend; this screen
   // never recalculates it locally.
-  const {
-    data: accounts = [],
-    isLoading: isAccountLoading,
-    error: accountError,
-  } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
+  const accounts = accountsQuery.data ?? [];
+  const isAccountLoading = accountsQuery.data === undefined && !accountsQuery.isError;
+  // Only a failure with nothing loaded replaces the screen.
+  const accountError = accountsQuery.data === undefined ? accountsQuery.error : null;
 
   const account = accounts.find((candidate) => candidate.id === id);
 
-  const {
-    data: transactions = [],
-    isLoading: isTransactionsLoading,
-    error: transactionsError,
-  } = useQuery({
+  const transactionsQuery = useQuery({
     queryKey: ["accounts", "transactions", session?.user.id, id],
     queryFn: () => getAccountTransactions(id),
     enabled: Boolean(session) && Boolean(id),
   });
+  const refresh = useScreenRefresh(() => [refetcherOf(accountsQuery), refetcherOf(transactionsQuery)]);
 
   const [direction, setDirection] = useState<"credit" | "debit">("credit");
   const [amount, setAmount] = useState("");
@@ -327,7 +327,7 @@ export function AccountDetailScreen() {
   if (isAuthLoading || isAccountLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="account" />
       </SafeAreaView>
     );
   }
@@ -336,7 +336,12 @@ export function AccountDetailScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load account.</Text>
+          <LoadError
+            what="account"
+            error={accountError}
+            retrying={accountsQuery.isFetching}
+            onRetry={() => void accountsQuery.refetch()}
+          />
         </View>
       </SafeAreaView>
     );
@@ -376,6 +381,7 @@ export function AccountDetailScreen() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
         >
           <Text style={styles.title}>{account.name}</Text>
 
@@ -574,15 +580,8 @@ export function AccountDetailScreen() {
 
           <Text style={styles.sectionTitle}>Transaction history</Text>
 
-          {isTransactionsLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : transactionsError ? (
-            <Text style={styles.errorText}>
-              Unable to load transaction history.
-            </Text>
-          ) : transactions.length === 0 ? (
-            <Text style={styles.secondaryText}>No transactions yet.</Text>
-          ) : (
+          <QueryBoundary query={transactionsQuery} what="transaction history" empty="No transactions yet.">
+            {(transactions) => (
             <View style={styles.historyList}>
               {transactions.map((transaction) => {
                 const counterpartyLabel = getTransferCounterpartyLabel(
@@ -625,7 +624,8 @@ export function AccountDetailScreen() {
                 );
               })}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

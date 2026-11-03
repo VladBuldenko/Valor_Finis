@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { validateBudgetForm } from "./budget-validation";
@@ -49,6 +50,8 @@ export function BudgetEditScreen() {
     data: budget,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
     queryKey: ["budgets", session?.user.id],
     queryFn: getBudgets,
@@ -61,6 +64,8 @@ export function BudgetEditScreen() {
     data: categories = [],
     isLoading: isCategoriesLoading,
     error: categoriesError,
+    refetch: refetchCategories,
+    isFetching: isCategoriesFetching,
   } = useQuery({
     queryKey: ["categories", session?.user.id],
     queryFn: getCategories,
@@ -133,16 +138,16 @@ export function BudgetEditScreen() {
   if (isAuthLoading || isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="budget" />
       </SafeAreaView>
     );
   }
 
-  if (error) {
+  if (error && budget === undefined) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load budget.</Text>
+          <LoadError what="budget" error={error} retrying={isFetching} onRetry={() => void refetch()} />
         </View>
       </SafeAreaView>
     );
@@ -267,9 +272,9 @@ export function BudgetEditScreen() {
             <Text style={styles.label}>Category</Text>
 
             {isCategoriesLoading ? (
-              <ActivityIndicator style={styles.loader} />
-            ) : categoriesError ? (
-              <Text style={styles.errorText}>Unable to load categories.</Text>
+              <LoadingState what="categories" />
+            ) : categoriesError && categories.length === 0 ? (
+              <LoadError what="categories" error={categoriesError} retrying={isCategoriesFetching} onRetry={() => void refetchCategories()} />
             ) : (
               <Pressable
                 style={styles.selectControl}

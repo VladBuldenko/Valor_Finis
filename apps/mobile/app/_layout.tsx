@@ -11,6 +11,7 @@ import {
 } from "../src/features/auth/auth-context";
 import { RulesEvaluationHost } from "../src/features/financial-rules/rules-evaluation-host";
 import { navigationIntent } from "../src/features/auth/navigation-intent";
+import { installAppFocusRuntime } from "../src/lib/app-focus-runtime";
 import { SessionScope } from "../src/lib/session-scope";
 import { sessionQueryClient } from "../src/lib/session-runtime";
 
@@ -69,6 +70,9 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
+  // The one place app foreground reaches TanStack Query's focus manager.
+  useEffect(() => installAppFocusRuntime(), []);
+
   // AuthProvider is stable; everything that reads server state lives in a
   // SessionScope that remounts when the signed-in user changes.
   return (

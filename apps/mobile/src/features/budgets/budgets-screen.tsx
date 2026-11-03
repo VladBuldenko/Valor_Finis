@@ -9,11 +9,14 @@ import {
   Alert,
   Pressable,
   SafeAreaView,
+  RefreshControl,
   ScrollView,
   Text,
   View,
 } from "react-native";
 
+import { InlineError, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { getBudgetStatus } from "../analytics/analytics.service";
 import type { BudgetStatusItem } from "../analytics/analytics.types";
 import { useAuth } from "../auth/auth-context";
@@ -161,11 +164,7 @@ export function BudgetsScreen() {
   const { session } = useAuth();
   const queryClient = useQueryClient();
 
-  const {
-    data: budgets = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const budgetsQuery = useQuery({
     queryKey: ["budgets", session?.user.id],
     queryFn: getBudgets,
     enabled: Boolean(session),
@@ -173,14 +172,13 @@ export function BudgetsScreen() {
 
   // Reuses the same query key the dashboard uses for budget status, so the
   // two screens share one cached fetch instead of issuing duplicate requests.
-  const {
-    data: budgetStatus = [],
-    error: budgetStatusError,
-  } = useQuery({
+  const budgetStatusQuery = useQuery({
     queryKey: ["analytics", "budget-status", session?.user.id],
     queryFn: getBudgetStatus,
     enabled: Boolean(session),
   });
+  const budgetStatus = budgetStatusQuery.data ?? [];
+  const refresh = useScreenRefresh(() => [refetcherOf(budgetsQuery), refetcherOf(budgetStatusQuery)]);
 
   // budget_id on BudgetStatusItem is the verified, reliable join key back to
   // a budget's own id -- the analytics service computes exactly one status
@@ -234,7 +232,10 @@ export function BudgetsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Budgets</Text>
 
         <Link href="/budgets/new" asChild>
@@ -243,19 +244,20 @@ export function BudgetsScreen() {
           </Pressable>
         </Link>
 
-        {budgetStatusError ? (
-          <Text style={styles.noticeText}>
-            Spending progress is unavailable right now.
-          </Text>
+        {budgetStatusQuery.isError ? (
+          <>
+            <InlineError
+              what="spending progress"
+              error={budgetStatusQuery.error}
+              kind="partial"
+              retrying={budgetStatusQuery.isFetching}
+              onRetry={() => void budgetStatusQuery.refetch()}
+            />
+          </>
         ) : null}
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load budgets.</Text>
-        ) : budgets.length === 0 ? (
-          <Text style={styles.secondaryText}>No budgets yet.</Text>
-        ) : (
+        <QueryBoundary query={budgetsQuery} what="budgets" empty="No budgets yet.">
+          {(budgets) => (
           <View style={styles.list}>
             {budgets.map((budget) => {
               const status = budgetStatusById.get(budget.id);
@@ -321,7 +323,8 @@ export function BudgetsScreen() {
               );
             })}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { stripComments } from "./financial-rule-forbidden-copy.ts";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, "..", "..");
 const APP = join(HERE, "../../../app");
@@ -78,7 +80,7 @@ describe("evaluation mounting", () => {
     assert.ok(layout.indexOf("<SessionScope") < layout.indexOf("<RulesEvaluationHost>"));
   });
 
-  it("only the host listens to AppState for rules; no screen calls evaluate directly", () => {
+  it("only the host listens to AppState for rules; no screen calls evaluate directly (the query focus bridge is the one other listener and never touches rules)", () => {
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -88,7 +90,7 @@ describe("evaluation mounting", () => {
         else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
           const source = readFileSync(path, "utf8");
 
-          if (/AppState\.addEventListener/.test(source) && !/supabase\.ts$|rules-evaluation-host\.tsx$/.test(path)) offenders.push(path);
+          if (/AppState\.addEventListener/.test(source) && !/supabase\.ts$|rules-evaluation-host\.tsx$|app-focus-runtime\.ts$/.test(path)) offenders.push(path);
           if (/evaluateRules\(/.test(source) && !/financial-rule\.(api|service)|rules-evaluation-host\.tsx$/.test(path)) offenders.push(path);
         }
       }
@@ -96,6 +98,11 @@ describe("evaluation mounting", () => {
 
     walk(SRC);
     assert.deepEqual(offenders, []);
+
+    // The allowed focus bridge feeds TanStack's focus manager and nothing else.
+    const bridge = stripComments(read(SRC, "lib/app-focus-runtime.ts") + read(SRC, "lib/app-focus.ts"));
+
+    assert.doesNotMatch(bridge, /evaluate|financialRulesService|requestRulesEvaluation|useRulesEvaluation|fetch\(|apiRequest/i);
   });
 
   it("Income create asks for an evaluation only after a successful create", () => {

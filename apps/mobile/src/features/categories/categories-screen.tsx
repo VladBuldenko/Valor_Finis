@@ -9,11 +9,14 @@ import {
   Alert,
   Pressable,
   SafeAreaView,
+  RefreshControl,
   ScrollView,
   Text,
   View,
 } from "react-native";
 
+import { QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import {
   deleteCategory,
@@ -61,15 +64,12 @@ export function CategoriesScreen() {
   // `include_hidden=true` and stores it under a distinct ["categories",
   // userId, "all"] key so this fetch never overwrites the pickers' cache
   // with hidden categories they don't expect.
-  const {
-    data: categories = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const categoriesQuery = useQuery({
     queryKey: ["categories", session?.user.id, "all"],
     queryFn: () => getCategories({ includeHidden: true }),
     enabled: Boolean(session),
   });
+  const refresh = useScreenRefresh(() => [refetcherOf(categoriesQuery)]);
 
   const toggleVisibilityMutation = useMutation({
     mutationFn: ({
@@ -204,7 +204,10 @@ export function CategoriesScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Categories</Text>
 
         <Link href="/categories/new" asChild>
@@ -213,13 +216,8 @@ export function CategoriesScreen() {
           </Pressable>
         </Link>
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load categories.</Text>
-        ) : categories.length === 0 ? (
-          <Text style={styles.secondaryText}>No categories yet.</Text>
-        ) : (
+        <QueryBoundary query={categoriesQuery} what="categories" empty="No categories yet.">
+          {(categories) => (
           <View style={styles.list}>
             {categories.map((category) => (
               <View key={category.id} style={styles.card}>
@@ -304,7 +302,8 @@ export function CategoriesScreen() {
               </View>
             ))}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

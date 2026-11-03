@@ -2,14 +2,16 @@ import { useState } from "react";
 import { Link } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { isZeroMoney } from "../goals/goal-partitions";
 import { getAccounts } from "./account.service";
@@ -64,23 +66,19 @@ export function AccountsScreen() {
 
   const [listView, setListView] = useState<AccountListView>("active");
 
-  const {
-    data: accounts = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
-
-  const visibleAccounts = accounts.filter((account) =>
-    matchesAccountListView(account, listView),
-  );
+  const refresh = useScreenRefresh(() => [refetcherOf(accountsQuery)]);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Accounts</Text>
 
         <Link href="/accounts/new" asChild>
@@ -130,17 +128,15 @@ export function AccountsScreen() {
           </Pressable>
         </View>
 
-        {isLoading ? (
-          <ActivityIndicator style={styles.loader} />
-        ) : error ? (
-          <Text style={styles.errorText}>Unable to load accounts.</Text>
-        ) : visibleAccounts.length === 0 ? (
-          <Text style={styles.secondaryText}>
-            {getAccountsEmptyMessage(listView, accounts.length)}
-          </Text>
-        ) : (
+        <QueryBoundary
+          query={accountsQuery}
+          what="accounts"
+          isEmpty={(accounts) => !accounts.some((account) => matchesAccountListView(account, listView))}
+          empty={getAccountsEmptyMessage(listView, accountsQuery.data?.length ?? 0)}
+        >
+          {(accounts) => (
           <View style={styles.list}>
-            {visibleAccounts.map((account) => (
+            {accounts.filter((account) => matchesAccountListView(account, listView)).map((account) => (
               <View key={account.id} style={styles.card}>
                 <Text style={styles.name}>{account.name}</Text>
 
@@ -195,7 +191,8 @@ export function AccountsScreen() {
               </View>
             ))}
           </View>
-        )}
+          )}
+        </QueryBoundary>
       </ScrollView>
     </SafeAreaView>
   );

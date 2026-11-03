@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { readApiFailure } from "../../api/api-error-message";
 import { useAuth } from "../auth/auth-context";
 import {
@@ -46,11 +47,16 @@ export function GoalPrioritiesScreen() {
   const queryClient = useQueryClient();
   const userId = session?.user.id;
 
-  const { data: goals = [], isLoading, error } = useQuery({
+  const goalsQuery = useQuery({
     queryKey: ["goals", userId],
     queryFn: getGoals,
     enabled: Boolean(session),
   });
+  const goals = goalsQuery.data ?? [];
+  const { isLoading } = goalsQuery;
+  // A failed background refetch must not replace an order the user is editing:
+  // only a failure with nothing loaded does.
+  const error = goalsQuery.data === undefined ? goalsQuery.error : null;
 
   // null = no local edit yet; the editor then shows the authoritative order.
   const [localDraft, setLocalDraft] = useState<string[] | null>(null);
@@ -114,7 +120,7 @@ export function GoalPrioritiesScreen() {
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="goals" />
       </SafeAreaView>
     );
   }
@@ -123,7 +129,12 @@ export function GoalPrioritiesScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load goals.</Text>
+          <LoadError
+            what="goals"
+            error={error}
+            retrying={goalsQuery.isFetching}
+            onRetry={() => void goalsQuery.refetch()}
+          />
         </View>
       </SafeAreaView>
     );

@@ -5,12 +5,15 @@ import {
   ActivityIndicator,
   Alert,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Text,
   View,
 } from "react-native";
 
+import { InlineError, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import {
   getBudgetStatus,
   getCategorySummary,
@@ -73,7 +76,8 @@ export function DashboardScreen() {
   const { session } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
   // The same shared Inbox data the Inbox screen reads (one derivation).
-  const inboxPresentation = inboxIndicatorPresentation(useInboxData().indicator);
+  const inbox = useInboxData();
+  const inboxPresentation = inboxIndicatorPresentation(inbox.indicator);
 
   // The device's local calendar month, re-read whenever the Dashboard
   // regains focus (VF-019C), so returning to it after a month boundary
@@ -88,11 +92,7 @@ export function DashboardScreen() {
     { month: "long", year: "numeric" },
   );
 
-  const {
-    data: monthlySummary,
-    isLoading: isSummaryLoading,
-    error: summaryError,
-  } = useQuery({
+  const summaryQuery = useQuery({
     queryKey: ["analytics", "monthly-summary", session?.user.id, year, month],
     queryFn: () => getMonthlySummary(year, month),
     enabled: Boolean(session),
@@ -103,21 +103,13 @@ export function DashboardScreen() {
   // including future-dated Expenses, while this one counts records through
   // the server's current date -- so their expense figures may legitimately
   // differ, and neither replaces the other.
-  const {
-    data: financialOverview,
-    isLoading: isFinancialOverviewLoading,
-    error: financialOverviewError,
-  } = useQuery({
+  const financialOverviewQuery = useQuery({
     queryKey: ["analytics", "financial-overview", session?.user.id, year, month],
     queryFn: () => getFinancialOverview(year, month),
     enabled: Boolean(session),
   });
 
-  const {
-    data: categorySummary = [],
-    isLoading: isCategorySummaryLoading,
-    error: categorySummaryError,
-  } = useQuery({
+  const categorySummaryQuery = useQuery({
     queryKey: [
       "analytics",
       "category-summary",
@@ -128,26 +120,25 @@ export function DashboardScreen() {
     queryFn: () => getCategorySummary(year, month),
     enabled: Boolean(session),
   });
+  const categorySummary = categorySummaryQuery.data ?? [];
 
-  const {
-    data: budgetStatus = [],
-    isLoading: isBudgetStatusLoading,
-    error: budgetStatusError,
-  } = useQuery({
+  const budgetStatusQuery = useQuery({
     queryKey: ["analytics", "budget-status", session?.user.id],
     queryFn: getBudgetStatus,
     enabled: Boolean(session),
   });
+  const budgetStatus = budgetStatusQuery.data ?? [];
 
   // Secondary, supplementary data used only to resolve Budget Status
   // currency -- the Budget Status card's own loading/error state stays
   // driven by budgetStatus above, and a failure here surfaces as a small
   // non-blocking notice instead of replacing the whole card.
-  const { data: budgets = [], error: budgetsError } = useQuery({
+  const budgetsQuery = useQuery({
     queryKey: ["budgets", session?.user.id],
     queryFn: getBudgets,
     enabled: Boolean(session),
   });
+  const budgets = budgetsQuery.data ?? [];
 
   const budgetsById = new Map<string, Budget>(
     budgets.map((budget) => [budget.id, budget]),
@@ -156,24 +147,34 @@ export function DashboardScreen() {
   // Goals are the authoritative source for id/currency/target_amount/
   // current_amount -- mirrors goals-screen.tsx, where the Goal list (not
   // goal-progress) drives what renders.
-  const {
-    data: goals = [],
-    isLoading: isGoalsLoading,
-    error: goalsError,
-  } = useQuery({
+  const goalsQuery = useQuery({
     queryKey: ["goals", session?.user.id],
     queryFn: getGoals,
     enabled: Boolean(session),
   });
+  const goals = goalsQuery.data ?? [];
 
   // Supplementary: Remaining/Progress rows only. A failure here must not
   // blank the Goal list -- it surfaces as a small non-blocking notice,
   // same as goalProgressError on goals-screen.tsx.
-  const { data: goalProgress = [], error: goalProgressError } = useQuery({
+  const goalProgressQuery = useQuery({
     queryKey: ["analytics", "goal-progress", session?.user.id],
     queryFn: getGoalProgress,
     enabled: Boolean(session),
   });
+  const goalProgress = goalProgressQuery.data ?? [];
+  const refresh = useScreenRefresh(() => [
+    refetcherOf(summaryQuery),
+    refetcherOf(financialOverviewQuery),
+    refetcherOf(categorySummaryQuery),
+    refetcherOf(budgetStatusQuery),
+    refetcherOf(budgetsQuery),
+    refetcherOf(goalsQuery),
+    refetcherOf(goalProgressQuery),
+    // The Inbox entry's sources (GET only; the indicator logic is unchanged).
+    refetcherOf(inbox.proposals),
+    refetcherOf(inbox.alerts),
+  ]);
 
   // goal_id is the join key back to Goal.id -- never join by name, never
   // assume array order matches (mirrors goals-screen.tsx / budgetsById above).
@@ -206,7 +207,10 @@ export function DashboardScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
+      >
         <Text style={styles.title}>Valor Finis</Text>
 
         <Text style={styles.subtitle}>Dashboard</Text>
@@ -216,13 +220,8 @@ export function DashboardScreen() {
 
           <Text style={styles.secondaryText}>{periodLabel}</Text>
 
-          {isSummaryLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : summaryError ? (
-            <Text style={styles.errorText}>
-              Unable to load monthly summary.
-            </Text>
-          ) : monthlySummary ? (
+          <QueryBoundary query={summaryQuery} what="monthly summary" isEmpty={() => false}>
+            {(monthlySummary) => (
             <>
               <Text style={styles.amount}>
                 {formatAmount(
@@ -243,7 +242,8 @@ export function DashboardScreen() {
                 </Text>
               ) : null}
             </>
-          ) : null}
+            )}
+          </QueryBoundary>
         </View>
 
         <View style={styles.card}>
@@ -251,13 +251,8 @@ export function DashboardScreen() {
 
           <Text style={styles.secondaryText}>{periodLabel}</Text>
 
-          {isFinancialOverviewLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : financialOverviewError ? (
-            <Text style={styles.errorText}>
-              Unable to load income and expenses.
-            </Text>
-          ) : financialOverview ? (
+          <QueryBoundary query={financialOverviewQuery} what="income and expenses" isEmpty={() => false}>
+            {(financialOverview) => (
             <>
               <Text style={styles.secondaryText}>
                 {formatOverviewPeriodNote(financialOverview)}
@@ -309,7 +304,8 @@ export function DashboardScreen() {
                 </View>
               </View>
             </>
-          ) : null}
+            )}
+          </QueryBoundary>
 
           <Link href="/overview" asChild>
             <Pressable accessibilityRole="button" style={styles.button}>
@@ -321,17 +317,12 @@ export function DashboardScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Spending by category</Text>
 
-          {isCategorySummaryLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : categorySummaryError ? (
-            <Text style={styles.errorText}>
-              Unable to load category spending.
-            </Text>
-          ) : categorySummary.length === 0 ? (
-            <Text style={styles.secondaryText}>
-              No spending by category this month.
-            </Text>
-          ) : (
+          <QueryBoundary
+            query={categorySummaryQuery}
+            what="category spending"
+            empty="No spending by category this month."
+          >
+            {() => (
             <View style={styles.categoryList}>
               {categorySummary.map((category) => (
                 <View
@@ -363,27 +354,25 @@ export function DashboardScreen() {
                 </View>
               ))}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </View>
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Budget status</Text>
 
-          {budgetsError ? (
-            <Text style={styles.noticeText}>
-              Budget currency details are unavailable right now.
-            </Text>
+          {budgetsQuery.isError && budgetsQuery.data === undefined ? (
+            <InlineError
+              what="budget currency details"
+              error={budgetsQuery.error}
+              kind="partial"
+              retrying={budgetsQuery.isFetching}
+              onRetry={() => void budgetsQuery.refetch()}
+            />
           ) : null}
 
-          {isBudgetStatusLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : budgetStatusError ? (
-            <Text style={styles.errorText}>
-              Unable to load budget status.
-            </Text>
-          ) : budgetStatus.length === 0 ? (
-            <Text style={styles.secondaryText}>No budgets yet.</Text>
-          ) : (
+          <QueryBoundary query={budgetStatusQuery} what="budget status" empty="No budgets yet.">
+            {() => (
             <View style={styles.categoryList}>
               {budgetStatus.map((budget) => {
                 const currency = budgetsById.get(budget.budget_id)?.currency;
@@ -469,27 +458,30 @@ export function DashboardScreen() {
                 );
               })}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </View>
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Goal progress</Text>
 
-          {goalProgressError ? (
-            <Text style={styles.noticeText}>
-              Goal progress is temporarily unavailable.
-            </Text>
+          {goalProgressQuery.isError && goalProgressQuery.data === undefined ? (
+            <InlineError
+              what="goal progress"
+              error={goalProgressQuery.error}
+              kind="partial"
+              retrying={goalProgressQuery.isFetching}
+              onRetry={() => void goalProgressQuery.refetch()}
+            />
           ) : null}
 
-          {isGoalsLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : goalsError ? (
-            <Text style={styles.errorText}>Unable to load goals.</Text>
-          ) : currentGoals.length === 0 ? (
-            <Text style={styles.secondaryText}>
-              {goals.length === 0 ? "No goals yet." : "No current goals."}
-            </Text>
-          ) : (
+          <QueryBoundary
+            query={goalsQuery}
+            what="goals"
+            isEmpty={() => currentGoals.length === 0}
+            empty={goals.length === 0 ? "No goals yet." : "No current goals."}
+          >
+            {() => (
             <View style={styles.categoryList}>
               {currentGoals.map((goal) => {
                 const progress = goalProgressById.get(goal.id);
@@ -521,7 +513,8 @@ export function DashboardScreen() {
                 );
               })}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </View>
 
         {/* Navigation only (VF-017F) -- Accounts data is never fetched or

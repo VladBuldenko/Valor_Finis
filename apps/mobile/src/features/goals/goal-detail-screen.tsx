@@ -13,6 +13,7 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  RefreshControl,
   ScrollView,
   Text,
   TextInput,
@@ -21,6 +22,8 @@ import {
 
 import { getApiErrorMessage, readApiFailure } from "../../api/api-error-message";
 import { getAccounts } from "../accounts/account.service";
+import { LoadError, LoadingState, QueryBoundary } from "../../components/query-states";
+import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import {
   normalizeGoalDecimalAmount,
@@ -127,22 +130,18 @@ export function GoalDetailScreen() {
   // every other Goal screen uses (see goal-edit-screen.tsx). Balance
   // (current_amount) on this resolved Goal is already ledger-derived by
   // the backend (VF-016D); this screen never recalculates it locally.
-  const {
-    data: goal,
-    isLoading: isGoalLoading,
-    error: goalError,
-  } = useQuery({
+  const goalQuery = useQuery({
     queryKey: ["goals", session?.user.id],
     queryFn: getGoals,
     enabled: Boolean(session),
     select: (goals) => goals.find((candidate) => candidate.id === id),
   });
+  const goal = goalQuery.data;
+  const isGoalLoading = goalQuery.isLoading;
+  // Only a failure with nothing to show replaces the screen.
+  const goalError = goalQuery.isError && goalQuery.data === undefined ? goalQuery.error : null;
 
-  const {
-    data: transactions = [],
-    isLoading: isTransactionsLoading,
-    error: transactionsError,
-  } = useQuery({
+  const transactionsQuery = useQuery({
     queryKey: ["goals", "transactions", session?.user.id, id],
     queryFn: () => getGoalTransactions(id),
     enabled: Boolean(session) && Boolean(id),
@@ -153,15 +152,18 @@ export function GoalDetailScreen() {
   // selector and Account names for allocations and linked history; there is
   // never a per-allocation request. A load failure only degrades names to
   // "Account unavailable" and empties the reservation selector.
-  const {
-    data: accounts = [],
-    isLoading: isAccountsLoading,
-    error: accountsError,
-  } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
     enabled: Boolean(session),
   });
+  const accounts = accountsQuery.data ?? [];
+  const isAccountsLoading = accountsQuery.data === undefined && !accountsQuery.isError;
+  const refresh = useScreenRefresh(() => [
+    refetcherOf(goalQuery),
+    refetcherOf(transactionsQuery),
+    refetcherOf(accountsQuery),
+  ]);
 
   const [transactionType, setTransactionType] = useState<
     "contribution" | "withdrawal"
@@ -358,7 +360,7 @@ export function GoalDetailScreen() {
   if (isAuthLoading || isGoalLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="goal" />
       </SafeAreaView>
     );
   }
@@ -367,7 +369,12 @@ export function GoalDetailScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>Unable to load goal.</Text>
+          <LoadError
+            what="goal"
+            error={goalError}
+            retrying={goalQuery.isFetching}
+            onRetry={() => void goalQuery.refetch()}
+          />
         </View>
       </SafeAreaView>
     );
@@ -451,6 +458,7 @@ export function GoalDetailScreen() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          refreshControl={<RefreshControl refreshing={refresh.refreshing} onRefresh={refresh.onRefresh} />}
         >
           <Text style={styles.title}>{goal.name}</Text>
 
@@ -565,12 +573,15 @@ export function GoalDetailScreen() {
                     {RESERVATION_HELPER_TEXT}
                   </Text>
 
-                  {accountsError ? (
-                    <Text style={styles.errorText}>
-                      Unable to load accounts.
-                    </Text>
+                  {accountsQuery.isError && accountsQuery.data === undefined ? (
+                    <LoadError
+                      what="accounts"
+                      error={accountsQuery.error}
+                      retrying={accountsQuery.isFetching}
+                      onRetry={() => void accountsQuery.refetch()}
+                    />
                   ) : isAccountsLoading ? (
-                    <ActivityIndicator style={styles.loader} />
+                    <LoadingState what="accounts" />
                   ) : contributionAccountOptions.length === 0 ? (
                     <Text style={styles.secondaryText}>
                       No active {goal.currency} account to reserve from.
@@ -668,15 +679,8 @@ export function GoalDetailScreen() {
 
           <Text style={styles.sectionTitle}>Transaction history</Text>
 
-          {isTransactionsLoading ? (
-            <ActivityIndicator style={styles.loader} />
-          ) : transactionsError ? (
-            <Text style={styles.errorText}>
-              Unable to load transaction history.
-            </Text>
-          ) : transactions.length === 0 ? (
-            <Text style={styles.secondaryText}>No transactions yet.</Text>
-          ) : (
+          <QueryBoundary query={transactionsQuery} what="transaction history" empty="No transactions yet.">
+            {(transactions) => (
             <View style={styles.historyList}>
               {transactions.map((transaction) => (
                 <View key={transaction.id} style={styles.historyRow}>
@@ -709,7 +713,8 @@ export function GoalDetailScreen() {
                 </View>
               ))}
             </View>
-          )}
+            )}
+          </QueryBoundary>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

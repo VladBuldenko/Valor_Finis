@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { getAccounts } from "../accounts/account.service";
 import type { Account } from "../accounts/account.types";
+import { InlineError, LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { formatLocalCalendarDate } from "./local-calendar-date";
 import { TransferAccountPicker } from "./transfer-account-picker";
@@ -90,6 +91,8 @@ export function TransferCreateScreen() {
     data: accounts,
     isLoading: isAccountsLoading,
     error: accountsError,
+    refetch: refetchAccounts,
+    isFetching: isAccountsFetching,
   } = useQuery({
     queryKey: ["accounts", session?.user.id],
     queryFn: getAccounts,
@@ -236,7 +239,7 @@ export function TransferCreateScreen() {
   if (isAccountsLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator style={styles.loader} />
+        <LoadingState what="accounts" />
       </SafeAreaView>
     );
   }
@@ -248,11 +251,19 @@ export function TransferCreateScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          <Text style={styles.errorText}>
-            {accountsError
-              ? "Unable to load accounts. A transfer needs your accounts."
-              : "Accounts are not available."}
-          </Text>
+          {accountsError ? (
+            <>
+              <LoadError
+                what="accounts"
+                error={accountsError}
+                retrying={isAccountsFetching}
+                onRetry={() => void refetchAccounts()}
+              />
+              <Text style={styles.helperText}>A transfer needs your accounts.</Text>
+            </>
+          ) : (
+            <Text style={styles.errorText}>Accounts are not available.</Text>
+          )}
         </View>
       </SafeAreaView>
     );
@@ -298,9 +309,16 @@ export function TransferCreateScreen() {
           <Text style={styles.helperText}>* Required fields</Text>
 
           {accountsError ? (
-            <Text style={styles.noticeText}>
-              Unable to refresh accounts. The list below may be out of date.
-            </Text>
+            <>
+              <Text style={styles.noticeText}>The list below may be out of date.</Text>
+              <InlineError
+                what="accounts"
+                error={accountsError}
+                kind="refresh"
+                retrying={isAccountsFetching}
+                onRetry={() => void refetchAccounts()}
+              />
+            </>
           ) : null}
 
           <View style={styles.formGroup}>

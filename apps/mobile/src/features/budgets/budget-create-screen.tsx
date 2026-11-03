@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 
+import { LoadError, LoadingState } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { validateBudgetForm } from "./budget-validation";
@@ -68,6 +69,8 @@ export function BudgetCreateScreen() {
     data: categories = [],
     isLoading: isCategoriesLoading,
     error: categoriesError,
+    refetch: refetchCategories,
+    isFetching: isCategoriesFetching,
   } = useQuery({
     queryKey: ["categories", session?.user.id],
     queryFn: getCategories,
@@ -185,9 +188,9 @@ export function BudgetCreateScreen() {
             <Text style={styles.label}>Category</Text>
 
             {isCategoriesLoading ? (
-              <ActivityIndicator style={styles.loader} />
-            ) : categoriesError ? (
-              <Text style={styles.errorText}>Unable to load categories.</Text>
+              <LoadingState what="categories" />
+            ) : categoriesError && categories.length === 0 ? (
+              <LoadError what="categories" error={categoriesError} retrying={isCategoriesFetching} onRetry={() => void refetchCategories()} />
             ) : (
               <Pressable
                 style={styles.selectControl}
