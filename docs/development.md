@@ -449,3 +449,13 @@ and needs its own explicit authorization:
    e0503e9ca9d3` is available while the table is empty and refuses once alerts exist; a failed
    upgrade rolls back as one transaction (transactional DDL). E9B must not deploy before step 6
    passes.
+
+---
+
+# 🧪 Staging tooling (VF-QA-1)
+
+Building, resetting and seeding the isolated staging database is done only with `services/api/staging_ops`, never with a hand-typed
+`alembic upgrade` or ad-hoc SQL. Every mutating command passes a fail-closed identity guard against an owner-held approved-targets
+file stored outside the repository. Runbook, owner inputs and checklists: [operations/staging/](operations/staging/staging-architecture-and-runbook.md).
+Tests: `tests/unit/staging_tooling` (no database) and `tests/integration/staging_tooling` (they start their own throw-away local
+PostgreSQL and skip with an explicit reason when no server binaries exist). They never contact a cloud service.

@@ -101,6 +101,8 @@ argument is passed and the configured Supabase URL equals the staging project. N
 `_staging` suffix on a non-allowlisted host is refused; an allowlisted host with a production-like name is refused;
 bootstrap of a non-empty database is refused; a suffix-only match is refused.
 
+[VF-QA-1 implementation note, 2026-11-03: procedure (a) is implemented as `services/api/staging_ops` (identity guard, empty-database bootstrap, reset, seed) with the negative tests above. In addition to the five conditions, the allowlist entry pins the database oid, the Supabase project is verified, and Alembic's own connection re-verifies the identity before any DDL. See [docs/operations/staging/](../operations/staging/staging-architecture-and-runbook.md). Staging itself is not provisioned. Procedure (b), the QA-2 rehearsals, is not implemented: the bootstrap has no explicit-revision mode yet.]
+
 **(b) Guarded upgrade rehearsals (QA-2).** On a disposable rehearsal database that also passes the identity guard: build
 it to `e0503e9ca9d3` with the bootstrap's explicit-revision mode, load representative data (including rows the E9A
 and E10 checks inspect), run the guarded runner for E9A and its post-check, then for E10 and its post-check, each on PG16 and

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "staging": [
+    {
+      "id": "STG-1",
+      "database": {
+        "host": "staging-db.example.invalid",
+        "port": 5432,
+        "name": "valor_staging",
+        "oid": 16384
+      },
+      "supabase_project_ref": "examplestagingrefaaaaa",
+      "approved_by": "Replace with the owner's name",
+      "approved_on": "2000-01-01"
+    }
+  ],
+  "production_denylist": {
+    "database_hosts": ["production-db.example.invalid"],
+    "supabase_project_refs": ["exampleproductionrefbbb"],
+    "database_names": ["valor"],
+    "recorded_by": "Replace with the owner's name",
+    "recorded_on": "2000-01-01"
+  }
+}
