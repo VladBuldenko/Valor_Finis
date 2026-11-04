@@ -14,13 +14,14 @@ Why:
 """
 
 import json
-from typing import List, Tuple
+from contextlib import contextmanager
+from typing import Callable, Iterator, List, Tuple
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
-from staging_ops import binding
+from staging_ops import binding, reset_scope
 from staging_ops.errors import StagingRefused
 from staging_ops.identity import ConfiguredTarget, DatabaseFacts, VerifiedTarget
 
@@ -133,64 +134,47 @@ def describe_data(verified: VerifiedTarget) -> Tuple[List[Tuple[str, int]], int]
     return counts, max(unexpected - len(counts), 0)
 
 
-_DROP_STATEMENTS_SQL = """
-SELECT stmt FROM (
-  SELECT 1 AS ord, format('DROP VIEW IF EXISTS %I.%I CASCADE', n.nspname, c.relname) AS stmt
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'v' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 2, format('DROP MATERIALIZED VIEW IF EXISTS %I.%I CASCADE', n.nspname, c.relname)
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'm' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 3, format('DROP FOREIGN TABLE IF EXISTS %I.%I CASCADE', n.nspname, c.relname)
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'f' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 4, format('DROP TABLE IF EXISTS %I.%I CASCADE', n.nspname, c.relname)
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind IN ('r','p') AND NOT c.relispartition AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 5, format('DROP SEQUENCE IF EXISTS %I.%I CASCADE', n.nspname, c.relname)
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'S' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 6, format('DROP %s IF EXISTS %I.%I(%s) CASCADE',
-                   CASE p.prokind WHEN 'p' THEN 'PROCEDURE' WHEN 'a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
-                   n.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
-    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-   WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')
-  UNION ALL
-  SELECT 7, format('DROP TYPE IF EXISTS %I.%I CASCADE', n.nspname, t.typname)
-    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-   WHERE n.nspname = 'public' AND t.typtype IN ('e','d','r','m') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')
-) statements ORDER BY ord, stmt
-"""
-
-
-# Removes every application object from `public` in ONE transaction.
-# The connection is bound to the verified identity (bound_engine), takes the
-# staging advisory lock, drops views, tables, sequences, functions and types
-# that no extension owns, and commits only when nothing unexpected remains.
-# Supabase-managed schemas (auth, storage, ...) and roles are never touched.
+# Lists the objects outside schema `public` that depend on application
+# objects. Read-only; the reset preflight uses it so the operator learns of a
+# blocker before being asked to confirm anything.
 # Parameters:
 # - verified: verified target.
 # Returns:
-# - Number of statements executed.
+# - (dependent, referenced) descriptions; empty when the reset stays inside its scope.
+def external_dependents(verified: VerifiedTarget) -> List[Tuple[str, str]]:
+    engine = _engine(verified.configured, PROBE_OPTIONS)
+
+    try:
+        with engine.connect() as connection:
+            return reset_scope.external_dependents(connection)
+    except Exception:
+        raise StagingRefused("PROBE_FAILED", "the database could not be queried") from None
+    finally:
+        engine.dispose()
+
+
+# Removes every application object from `public` in ONE transaction, never
+# outside it (see reset_scope for the four layers that guarantee this).
+# The connection is bound to the verified identity (bound_engine), takes the
+# staging advisory lock, and the transaction commits only when no out-of-scope
+# object changed and nothing unexpected remains in `public`. Supabase-managed
+# schemas (auth, storage, ...) and roles are never touched.
+# Parameters:
+# - verified: verified target.
+# Returns:
+# - Number of objects dropped.
 # Raises:
-# - StagingRefused: LOCK_BUSY, RESET_INCOMPLETE; the transaction rolls back.
+# - StagingRefused: LOCK_BUSY, EXTERNAL_DEPENDENCIES, EXTERNAL_OBJECT_CHANGED,
+#   RESET_BLOCKED, RESET_INCOMPLETE, RESET_FAILED; the transaction rolls back.
 def destroy_application_objects(verified: VerifiedTarget) -> int:
     engine = bound_engine(verified)
 
     try:
         with engine.begin() as connection:
             if not connection.exec_driver_sql("SELECT pg_try_advisory_xact_lock(%s, %s)" % binding.LOCK_KEYS).scalar():
-                raise StagingRefused("LOCK_BUSY", "another staging bootstrap or reset is running")
+                raise StagingRefused("LOCK_BUSY", "another staging bootstrap, reset or seed is running")
 
-            statements = [row[0] for row in connection.execute(text(_DROP_STATEMENTS_SQL))]
-
-            for statement in statements:
-                connection.exec_driver_sql(statement)
+            dropped = reset_scope.drop_scope(connection)
 
             if connection.exec_driver_sql(binding.UNEXPECTED_OBJECTS_SQL).scalar():
                 raise StagingRefused("RESET_INCOMPLETE", "schema objects remain after the reset; nothing was committed")
@@ -201,7 +185,60 @@ def destroy_application_objects(verified: VerifiedTarget) -> int:
     finally:
         engine.dispose()
 
-    return len(statements)
+    return dropped
+
+
+# Holds the staging advisory lock for the whole seed, on a dedicated
+# connection bound to the verified identity.
+# The services commit between steps, so only a SESSION lock outlives them; it
+# vanishes with the connection, so a crashed seed never leaves it behind.
+# Parameters:
+# - verified: verified target.
+# Yields:
+# - A callable that raises SEED_LOCK_LOST unless this connection still holds the lock.
+# Raises:
+# - StagingRefused: LOCK_BUSY when another seed, reset or bootstrap holds it.
+@contextmanager
+def seed_lock(verified: VerifiedTarget) -> Iterator[Callable[[], None]]:
+    engine = bound_engine(verified)
+    connection = None
+
+    try:
+        try:
+            connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+            acquired = connection.exec_driver_sql("SELECT pg_try_advisory_lock(%s, %s)" % binding.LOCK_KEYS).scalar()
+        except StagingRefused:
+            raise
+        except Exception:
+            raise StagingRefused("PROBE_FAILED", "the seed lock could not be acquired") from None
+
+        if not acquired:
+            raise StagingRefused("LOCK_BUSY", "another staging bootstrap, reset or seed is running")
+
+        held_sql = (
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND objid = %s AND objsubid = 2 "
+            "AND pid = pg_backend_pid() AND granted" % binding.LOCK_KEYS
+        )
+
+        def check() -> None:
+            try:
+                held = connection.exec_driver_sql(held_sql).scalar()
+            except Exception:
+                raise StagingRefused("SEED_LOCK_LOST", "the seed lock connection failed; stop and inspect the database before any rerun") from None
+
+            if not held:
+                raise StagingRefused("SEED_LOCK_LOST", "the seed lock is no longer held; stop and inspect the database before any rerun")
+
+        # The body's own exceptions propagate unchanged through this yield.
+        yield check
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        engine.dispose()
 
 
 # Serializes the verified identity for the Alembic hook (VF_STAGING_BINDING).

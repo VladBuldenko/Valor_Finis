@@ -7,10 +7,12 @@ real database. Secret-looking values are assembled from fragments so a
 repository scan never sees a complete token.
 """
 
+import contextlib
 import json
 import os
 from typing import Callable, List, Optional, Sequence
 
+from staging_ops.errors import StagingRefused
 from staging_ops.identity import DatabaseFacts
 from staging_ops.operations import AlembicResult, Operations
 from staging_ops.target_config import ApprovedTargets, parse_approved_targets
@@ -113,6 +115,8 @@ class FakeOps:
         alembic_output: str = "",
         supabase_error: Optional[Exception] = None,
         tables: Sequence[str] = MODEL_TABLES,
+        dependents: Sequence[tuple] = (),
+        lock_busy: bool = False,
     ) -> None:
         self.probes: List[DatabaseFacts] = list(probes) if probes is not None else [facts(), facts(), migrated_facts()]
         self.heads = heads
@@ -120,6 +124,11 @@ class FakeOps:
         self.alembic_output = alembic_output
         self.supabase_error = supabase_error
         self.tables = tables
+        self.dependents = list(dependents)
+        self.lock_busy = lock_busy
+        self.lock_checks = 0
+        self.lock_entered = 0
+        self.lock_released = 0
         self.calls: List[str] = []
         self.alembic_environments: List[dict] = []
         self.alembic_arguments: List[tuple] = []
@@ -164,6 +173,28 @@ class FakeOps:
 
         return [("accounts", 12), ("goals", 3)], 5
 
+    def _external_dependents(self, verified):
+        self.calls.append("external_dependents")
+
+        return self.dependents
+
+    @contextlib.contextmanager
+    def _seed_lock(self, verified):
+        self.calls.append("seed_lock")
+
+        if self.lock_busy:
+            raise StagingRefused("LOCK_BUSY", "another staging bootstrap, reset or seed is running")
+
+        self.lock_entered += 1
+
+        def check():
+            self.lock_checks += 1
+
+        try:
+            yield check
+        finally:
+            self.lock_released += 1
+
     def _destroy(self, verified) -> int:
         self.calls.append("destroy")
         self.destroyed += 1
@@ -184,7 +215,9 @@ class FakeOps:
             expected_tables=self._expected_tables,
             describe=self._describe,
             destroy=self._destroy,
+            external_dependents=self._external_dependents,
             open_session=self._open_session,
+            seed_lock=self._seed_lock,
         )
 
 

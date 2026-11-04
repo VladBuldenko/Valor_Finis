@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, ContextManager, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from staging_ops import database
 from staging_ops.identity import ConfiguredTarget, DatabaseFacts, VerifiedTarget
@@ -48,7 +48,11 @@ class Operations:
     expected_tables: Callable[[], Iterable[str]]
     describe: Callable[[VerifiedTarget], Tuple[List[Tuple[str, int]], int]]
     destroy: Callable[[VerifiedTarget], int]
+    external_dependents: Callable[[VerifiedTarget], List[Tuple[str, str]]]
     open_session: Optional[Callable[[VerifiedTarget], object]] = None
+    # Returns a context manager holding the staging advisory lock; entering it yields a
+    # zero-argument callable that raises StagingRefused if the lock is no longer held.
+    seed_lock: Optional[Callable[[VerifiedTarget], ContextManager[Callable[[], None]]]] = None
 
 
 # Builds the exact environment of the Alembic child process.
@@ -125,5 +129,7 @@ def real_operations() -> Operations:
         expected_tables=_expected_tables,
         describe=database.describe_data,
         destroy=database.destroy_application_objects,
+        external_dependents=database.external_dependents,
         open_session=_open_session,
+        seed_lock=database.seed_lock,
     )

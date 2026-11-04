@@ -5,6 +5,8 @@ import copy
 import os
 from typing import Dict, Tuple
 
+from staging_ops import database
+from staging_ops.identity import verify_configuration, verify_facts
 from staging_ops.operations import Operations, real_operations
 from staging_ops.target_config import parse_approved_targets
 
@@ -79,6 +81,8 @@ class SpyOperations:
             describe=self.real.describe,
             destroy=self._destroy,
             open_session=self.real.open_session,
+            external_dependents=self.real.external_dependents,
+            seed_lock=self.real.seed_lock,
         )
 
 
@@ -100,3 +104,27 @@ def snapshot(cluster, database: str) -> Tuple[tuple, tuple]:
 
 def copy_document(document: dict) -> dict:
     return copy.deepcopy(document)
+
+
+def verified_target(cluster, name: str, oid: int):
+    """(environ, VerifiedTarget) for a database that passed the full identity guard."""
+
+    environ = environ_for(cluster, name)
+    configured = verify_configuration("staging", "STG-1", environ, approved_for(cluster, name, oid))
+
+    return environ, verify_facts(configured, database.probe_database(configured))
+
+
+def execute(cluster, name: str, *statements: str) -> None:
+    """Runs DDL/DML as the cluster superuser (autocommit); test setup only."""
+
+    with contextlib.closing(cluster.connect(name)) as connection, connection.cursor() as cursor:
+        for statement in statements:
+            cursor.execute(statement)
+
+
+def fetch(cluster, name: str, sql: str) -> list:
+    with contextlib.closing(cluster.connect(name)) as connection, connection.cursor() as cursor:
+        cursor.execute(sql)
+
+        return cursor.fetchall()

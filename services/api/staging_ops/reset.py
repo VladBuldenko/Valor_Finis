@@ -4,7 +4,9 @@ Explicit, destructive staging reset.
 What:
     Destroys the application schema and data of ONE verified staging database,
     then rebuilds it to head with the same controlled bootstrap, and records
-    sanitized evidence.
+    sanitized evidence. The destroy step is confined to schema `public`
+    (reset_scope.py): it is refused, not cascaded, when anything outside that
+    schema depends on an application object.
 
 Why:
     Reset is never a side effect: nothing calls it after a failed test. It
@@ -21,7 +23,15 @@ from staging_ops.errors import StagingRefused, unexpected
 from staging_ops.evidence import EvidenceRecord, utc_now, write_evidence
 from staging_ops.identity import assert_same_identity
 from staging_ops.operations import Operations
+from staging_ops.redaction import redact
 from staging_ops.target_config import ApprovedTargets
+
+MAX_LISTED_BLOCKERS = 20
+
+# Refusals of the destroy transaction after which the database is unchanged.
+DESTROY_ROLLED_BACK = frozenset({
+    "LOCK_BUSY", "EXTERNAL_DEPENDENCIES", "EXTERNAL_OBJECT_CHANGED", "RESET_BLOCKED", "RESET_INCOMPLETE", "RESET_FAILED",
+})
 
 
 # Reads one line from an interactive terminal.
@@ -65,13 +75,30 @@ def reset(
         if confirm is None:
             raise StagingRefused("CONFIRMATION_MISSING", "a reset needs an operator confirmation")
 
+        # The scope check runs before the operator is asked to confirm anything:
+        # a reset that cannot stay inside schema `public` is never offered.
+        blockers = operations.external_dependents(verified)
+        record.details["external_dependents"] = len(blockers)
+
+        if blockers:
+            for dependent, referenced in blockers[:MAX_LISTED_BLOCKERS]:
+                say(f"  blocker: {redact(dependent)} depends on {redact(referenced)}")
+
+            raise StagingRefused(
+                "EXTERNAL_DEPENDENCIES",
+                f"{len(blockers)} object(s) outside schema public depend on application objects; remove or re-home them deliberately, nothing was changed",
+            )
+
+        record.step("no-external-dependents")
         tables, other_objects = operations.describe(verified)
         phrase = configured.confirmation_phrase()
         say(
-            "RESET WILL PERMANENTLY DESTROY the application schema and data of this staging database:\n"
+            "RESET WILL PERMANENTLY DESTROY the application objects and data of schema public in this staging database:\n"
             + "".join(f"  {name}: {count} rows\n" for name, count in tables)
             + f"  plus {other_objects} other schema objects (views, sequences, types, functions).\n"
-            "Not affected: Supabase Auth users, Storage objects, other schemas.\n"
+            "It uses DROP ... RESTRICT only and commits only if no object outside schema public changed;\n"
+            "otherwise it is refused or rolled back. Not touched: Supabase Auth users, Storage objects and every\n"
+            "other schema. Privileges granted on the dropped objects go with them.\n"
             "The database is then rebuilt to the Alembic head and must be re-seeded."
         )
         record.details["tables_to_destroy"] = len(tables)
@@ -89,8 +116,17 @@ def reset(
         record.step("identity-unchanged-before-destroy")
 
         record.outcome = "FAILED"  # destroy has begun
-        statements = operations.destroy(verified)
-        record.details["drop_statements"] = statements
+
+        try:
+            statements = operations.destroy(verified)
+        except StagingRefused as error:
+            # The destroy step is one transaction: these refusals mean it was rolled back.
+            if error.code in DESTROY_ROLLED_BACK:
+                record.outcome = "REFUSED"
+
+            raise
+
+        record.details["objects_dropped"] = statements
         record.step("application-objects-destroyed")
 
         emptied = operations.probe(configured)

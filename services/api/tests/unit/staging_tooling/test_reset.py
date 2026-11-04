@@ -74,18 +74,66 @@ class TestRefusals:
         assert caught.value.code == "CONFIRMATION_NOT_INTERACTIVE"
 
 
+class TestScopePreflight:
+    DEPENDENTS = [("view analytics.totals", "table accounts"), ("constraint fk_x on table audit.log", "table goals")]
+
+    def test_external_dependents_are_refused_before_any_prompt_or_description(self):
+        asked, said = [], []
+        ops = h.FakeOps(probes=reset_probes(), dependents=self.DEPENDENTS)
+
+        error = refuse(ops, lambda prompt: asked.append(prompt) or PHRASE, "EXTERNAL_DEPENDENCIES", said=said)
+
+        assert asked == [] and "describe" not in ops.calls
+        assert "2 object(s)" in error.message and any("analytics.totals" in line for line in said)
+
+    def test_a_scope_refusal_by_the_destroy_transaction_is_reported_as_unchanged(self):
+        for code in ("EXTERNAL_DEPENDENCIES", "EXTERNAL_OBJECT_CHANGED", "RESET_BLOCKED", "LOCK_BUSY"):
+            ops = h.FakeOps(probes=reset_probes())
+
+            def destroy(_verified, code=code):
+                raise StagingRefused(code, "rolled back")
+
+            operations = ops.as_operations()
+            operations.destroy = destroy
+
+            with pytest.raises(StagingRefused) as caught:
+                reset("staging", "STG-1", h.good_environ(), h.approved(), operations, lambda _p: PHRASE, None, say=lambda _t: None)
+
+            assert caught.value.code == code and not caught.value.mutated and not ops.alembic_arguments
+
+    def test_an_unclassified_destroy_failure_stays_reported_as_possibly_changed(self):
+        ops = h.FakeOps(probes=reset_probes())
+        operations = ops.as_operations()
+        operations.destroy = lambda _verified: (_ for _ in ()).throw(RuntimeError("driver text"))
+
+        with pytest.raises(StagingRefused) as caught:
+            reset("staging", "STG-1", h.good_environ(), h.approved(), operations, lambda _p: PHRASE, None, say=lambda _t: None)
+
+        assert caught.value.code == "UNEXPECTED" and caught.value.mutated
+
+    def test_blocker_text_is_redacted(self):
+        said = []
+        ops = h.FakeOps(probes=reset_probes(), dependents=[(f"foreign table x server postgres://u:{h.PASSWORD}@{h.STAGING_HOST}/d", "table accounts")])
+
+        refuse(ops, lambda _p: PHRASE, "EXTERNAL_DEPENDENCIES", said=said)
+
+        assert h.PASSWORD not in "\n".join(said) and h.STAGING_HOST not in "\n".join(said)
+
+
 class TestConfirmedReset:
     def test_destroys_then_rebuilds_in_a_safe_order_and_describes_the_loss(self):
         ops = h.FakeOps(probes=reset_probes())
         said = []
         record = run(ops, lambda _p: PHRASE, said=said)
 
-        assert ops.calls == ["supabase", "probe", "describe", "probe", "destroy", "probe", "heads", "probe", "alembic", "probe"]
+        assert ops.calls == ["supabase", "probe", "external_dependents", "describe", "probe", "destroy", "probe", "heads", "probe", "alembic", "probe"]
         assert ops.alembic_arguments == [("upgrade", "head")]
         assert record.outcome == "OK" and record.details["rows_to_destroy"] == 15
 
         text = "\n".join(said)
         assert "PERMANENTLY DESTROY" in text and "accounts: 12 rows" in text and "Supabase Auth users" in text
+        # Only claims the SQL guarantees: RESTRICT, rollback on any out-of-scope change, no "all other schemas are safe" promise.
+        assert "RESTRICT" in text and "other schema" in text and "Privileges granted" in text
 
     def test_prompt_shows_the_identity_to_type_but_nothing_secret(self):
         prompts = []

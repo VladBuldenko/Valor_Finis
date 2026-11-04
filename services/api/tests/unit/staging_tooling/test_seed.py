@@ -74,6 +74,26 @@ class TestAuthorizationGate:
         assert completed.returncode == 0, completed.stderr
 
 
+class TestSeedSerialization:
+    def test_the_lock_is_taken_before_any_session_and_released_when_the_run_stops(self):
+        ops = h.FakeOps()
+
+        with pytest.raises(StagingRefused):
+            run_seed(ops)  # the fake session factory raises, ending the run
+
+        assert ops.calls.index("seed_lock") < ops.calls.index("open_session")
+        assert ops.lock_entered == 1 and ops.lock_released == 1
+
+    def test_a_competing_seed_is_refused_before_a_session_and_reported_unchanged(self):
+        ops = h.FakeOps(lock_busy=True)
+
+        with pytest.raises(StagingRefused) as caught:
+            run_seed(ops)
+
+        assert caught.value.code == "LOCK_BUSY" and not caught.value.mutated
+        assert ops.sessions == 0 and ops.mutations == 0
+
+
 class TestScenarioDefinitions:
     def test_identical_input_gives_identical_output(self):
         assert build_scenarios(AS_OF) == build_scenarios(AS_OF)
