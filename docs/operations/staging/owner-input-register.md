@@ -35,11 +35,15 @@ Statuses: `UNKNOWN` / `PROVIDED` / `VERIFIED` / `BLOCKED`.
 | OI-23 | Auth user ids of QA-A and QA-B | The seed's users file; the seed never creates users | Owner | UNKNOWN (BLOCKED on OI-01, OI-02) | Users exist in the staging project; ids recorded outside the repository | Before seeding |
 | OI-24 | Mobile QA build channel and installation method | Builds that target staging only | Owner | UNKNOWN | QA-0 fingerprint helper passes for the build | Before device runs |
 | OI-25 | Physical devices (QA-0 matrix slots) | Device acceptance | Owner | UNKNOWN | See the [QA-0 device matrix](../../mvp/qa-device-matrix.md) | Before device runs |
+| OI-26 | Server-certificate trust root for the staging PostgreSQL (and the Supabase project database), so connections use `verify-full` (review finding F5) | Any remote connection: `sslmode=require` does not authenticate the server | Owner | UNKNOWN | A trust root file and a successful `verify-full` connection | Before any remote connection |
+| OI-27 | Written acceptance that Data API parity with production hardening is `NOT VERIFIED` on architecture A, with the rewritten R6, OR-5 and A-13 | BR-12 and any statement about staging security | Owner | UNKNOWN | Decision recorded with OI-04 | With OI-04 |
 
 ## Items that are decisions, not values
 
 - **OI-04** is a genuine architecture question the repository cannot answer: whether a database named `*_staging` can be created
-  inside a hosted Supabase project (and whether the Data API hardening checks are then meaningful for that database) or whether
-  staging uses a separate PostgreSQL server. Until the owner decides, the guard stays strict (`_staging` is mandatory) and no
-  provisioning can start.
+  inside a hosted Supabase project, or whether staging uses a separate PostgreSQL server for the application tables. The independent review
+  recommends **architecture A** (a separate staging Supabase project for Auth and Storage plus a dedicated PostgreSQL 17 database
+  `valor_staging`). Consequence the owner must accept in writing: Data API parity with production hardening (`edcfdf3f7114`) **cannot be
+  verified on staging** and is reported `NOT VERIFIED` (OI-27). Architecture B (a second database in a hosted Supabase project) is unverified
+  and shares a server with the Auth side. Until the owner decides, the guard stays strict (`_staging` is mandatory) and no provisioning can start.
 - **OI-07**: the roadmap prefers PostgreSQL 17 for staging while production's major is stated only as "per ops notes"; the owner confirms.

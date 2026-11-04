@@ -31,8 +31,9 @@ a shell where `staging_ops identify` has just passed with the same environment.
 
 The shell holds `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `AUTH_MODE=supabase` and **no** `PG*` variable. The tool
 refuses `PGHOST`, `PGHOSTADDR`, `PGPORT`, `PGDATABASE`, `PGSERVICE`, `PGSERVICEFILE`, `PGOPTIONS`, `PGSSLMODE`, `PGTARGETSESSIONATTRS`
-and `PGSYSCONFDIR`. The existing read-only OPS checks (`docs/operations/sql/run_readonly_check.sh`) are the opposite: they require
-`PG*` variables, so run them in a **separate** shell prepared for that script, with the same target.
+and `PGSYSCONFDIR`. The read-only checks are the opposite: `docs/operations/staging/sql/run_staging_check.sh` (and the production runner `docs/operations/sql/run_readonly_check.sh`)
+require `PG*` variables and refuse `DATABASE_URL`, so run them in a **separate** shell prepared for that script, with the same target. The
+production runner is not used for the staging application database: it needs the real Supabase roles (see runbook 6.1).
 
 ## 3. Mobile QA build
 

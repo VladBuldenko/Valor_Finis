@@ -22,7 +22,7 @@ chooses the scheme (item A-05).
 | A-10 | CAPTCHA or bot protection enabled | Would block automated and scripted drills | | NOT RUN |
 | A-11 | Leaked-password protection available and enabled | Affects which test passwords are accepted | | NOT RUN |
 | A-12 | Other sign-in providers disabled | Smaller attack surface; MVP uses email and password | | NOT RUN |
-| A-13 | Data API exposure of the `public` schema; role privileges for `anon`, `authenticated`, `service_role` | Parity with production hardening (migration `edcfdf3f7114`); the read-only OPS SQL checks verify it | | NOT RUN |
+| A-13 | Data API exposure of the staging project: B1 (`run_staging_check.sh supabase_project_exposure`) shows no application relation or function in its `public` schema, and B2 records what the Data API lists | Exposure only. **Parity with the production hardening (migration `edcfdf3f7114`) is `NOT VERIFIED` on architecture A**: staging has no application tables behind a Data API to harden, and the unchanged production OPS runner cannot pass without the real roles. See [runbook 6.1](staging-architecture-and-runbook.md#61-operator-checks-application-database-a-versus-supabase-data-api-b) | | NOT RUN (exposure); NOT VERIFIED (parity) |
 | A-14 | Auth users QA-A and QA-B created, addresses team-controlled, ids recorded outside the repository | The seed maps actors to these ids | | BLOCKED |
 
 ## Facts MF-4 needs from QA-1

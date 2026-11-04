@@ -11,8 +11,8 @@ Commands run from `services/api` with a **disposable local PostgreSQL** whose da
 | ID | Check | Command or evidence | Status |
 |---|---|---|---|
 | IR-1 | Identity guard negative tests (every listed refusal; the mutation command is never invoked) | `.venv/bin/python -m pytest tests/unit/staging_tooling -q` | VERIFIED LOCALLY |
-| IR-2 | Bootstrap, binding, reset and seed against a real disposable PostgreSQL | `.venv/bin/python -m pytest tests/integration/staging_tooling -q` (skips as `NOT RUN` without server binaries) | VERIFIED LOCALLY (PostgreSQL 18, local cluster started by the test) |
-| IR-3 | Negative controls: removing a critical guard makes a test fail | mutation script from the task report | VERIFIED LOCALLY |
+| IR-2 | Bootstrap, binding, reset (schema-scope invariant, concurrent DDL), seed (serialization, crash and retry) and the operator-check scripts against a real disposable PostgreSQL | `.venv/bin/python -m pytest tests/integration/staging_tooling -q` (skips as `NOT RUN` without server binaries) | VERIFIED LOCALLY (PostgreSQL 18, local cluster started by the test) |
+| IR-3 | Negative controls: removing a critical guard makes a test fail; equivalent and invalid mutants reported separately | [negative-controls.md](negative-controls.md) | VERIFIED LOCALLY |
 | IR-4 | Full backend regression | `.venv/bin/python -m pytest -q` against `valor_test` | VERIFIED LOCALLY |
 | IR-5 | Single Alembic head | `.venv/bin/alembic heads` | VERIFIED LOCALLY |
 | IR-6 | No secret or hosted identifier in the staging files | `tests/unit/staging_tooling/test_repository_hygiene.py` | VERIFIED LOCALLY |
@@ -29,7 +29,9 @@ None of these has been done. All depend on [owner inputs](owner-input-register.m
 | OR-2 | Approved-targets file written outside the repository and reviewed by the owner | File reviewed, `approved_by/on` present | BLOCKED |
 | OR-3 | `identify` shows an empty, unmigrated database; oid recorded | Evidence record | NOT RUN |
 | OR-4 | `bootstrap` built the database to head; `alembic current` equals `alembic heads` | Evidence record (`alembic_head` equals `alembic_current`) | NOT RUN |
-| OR-5 | Read-only OPS SQL checks pass on staging | Runner output (counts and verdict only) | NOT RUN |
+| OR-5a | A1 application database security checks pass on the staging application database (`run_staging_check.sh app_database_security`) | Runner output (verdict rows and counts only); keep the `DATA_API_PARITY: NOT VERIFIED` line | NOT RUN |
+| OR-5b | B1 staging Supabase project database holds no application relation or function (`run_staging_check.sh supabase_project_exposure`), and the B2 Data API listing is recorded | Runner output and the recorded listing | NOT RUN (architecture A) |
+| OR-5c | B3 Data API parity with production hardening | Cannot be produced on architecture A. Reported **NOT VERIFIED** with the justification in the [runbook section 6.1](staging-architecture-and-runbook.md#61-operator-checks-application-database-a-versus-supabase-data-api-b). Never recorded as PASS from a database without the real Supabase roles | NOT VERIFIED |
 | OR-6 | Auth settings recorded ([checklist](supabase-auth-checklist.md)), test emails received | Filled checklist | BLOCKED (OI-17 to OI-22) |
 | OR-7 | QA-A and QA-B created in the staging project; users file written outside the repository | Owner confirmation | BLOCKED (OI-23) |
 | OR-8 | `seed` completed; a second `seed` changed nothing | Two evidence records | NOT RUN |
