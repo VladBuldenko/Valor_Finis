@@ -1,4 +1,4 @@
 {
-    "include": ["services/api/app", "services/api/tests"],
+    "include": ["services/api/app", "services/api/tests", "services/api/staging_ops"],
     "extraPaths": ["services/api"]
   }

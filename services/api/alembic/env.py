@@ -45,6 +45,25 @@ def serialize_guarded_migration(connection) -> None:
         raise RuntimeError("VF_MIGRATION_REVISION_CHANGED")
 
 
+def bind_staging_identity(connection) -> None:
+    """
+    Staging bootstrap binding (VF-QA-1).
+
+    Only active when staging_ops sets VF_STAGING_BINDING; every other Alembic command, including the guarded release
+    runner, is unchanged. Alembic opens its own connection, so the parent's identity check cannot vouch for it. Inside
+    the migration transaction, before any DDL, this verifies that THIS connection reached the database name, oid and
+    server start the parent verified (and, for a bootstrap, that the database is still empty). Fixed messages only.
+    """
+
+    raw_binding = os.environ.get("VF_STAGING_BINDING")
+    if not raw_binding:
+        return
+
+    from staging_ops.binding import verify_migration_binding
+
+    verify_migration_binding(connection, raw_binding)
+
+
 def run_migrations_offline() -> None:
     """
     Run Alembic migrations in offline mode.
@@ -100,6 +119,7 @@ def run_migrations_online() -> None:
         )
 
         with context.begin_transaction():
+            bind_staging_identity(connection)
             serialize_guarded_migration(connection)
             context.run_migrations()
 
