@@ -79,6 +79,18 @@ class LocalCluster:
 
 
 @pytest.fixture(scope="session")
+def pg_bin():
+    """Directory holding psql and the server binaries; the tests skip (NOT RUN) when there is none."""
+
+    binaries = _find_binaries()
+
+    if binaries is None or not os.access(os.path.join(binaries, "psql"), os.X_OK):
+        pytest.skip("NOT RUN: no psql found next to the PostgreSQL server binaries; set VF_QA1_PG_BIN")
+
+    return binaries
+
+
+@pytest.fixture(scope="session")
 def local_cluster(tmp_path_factory):
     binaries = _find_binaries()
 
