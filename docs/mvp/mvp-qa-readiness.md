@@ -83,7 +83,7 @@ no production credential is placed in any test configuration.
 ```
 
 Rules:
-1. **Reset strategy:** staging reset = recreate database from `alembic upgrade head` (the staging-only bootstrap, not the guarded
+1. **Reset strategy (superseded 2026-11-04):** the automatic staging reset is **disabled / deferred** (owner-approved scope change); recovery is a newly provisioned, separately approved, empty database built by the bootstrap. Original text: staging reset = recreate database from `alembic upgrade head` (the staging-only bootstrap, not the guarded
    production runner) plus a seed script that creates named test users, Accounts, Goals, Budgets and rules. Seeds contain no
    real data. Bootstrap and reset refuse any target that fails the identity guard in
    [mvp-ops03-and-staging-prerequisites.md](mvp-ops03-and-staging-prerequisites.md) §2.5 (allowlist, production denylist,
