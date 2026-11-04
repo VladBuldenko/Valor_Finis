@@ -74,11 +74,11 @@ checks(ord, check_name, gating, ok, expected, actual) AS (
         NOT EXISTS (SELECT 1 FROM public_grants), '0', (SELECT count(*)::text FROM public_grants)),
     (13, 'public_cannot_create_in_schema_public', true,
         NOT has_schema_privilege('public', 'public', 'CREATE'), 'false', has_schema_privilege('public', 'public', 'CREATE')::text),
-    (14, 'other_grantees_on_application_relations', false, true, 'owner and application role only',
+    (14, 'other_grantees_on_application_relations', false, false, 'owner and application role only',
         coalesce((SELECT names FROM other_grantees), '<none>')),
-    (15, 'supabase_data_api_roles_present_in_this_database', false, true, 'informational only',
+    (15, 'supabase_data_api_roles_present_in_this_database', false, false, 'informational only',
         (SELECT count(*)::text FROM supabase_roles) || ' of 3 (this check does not establish Data API parity)'),
-    (16, 'server_version', false, true, '-', split_part(version(), ' on ', 1))
+    (16, 'server_version', false, false, '-', split_part(version(), ' on ', 1))
 )
 SELECT check_name, status, expected, actual FROM (
     SELECT ord, check_name,

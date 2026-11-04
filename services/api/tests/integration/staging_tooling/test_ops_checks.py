@@ -25,6 +25,16 @@ PRODUCTION_RUNNER = REPO / "docs" / "operations" / "sql" / "run_readonly_check.s
 PARITY_LINE = "DATA_API_PARITY: NOT VERIFIED"
 
 
+def row_status(output, name):
+    """Status column of one result row (OK, FAIL or INFO); None when the row is absent."""
+
+    for line in output.splitlines():
+        if line.startswith(f" {name} "):
+            return line.split("|")[1].strip()
+
+    return None
+
+
 def head():
     return real_operations().repository_heads()[0]
 
@@ -90,6 +100,7 @@ class TestApplicationDatabaseSecurity:
         code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "app_database_security", staging_db)
 
         assert code == 0, output
+        assert row_status(output, "supabase_data_api_roles_present_in_this_database") == "INFO"
         assert "3 of 3 (this check does not establish Data API parity)" in output and PARITY_LINE in output
 
     @pytest.mark.parametrize(
@@ -112,12 +123,12 @@ class TestApplicationDatabaseSecurity:
     def test_a_superuser_application_role_stops(self, local_cluster, pg_bin, staging_db):
         code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "app_database_security", staging_db, user="postgres")
 
-        assert code == 10 and "application_role_is_not_superuser" in output
+        assert code == 10 and row_status(output, "application_role_is_not_superuser") == "FAIL", output
 
     def test_a_wrong_revision_expectation_stops(self, local_cluster, pg_bin, staging_db):
         code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "app_database_security", staging_db, EXPECTED_ALEMBIC_REVISION="000000000000")
 
-        assert code == 10 and "alembic_revision_equals_expected" in output
+        assert code == 10 and row_status(output, "alembic_revision_equals_expected") == "FAIL", output
 
     def test_the_session_is_read_only(self, local_cluster, pg_bin, staging_db):
         before = (Path(STAGING_RUNNER).read_text(), STAGING_RUNNER.with_name("app_database_security.sql").read_text())

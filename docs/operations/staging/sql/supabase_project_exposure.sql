@@ -45,9 +45,9 @@ checks(ord, check_name, gating, ok, expected, actual) AS (
         NOT EXISTS (SELECT 1 FROM public_relations), '0', (SELECT count(*)::text FROM public_relations)),
     (6, 'no_application_functions_in_public', true,
         NOT EXISTS (SELECT 1 FROM public_functions), '0', (SELECT count(*)::text FROM public_functions)),
-    (7, 'supabase_data_api_roles_present', false, true, 'informational only',
+    (7, 'supabase_data_api_roles_present', false, false, 'informational only',
         (SELECT count(*)::text FROM supabase_roles) || ' of 3'),
-    (8, 'server_version', false, true, '-', split_part(version(), ' on ', 1))
+    (8, 'server_version', false, false, '-', split_part(version(), ' on ', 1))
 )
 SELECT check_name, status, expected, actual FROM (
     SELECT ord, check_name,
