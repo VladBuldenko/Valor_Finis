@@ -6,7 +6,6 @@ import os
 from staging_ops.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_USAGE, main
 
 from . import helpers as h
-from .test_reset import PHRASE, reset_probes
 
 
 def args(tmp_path, command, *extra, flag=True):
@@ -30,8 +29,9 @@ class TestUsage:
         assert main(args(tmp_path, "seed"), h.good_environ(), h.FakeOps().as_operations()) == EXIT_USAGE
 
     def test_there_is_no_force_or_yes_flag(self, tmp_path):
-        for flag in ("--force", "--yes", "-y", "--skip-confirmation", "--no-verify"):
-            assert main(args(tmp_path, "reset", flag), h.good_environ(), h.FakeOps().as_operations()) == EXIT_USAGE
+        for command in ("bootstrap", "seed"):
+            for flag in ("--force", "--yes", "-y", "--skip-confirmation", "--no-verify"):
+                assert main(args(tmp_path, command, flag), h.good_environ(), h.FakeOps().as_operations()) == EXIT_USAGE
 
 
 class TestExitCodes:
@@ -51,25 +51,6 @@ class TestExitCodes:
 
     def test_failure_after_the_mutation_began_exits_12(self, tmp_path):
         assert main(args(tmp_path, "bootstrap"), h.good_environ(), h.FakeOps(alembic_returncode=1).as_operations(), say=lambda _t: None) == EXIT_FAILED
-
-    def test_reset_refuses_without_the_exact_phrase(self, tmp_path):
-        ops = h.FakeOps(probes=reset_probes())
-
-        assert main(args(tmp_path, "reset"), h.good_environ(), ops.as_operations(), confirm=lambda _p: "yes", say=lambda _t: None) == EXIT_REFUSED
-        assert ops.destroyed == 0
-
-    def test_reset_with_the_exact_phrase(self, tmp_path):
-        ops = h.FakeOps(probes=reset_probes())
-
-        assert main(args(tmp_path, "reset"), h.good_environ(), ops.as_operations(), confirm=lambda _p: PHRASE, say=lambda _t: None) == EXIT_OK
-        assert ops.destroyed == 1
-
-    def test_the_cli_never_confirms_a_reset_on_its_own(self, tmp_path):
-        # No injected confirm: the real interactive prompt is used and refuses a non-terminal.
-        ops = h.FakeOps(probes=reset_probes())
-
-        assert main(args(tmp_path, "reset"), h.good_environ(), ops.as_operations(), say=lambda _t: None) == EXIT_REFUSED
-        assert ops.destroyed == 0
 
     def test_identify_prints_the_oid_for_the_owner_and_is_read_only(self, tmp_path):
         said = []

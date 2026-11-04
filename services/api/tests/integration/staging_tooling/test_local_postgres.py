@@ -172,62 +172,59 @@ class TestMutationConnectionIsBoundToTheCheckedIdentity:
         assert "PGHOST" not in child and "PGDATABASE" not in child
 
 
-class TestResetOnARealDatabase:
-    def bootstrapped_with_seed(self, target):
+class TestDisabledResetOnARealDatabase:
+    """The reset is disabled: against a populated disposable database every entry point refuses and nothing changes."""
+
+    def populated(self, target):
         cluster, name, oid = target
         spy = SpyOperations()
         environ, approved = environ_for(cluster, name), approved_for(cluster, name, oid)
         bootstrap("staging", "STG-1", environ, approved, spy.operations(), None, quiet)
         seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
 
-        return cluster, name, oid, environ, approved
+        return cluster, name, environ, approved
 
-    def count(self, cluster, name, table):
+    def fingerprint(self, cluster, name):
         with contextlib.closing(cluster.connect(name)) as connection, connection.cursor() as cursor:
-            cursor.execute(f"SELECT count(*) FROM {table}")
+            cursor.execute("SELECT c.relname, c.reltuples::bigint FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r' ORDER BY 1")
+            tables = cursor.fetchall()
+            counts = {}
 
-            return cursor.fetchone()[0]
+            for (table, _estimate) in tables:
+                cursor.execute(f'SELECT count(*) FROM public."{table}"')
+                counts[table] = cursor.fetchone()[0]
 
-    def phrase(self, cluster, name):
-        return f"STG-1/{name}@{cluster.host}:{cluster.port}"
+        return snapshot(cluster, name), counts
 
-    def test_a_wrong_confirmation_destroys_nothing(self, target):
-        cluster, name, oid, environ, approved = self.bootstrapped_with_seed(target)
-        before = self.count(cluster, name, "accounts")
+    def test_the_callable_refuses_and_the_populated_database_is_unchanged(self, target):
+        cluster, name, environ, approved = self.populated(target)
+        before = self.fingerprint(cluster, name)
         spy = SpyOperations()
 
         with pytest.raises(StagingRefused) as caught:
-            reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: self.phrase(cluster, "vfqa1_other_staging"), None, quiet)
+            reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: f"STG-1/{name}@{cluster.host}:{cluster.port}", None, quiet)
 
-        assert caught.value.code == "CONFIRMATION_MISMATCH" and spy.destroys == 0 and spy.alembic_runs == 0
-        assert self.count(cluster, name, "accounts") == before > 0
+        assert caught.value.code == "RESET_DISABLED" and not caught.value.mutated
+        assert spy.alembic_runs == 0 and spy.supabase_probes == 0
+        assert self.fingerprint(cluster, name) == before and before[1]["accounts"] > 0
 
-    def test_a_confirmed_reset_destroys_everything_and_rebuilds_to_head(self, target, tmp_path):
-        cluster, name, oid, environ, approved = self.bootstrapped_with_seed(target)
-        assert self.count(cluster, name, "accounts") > 0
-        spy = SpyOperations()
-        said = []
-        record = reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: self.phrase(cluster, name), str(tmp_path), said.append)
+    def test_the_command_line_refuses_and_the_populated_database_is_unchanged(self, target, tmp_path, capsys):
+        from staging_ops.cli import EXIT_REFUSED, main
+        from .helpers import SpyOperations as Spy
 
-        assert record.outcome == "OK" and spy.destroys == 1 and spy.alembic_runs == 1
-        assert "PERMANENTLY DESTROY" in "\n".join(said) and "accounts:" in "\n".join(said)
-        assert self.count(cluster, name, "accounts") == 0 and self.count(cluster, name, "financial_rules") == 0
-        assert snapshot(cluster, name)[1] == (alembic_head(),)
+        cluster, name, environ, approved = self.populated(target)
+        before = self.fingerprint(cluster, name)
+        spy = Spy()
+        targets_file = tmp_path / "targets.json"
+        targets_file.write_text("{}")
 
-    def test_a_destroy_that_cannot_take_the_lock_changes_nothing(self, target):
-        cluster, name, oid, environ, approved = self.bootstrapped_with_seed(target)
-        before = snapshot(cluster, name)
-        _environ, verified = TestMutationConnectionIsBoundToTheCheckedIdentity().verified(cluster, name, oid)
+        code = main(["reset", "--environment", "staging", "--staging", "STG-1", "--approved-targets", str(targets_file), "--evidence-dir", str(tmp_path / "evidence")], environ, spy.operations(), say=quiet)
 
-        with contextlib.closing(cluster.connect(name)) as holder, holder.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_lock(7165, 3)")
+        assert code == EXIT_REFUSED and "RESET_DISABLED" in capsys.readouterr().err
+        assert spy.alembic_runs == 0 and spy.supabase_probes == 0 and not (tmp_path / "evidence").exists()
+        assert self.fingerprint(cluster, name) == before
 
-            with pytest.raises(StagingRefused) as caught:
-                database.destroy_application_objects(verified)
-
-        assert caught.value.code == "LOCK_BUSY" and snapshot(cluster, name) == before
-
-    def test_the_reset_never_touches_other_schemas_or_extension_objects(self, target):
+    def test_objects_in_other_schemas_are_untouched_too(self, target):
         cluster, name, oid = target
         spy = SpyOperations()
         environ, approved = environ_for(cluster, name), approved_for(cluster, name, oid)
@@ -236,7 +233,9 @@ class TestResetOnARealDatabase:
             cursor.execute("CREATE SCHEMA auth_like; CREATE TABLE auth_like.users (id int); INSERT INTO auth_like.users VALUES (1)")
 
         bootstrap("staging", "STG-1", environ, approved, spy.operations(), None, quiet)
-        reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: self.phrase(cluster, name), None, quiet)
+
+        with pytest.raises(StagingRefused):
+            reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: "", None, quiet)
 
         with contextlib.closing(cluster.connect(name)) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM auth_like.users")

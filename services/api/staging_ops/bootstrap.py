@@ -67,7 +67,7 @@ def verify_target(
     return configured, verified, facts
 
 
-# Builds an empty verified database to head. Shared by bootstrap and reset.
+# Builds an empty verified database to head. Used by bootstrap.
 # Parameters:
 # - verified: identity captured earlier.
 # - environ: validated process environment.
@@ -108,7 +108,7 @@ def build_to_head(
     if result.returncode != 0:
         tail = redact(result.output, [environ.get("DATABASE_URL", ""), environ.get("SUPABASE_PUBLISHABLE_KEY", "")])
         say("alembic output (redacted, last lines):\n" + "\n".join(tail.splitlines()[-15:]))
-        raise StagingRefused("UPGRADE_FAILED", f"alembic upgrade head failed with exit code {result.returncode}; the database may be partly built, run the reset procedure")
+        raise StagingRefused("UPGRADE_FAILED", f"alembic upgrade head failed with exit code {result.returncode}; the database may be partly built; stop and request a newly provisioned, separately approved, empty staging database (the reset is disabled)")
 
     record.step("alembic-upgrade-head")
 
@@ -142,7 +142,7 @@ def build_to_head(
 # - The EvidenceRecord (outcome OK).
 # Raises:
 # - StagingRefused: nothing was changed when outcome is REFUSED; FAILED means
-#   the upgrade started and the database must be reset before reuse.
+#   the upgrade started and the database must not be reused: stop and request a newly provisioned, separately approved, empty staging database (the reset is disabled).
 def bootstrap(
     environment_flag: Optional[str],
     staging_id: Optional[str],

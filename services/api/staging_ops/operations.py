@@ -1,9 +1,9 @@
 """
-Injectable operations for bootstrap, reset and seed.
+Injectable operations for bootstrap and seed.
 
 What:
     The side-effecting capabilities (probe a database, probe Supabase, run
-    Alembic, describe and destroy data, open a session) bundled so tests can
+    Alembic, open a session, hold the seed lock) bundled so tests can
     substitute fakes and assert that a mutation was never invoked.
 
 Why:
@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, ContextManager, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, ContextManager, Iterable, Mapping, Optional, Sequence
 
 from staging_ops import database
 from staging_ops.identity import ConfiguredTarget, DatabaseFacts, VerifiedTarget
@@ -46,9 +46,6 @@ class Operations:
     run_alembic: Callable[[Sequence[str], Mapping[str, str]], AlembicResult]
     repository_heads: Callable[[], Sequence[str]]
     expected_tables: Callable[[], Iterable[str]]
-    describe: Callable[[VerifiedTarget], Tuple[List[Tuple[str, int]], int]]
-    destroy: Callable[[VerifiedTarget], int]
-    external_dependents: Callable[[VerifiedTarget], List[Tuple[str, str]]]
     open_session: Optional[Callable[[VerifiedTarget], object]] = None
     # Returns a context manager holding the staging advisory lock; entering it yields a
     # zero-argument callable that raises StagingRefused if the lock is no longer held.
@@ -127,9 +124,6 @@ def real_operations() -> Operations:
         run_alembic=_run_alembic,
         repository_heads=_repository_heads,
         expected_tables=_expected_tables,
-        describe=database.describe_data,
-        destroy=database.destroy_application_objects,
-        external_dependents=database.external_dependents,
         open_session=_open_session,
         seed_lock=database.seed_lock,
     )

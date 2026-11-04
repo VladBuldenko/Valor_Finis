@@ -54,7 +54,7 @@ SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  ORDER BY c.relname
 """
 
-# Advisory lock key for staging bootstrap and reset (distinct from the
+# Advisory lock key for staging bootstrap and seed (distinct from the
 # production runner's 7165/2).
 LOCK_KEYS = (7165, 3)
 

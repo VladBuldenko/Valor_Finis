@@ -73,7 +73,7 @@ class ConfiguredTarget:
     supabase_project_ref: str
     database_url: str = field(repr=False)
 
-    # Text the operator must type back to confirm a reset.
+    # Text an operator would type back to confirm a destructive operation. Unused while the reset is disabled.
     def confirmation_phrase(self) -> str:
         return f"{self.staging_id}/{self.database}@{self.host}:{self.port}"
 

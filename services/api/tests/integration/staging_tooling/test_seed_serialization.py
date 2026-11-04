@@ -2,8 +2,8 @@
 Seed serialization, crash recovery and retry against a REAL disposable PostgreSQL.
 
 The seed commits between steps, so a transaction-scoped lock would not cover
-it. These tests prove the session advisory lock does: a competing seed, reset
-or bootstrap is refused while a seed is mid-run, a lost lock stops the run, and
+it. These tests prove the session advisory lock does: a competing seed or
+bootstrap is refused while a seed is mid-run, a lost lock stops the run, and
 a stopped seed is never topped up (no duplicated financial effect).
 """
 
@@ -17,7 +17,6 @@ import pytest
 from staging_ops import database, seed as seed_module
 from staging_ops.bootstrap import bootstrap
 from staging_ops.errors import StagingRefused
-from staging_ops.reset import reset
 from staging_ops.seed import seed
 
 from .helpers import SpyOperations, approved_for, environ_for, execute, fetch, snapshot, verified_target
@@ -135,27 +134,6 @@ class TestCompetingOperationsAreRefusedWhileASeedRuns:
         assert counts(cluster, name) == single_seed_counts, "exactly one seed's worth of financial effects"
         assert lock_is_free(cluster, name), "the lock must be released when the seed ends"
 
-    def test_a_reset_during_a_seed_destroys_nothing(self, world, monkeypatch):
-        cluster, name, _oid, environ, approved, spy = world
-        pause = PausingSteps(monkeypatch, at=3)
-        thread, first = run_in_thread(lambda: seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet))
-
-        try:
-            assert pause.reached.wait(60)
-            midway = counts(cluster, name)
-            phrase = f"STG-1/{name}@{cluster.host}:{cluster.port}"
-
-            with pytest.raises(StagingRefused) as caught:
-                reset("staging", "STG-1", environ, approved, SpyOperations().operations(), lambda _p: phrase, None, quiet)
-
-            assert caught.value.code == "LOCK_BUSY" and not caught.value.mutated
-            assert counts(cluster, name) == midway
-        finally:
-            pause.proceed.set()
-            thread.join(120)
-
-        assert "error" not in first, first.get("error")
-
     def test_a_bootstrap_during_a_seed_is_refused_by_the_alembic_binding(self, local_cluster):
         name, oid = local_cluster.create_database()
         environ, approved = environ_for(local_cluster, name), approved_for(local_cluster, name, oid)
@@ -271,10 +249,12 @@ class TestLostLockAndCrashRecovery:
             seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
 
         assert rerun.value.code == "ACTOR_HAS_DATA" and not rerun.value.mutated, "a refusal before any write reports no change"
-        assert "QA-A" in rerun.value.message and "accounts=" in rerun.value.message and "reset" in rerun.value.message
+        assert "QA-A" in rerun.value.message and "accounts=" in rerun.value.message and "newly provisioned" in rerun.value.message
         assert counts(cluster, name) == partial, "the rerun must not add, repeat or repair anything"
 
-    def test_recovery_after_a_crash_is_reset_then_a_complete_seed(self, world, monkeypatch, single_seed_counts):
+    def test_recovery_after_a_crash_is_a_new_empty_database_and_a_complete_seed(self, world, local_cluster, monkeypatch, single_seed_counts):
+        """The reset is disabled: the crashed database is abandoned and a newly provisioned empty one is bootstrapped and seeded."""
+
         cluster, name, _oid, environ, approved, spy = world
         PausingSteps(monkeypatch, at=6, action="crash")
 
@@ -282,11 +262,14 @@ class TestLostLockAndCrashRecovery:
             seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
 
         monkeypatch.undo()
-        phrase = f"STG-1/{name}@{cluster.host}:{cluster.port}"
-        reset("staging", "STG-1", environ, approved, spy.operations(), lambda _p: phrase, None, quiet)
-        seed("staging", "STG-1", environ, approved, spy.operations(), USERS, AS_OF, None, quiet)
+        crashed = counts(cluster, name)
+        fresh_name, fresh_oid = cluster.create_database()
+        fresh_environ, fresh_approved = environ_for(cluster, fresh_name), approved_for(cluster, fresh_name, fresh_oid)
+        bootstrap("staging", "STG-1", fresh_environ, fresh_approved, spy.operations(), None, quiet)
+        seed("staging", "STG-1", fresh_environ, fresh_approved, spy.operations(), USERS, AS_OF, None, quiet)
 
-        assert counts(cluster, name) == single_seed_counts
+        assert counts(cluster, fresh_name) == single_seed_counts
+        assert counts(cluster, name) == crashed, "the abandoned database is left exactly as it was"
 
     def test_a_crash_while_seeding_the_second_actor_leaves_the_first_complete_and_the_second_refused(self, world, monkeypatch):
         cluster, name, _oid, environ, approved, spy = world

@@ -14,18 +14,18 @@ Why:
     second run can never duplicate a financial effect.
 
     Serialization: the whole run holds ONE PostgreSQL session advisory lock
-    (the staging key shared with bootstrap and reset) on a dedicated
+    (the staging key shared with bootstrap) on a dedicated
     connection, taken before the first preflight query and released after the
     last write. The domain services commit between steps, so a transaction-
     scoped lock would not cover the run; a session lock does. A competing seed
-    (or a reset or bootstrap) is refused with LOCK_BUSY instead of waiting, and
+    (or a bootstrap) is refused with LOCK_BUSY instead of waiting, and
     the lock is re-checked before every step so a lost connection stops the
     run. The lock is advisory: it does not stop an API user or another tool
     that ignores it, so QA actors must not be used during a seed.
 
     Recovery policy after a stopped run: fail closed. An actor holding data
     without the marker is refused with the exact tables and row counts; the
-    only recovery is the explicit reset procedure and a fresh seed. Nothing is
+    only recovery is stop and request a newly provisioned, separately approved, empty staging database  and a fresh seed there. Nothing is
     topped up, so no financial record, reservation, AUTO-rule effect or ledger
     event can be duplicated. Default categories alone do not count as data
     (the category service creates them lazily on first use).
@@ -187,7 +187,7 @@ def _seed_actor(
         raise StagingRefused(
             "ACTOR_HAS_DATA",
             f"{actor} already has data ({found}) but no completion marker, so an earlier seed was stopped or the actor was used; "
-            "nothing is topped up; run the reset procedure and seed again",
+            "nothing is topped up; stop and request a newly provisioned, separately approved, empty staging database (the reset is disabled) and seed it afresh",
         )
 
     from app.modules.financial_settings import financial_settings_service

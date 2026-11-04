@@ -3,13 +3,16 @@ Command line for the staging tooling.
 
     python -m staging_ops identify  --environment staging --staging STG-1 --approved-targets FILE
     python -m staging_ops bootstrap --environment staging --staging STG-1 --approved-targets FILE --evidence-dir DIR
-    python -m staging_ops reset     --environment staging --staging STG-1 --approved-targets FILE --evidence-dir DIR
     python -m staging_ops seed      --environment staging --staging STG-1 --approved-targets FILE --evidence-dir DIR --users-file FILE [--as-of YYYY-MM-DD]
 
 What:
     Thin wiring: it reads the credentials from the process environment (never
     from arguments), loads the approved targets, and calls the guarded
     operation. There is no force, yes or skip flag.
+
+The `reset` command is accepted only to be refused (RESET_DISABLED, exit 11):
+it is disabled and deferred by the owner, and is refused before the approved
+targets are read, before any connection and before any SQL.
 
 Exit status: 0 done; 11 refused before any change; 12 failed after a change
 began (see the evidence record); 64 usage error.
@@ -27,7 +30,7 @@ from staging_ops.errors import StagingRefused, unexpected
 from staging_ops.evidence import EvidenceRecord, utc_now, write_evidence
 from staging_ops.identity import DatabaseFacts
 from staging_ops.operations import Operations, real_operations
-from staging_ops.reset import interactive_confirm, reset
+from staging_ops.reset import reset
 from staging_ops.seed import seed
 from staging_ops.target_config import load_approved_targets
 
@@ -38,11 +41,11 @@ EXIT_USAGE = 64
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="staging_ops", description="Guarded staging bootstrap, reset and seed.")
+    parser = argparse.ArgumentParser(prog="staging_ops", description="Guarded staging identify, bootstrap and seed (reset is disabled).")
     parser.add_argument("command", choices=["identify", "bootstrap", "reset", "seed"])
     parser.add_argument("--environment", default=None, help="must be exactly 'staging'")
     parser.add_argument("--staging", default=None, help="approved staging entry id, for example STG-1")
-    parser.add_argument("--approved-targets", required=True, help="operator-held approved-targets JSON, stored outside the repository")
+    parser.add_argument("--approved-targets", default=None, help="operator-held approved-targets JSON, stored outside the repository")
     parser.add_argument("--evidence-dir", default=None, help="directory for the sanitized evidence record")
     parser.add_argument("--users-file", default=None, help="seed only: JSON mapping QA-A and QA-B to staging Auth user ids")
     parser.add_argument("--as-of", default=None, help="seed only: business date (default: the server's local date, the one the domain services use)")
@@ -85,11 +88,11 @@ def _identify(args, environ: Mapping[str, str], approved, operations: Operations
 # - argv: command line (without the program name).
 # - environ: environment mapping (defaults to a copy of os.environ).
 # - operations: injected capabilities (defaults to the real ones).
+# The `reset` command is refused first, before any other work.
 def main(
     argv: Optional[List[str]] = None,
     environ: Optional[Mapping[str, str]] = None,
     operations: Optional[Operations] = None,
-    confirm: Optional[Callable[[str], str]] = None,
     say: Callable[[str], None] = print,
 ) -> int:
     try:
@@ -97,10 +100,23 @@ def main(
     except SystemExit:
         return EXIT_USAGE
 
+    # Disabled operation: refused before configuration, targets, connections or SQL.
+    if args.command == "reset":
+        try:
+            reset()
+        except StagingRefused as error:
+            print(f"REFUSED [{error.code}]: {error.message}", file=sys.stderr)
+
+            return EXIT_REFUSED
+
     # The app settings module loads a .env file on import; a stray file must never
     # supply a value the validated environment did not.
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
     environ = dict(os.environ if environ is None else environ)
+
+    if not args.approved_targets:
+        print("REFUSED [USAGE]: --approved-targets is required", file=sys.stderr)
+        return EXIT_USAGE
 
     if args.command != "identify" and not args.evidence_dir:
         print("REFUSED [USAGE]: --evidence-dir is required for a mutating command", file=sys.stderr)
@@ -118,8 +134,6 @@ def main(
             _identify(args, environ, approved, operations, say)
         elif args.command == "bootstrap":
             bootstrap(args.environment, args.staging, environ, approved, operations, args.evidence_dir, say)
-        elif args.command == "reset":
-            reset(args.environment, args.staging, environ, approved, operations, confirm or interactive_confirm, args.evidence_dir, say)
         else:
             try:
                 with open(args.users_file, encoding="utf-8") as handle:

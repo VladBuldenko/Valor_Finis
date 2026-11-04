@@ -10,6 +10,13 @@ least one test to fail. Each control ends in exactly one class:
 | INVALID | The edit did not apply or the program did not load | **no** |
 | SURVIVED | Tests still pass although a guard is broken | no, and a defect of the tests |
 
+> **Superseded in part by the reset deferral (VF-QA-1 MVP simplification).** The statistics below are historical, taken at commit `51c05a1`.
+> The controls that target the reset (the reset-confirmation controls among M01 to M65, and N01 to N10) apply to code that was **removed**; they
+> are no longer meaningful and were **not rerun**. No new mutation campaign was run for the simplification. The reset is instead covered by
+> positive tests that it refuses and that nothing is reachable (`tests/unit/staging_tooling/test_reset.py`, the disabled-reset class of
+> `test_local_postgres.py`), and B1 by the negative tests in `test_ops_checks.py` (missing role, missing `auth` schema, plain database).
+> Do not quote the 96/95/1/0/0 figure as describing the current tree.
+
 Run on 2026-11-04 against the local branch after the post-review corrections (script kept in the task scratchpad, not committed).
 Result: **96 controls, 95 caught, 1 equivalent, 0 invalid, 0 surviving.**
 

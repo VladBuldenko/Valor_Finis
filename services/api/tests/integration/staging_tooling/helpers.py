@@ -55,7 +55,6 @@ class SpyOperations:
     def __init__(self) -> None:
         self.real = real_operations()
         self.alembic_runs = 0
-        self.destroys = 0
         self.supabase_probes = 0
 
     def _supabase(self, configured, environ) -> None:
@@ -66,11 +65,6 @@ class SpyOperations:
 
         return self.real.run_alembic(arguments, environment)
 
-    def _destroy(self, verified):
-        self.destroys += 1
-
-        return self.real.destroy(verified)
-
     def operations(self) -> Operations:
         return Operations(
             probe=self.real.probe,
@@ -78,10 +72,7 @@ class SpyOperations:
             run_alembic=self._alembic,
             repository_heads=self.real.repository_heads,
             expected_tables=self.real.expected_tables,
-            describe=self.real.describe,
-            destroy=self._destroy,
             open_session=self.real.open_session,
-            external_dependents=self.real.external_dependents,
             seed_lock=self.real.seed_lock,
         )
 

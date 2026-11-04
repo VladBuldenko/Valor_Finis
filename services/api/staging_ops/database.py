@@ -3,8 +3,8 @@ Database access for the staging tooling.
 
 What:
     A read-only probe that reports a server's identity, an engine whose every
-    physical connection re-verifies that identity, and the reset primitives
-    (data description and object removal).
+    physical connection re-verifies that identity, and the seed lock. There is
+    no object-removal primitive: the staging reset is disabled (see reset.py).
 
 Why:
     The identity guard compares facts, so facts must come from the server
@@ -15,13 +15,13 @@ Why:
 
 import json
 from contextlib import contextmanager
-from typing import Callable, Iterator, List, Tuple
+from typing import Callable, Iterator
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
-from staging_ops import binding, reset_scope
+from staging_ops import binding
 from staging_ops.errors import StagingRefused
 from staging_ops.identity import ConfiguredTarget, DatabaseFacts, VerifiedTarget
 
@@ -107,87 +107,6 @@ def bound_engine(verified: VerifiedTarget) -> Engine:
     return engine
 
 
-# Describes what a reset would destroy: exact row counts per table plus the
-# number of other schema objects. Read-only.
-# Parameters:
-# - verified: verified target.
-# Returns:
-# - (list of (table, row_count), count of non-table objects).
-def describe_data(verified: VerifiedTarget) -> Tuple[List[Tuple[str, int]], int]:
-    engine = _engine(verified.configured, PROBE_OPTIONS)
-
-    try:
-        with engine.connect() as connection:
-            names = [row[0] for row in connection.exec_driver_sql(binding.PUBLIC_TABLES_SQL)]
-            counts = []
-
-            for name in names:
-                quoted = f"public.{connection.dialect.identifier_preparer.quote(name)}"
-                counts.append((name, int(connection.exec_driver_sql(f"SELECT count(*) FROM {quoted}").scalar())))
-
-            unexpected = int(connection.exec_driver_sql(binding.UNEXPECTED_OBJECTS_SQL).scalar())
-    except Exception:
-        raise StagingRefused("PROBE_FAILED", "the database could not be queried") from None
-    finally:
-        engine.dispose()
-
-    return counts, max(unexpected - len(counts), 0)
-
-
-# Lists the objects outside schema `public` that depend on application
-# objects. Read-only; the reset preflight uses it so the operator learns of a
-# blocker before being asked to confirm anything.
-# Parameters:
-# - verified: verified target.
-# Returns:
-# - (dependent, referenced) descriptions; empty when the reset stays inside its scope.
-def external_dependents(verified: VerifiedTarget) -> List[Tuple[str, str]]:
-    engine = _engine(verified.configured, PROBE_OPTIONS)
-
-    try:
-        with engine.connect() as connection:
-            return reset_scope.external_dependents(connection)
-    except Exception:
-        raise StagingRefused("PROBE_FAILED", "the database could not be queried") from None
-    finally:
-        engine.dispose()
-
-
-# Removes every application object from `public` in ONE transaction, never
-# outside it (see reset_scope for the four layers that guarantee this).
-# The connection is bound to the verified identity (bound_engine), takes the
-# staging advisory lock, and the transaction commits only when no out-of-scope
-# object changed and nothing unexpected remains in `public`. Supabase-managed
-# schemas (auth, storage, ...) and roles are never touched.
-# Parameters:
-# - verified: verified target.
-# Returns:
-# - Number of objects dropped.
-# Raises:
-# - StagingRefused: LOCK_BUSY, EXTERNAL_DEPENDENCIES, EXTERNAL_OBJECT_CHANGED,
-#   RESET_BLOCKED, RESET_INCOMPLETE, RESET_FAILED; the transaction rolls back.
-def destroy_application_objects(verified: VerifiedTarget) -> int:
-    engine = bound_engine(verified)
-
-    try:
-        with engine.begin() as connection:
-            if not connection.exec_driver_sql("SELECT pg_try_advisory_xact_lock(%s, %s)" % binding.LOCK_KEYS).scalar():
-                raise StagingRefused("LOCK_BUSY", "another staging bootstrap, reset or seed is running")
-
-            dropped = reset_scope.drop_scope(connection)
-
-            if connection.exec_driver_sql(binding.UNEXPECTED_OBJECTS_SQL).scalar():
-                raise StagingRefused("RESET_INCOMPLETE", "schema objects remain after the reset; nothing was committed")
-    except StagingRefused:
-        raise
-    except Exception:
-        raise StagingRefused("RESET_FAILED", "the reset failed and was rolled back") from None
-    finally:
-        engine.dispose()
-
-    return dropped
-
-
 # Holds the staging advisory lock for the whole seed, on a dedicated
 # connection bound to the verified identity.
 # The services commit between steps, so only a SESSION lock outlives them; it
@@ -197,7 +116,7 @@ def destroy_application_objects(verified: VerifiedTarget) -> int:
 # Yields:
 # - A callable that raises SEED_LOCK_LOST unless this connection still holds the lock.
 # Raises:
-# - StagingRefused: LOCK_BUSY when another seed, reset or bootstrap holds it.
+# - StagingRefused: LOCK_BUSY when another seed or bootstrap holds it.
 @contextmanager
 def seed_lock(verified: VerifiedTarget) -> Iterator[Callable[[], None]]:
     engine = bound_engine(verified)
@@ -213,7 +132,7 @@ def seed_lock(verified: VerifiedTarget) -> Iterator[Callable[[], None]]:
             raise StagingRefused("PROBE_FAILED", "the seed lock could not be acquired") from None
 
         if not acquired:
-            raise StagingRefused("LOCK_BUSY", "another staging bootstrap, reset or seed is running")
+            raise StagingRefused("LOCK_BUSY", "another staging bootstrap or seed is running")
 
         held_sql = (
             "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND objid = %s AND objsubid = 2 "

@@ -2,8 +2,8 @@
 Staging-only operations tooling (VF-QA-1).
 
 What:
-    Identity guard, empty-database bootstrap, explicit reset and deterministic
-    seed for the isolated staging environment.
+    Identity guard, empty-database bootstrap and deterministic seed for the isolated
+    staging environment. The reset is disabled (see reset.py).
 
 Why:
     Every mutating staging operation must prove which database it is about to

@@ -25,7 +25,7 @@ Statuses: `UNKNOWN` / `PROVIDED` / `VERIFIED` / `BLOCKED`.
 | OI-13 | Backend instance (own deployment or local container) and its environment name | Runs the API against staging only | Owner | UNKNOWN | Fingerprint of the API origin matches the QA-0 register | Yes |
 | OI-14 | Receipt storage bucket (staging project) or `local` driver | Separate receipt storage | Owner | UNKNOWN | Upload of a synthetic receipt lands in the staging bucket only | Yes |
 | OI-15 | Staging secret store and its access list | Holds every secret; no production overlap | Owner | UNKNOWN | Access list reviewed; no production credential present | Yes |
-| OI-16 | Operators and written authorization per mutating run | Who may bootstrap, reset, seed | Owner | UNKNOWN | Authorization reference stored with the evidence record | Yes |
+| OI-16 | Operators and written authorization per mutating run | Who may bootstrap and seed (the reset is disabled) | Owner | UNKNOWN | Authorization reference stored with the evidence record | Yes |
 | OI-17 | Auth: email sign-up and confirmation behaviour | MF-4, J19 | Owner / QA-1 | UNKNOWN | Setting recorded in the [Auth checklist](supabase-auth-checklist.md) | Before MF-4 |
 | OI-18 | Auth: SMTP provider for confirmation and recovery mail | MF-4, J19, J20 | Owner | UNKNOWN | A test message is received for each template | Before MF-4 |
 | OI-19 | Auth: password policy | MF-4 validation copy | Owner | UNKNOWN | Setting recorded; behaviour observed | Before MF-4 |
@@ -42,8 +42,8 @@ Statuses: `UNKNOWN` / `PROVIDED` / `VERIFIED` / `BLOCKED`.
 
 - **OI-04** is a genuine architecture question the repository cannot answer: whether a database named `*_staging` can be created
   inside a hosted Supabase project, or whether staging uses a separate PostgreSQL server for the application tables. The independent review
-  recommends **architecture A** (a separate staging Supabase project for Auth and Storage plus a dedicated PostgreSQL 17 database
-  `valor_staging`). Consequence the owner must accept in writing: Data API parity with production hardening (`edcfdf3f7114`) **cannot be
+  recommended, and the owner's reduced-scope MVP simplification (2026-11-04) selects as the documented direction, **architecture A** (a separate staging Supabase project for Auth and Storage plus a dedicated PostgreSQL 17 database
+  `valor_staging`), with a separate staging FastAPI and staging-only mobile QA builds. This is a documented selection, **not** an executed or fully approved provisioning: OI-04 stays UNKNOWN until the owner records the concrete decision. Consequence the owner must accept in writing: Data API parity with production hardening (`edcfdf3f7114`) **cannot be
   verified on staging** and is reported `NOT VERIFIED` (OI-27). Architecture B (a second database in a hosted Supabase project) is unverified
   and shares a server with the Auth side. Until the owner decides, the guard stays strict (`_staging` is mandatory) and no provisioning can start.
 - **OI-07**: the roadmap prefers PostgreSQL 17 for staging while production's major is stated only as "per ops notes"; the owner confirms.

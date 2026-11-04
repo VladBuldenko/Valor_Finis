@@ -454,7 +454,7 @@ and needs its own explicit authorization:
 
 # 🧪 Staging tooling (VF-QA-1)
 
-Building, resetting and seeding the isolated staging database is done only with `services/api/staging_ops`, never with a hand-typed
+Building and seeding the isolated staging database (the reset is disabled) is done only with `services/api/staging_ops`, never with a hand-typed
 `alembic upgrade` or ad-hoc SQL. Every mutating command passes a fail-closed identity guard against an owner-held approved-targets
 file stored outside the repository. Runbook, owner inputs and checklists: [operations/staging/](operations/staging/staging-architecture-and-runbook.md).
 Tests: `tests/unit/staging_tooling` (no database) and `tests/integration/staging_tooling` (they start their own throw-away local

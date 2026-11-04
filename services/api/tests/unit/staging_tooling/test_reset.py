@@ -1,164 +1,157 @@
-"""Reset: separate, explicitly destructive, never automatic."""
+"""
+The staging reset is DISABLED / DEFERRED (owner-approved scope change).
 
-import json
-import os
+These tests prove it cannot run, not merely that it warns: every callable and
+command-line entry point refuses first, before configuration, targets,
+connections or SQL, and no destructive capability exists to be reached.
+"""
+
+import ast
+import importlib
+import inspect
+import pathlib
+import re
+import socket
 
 import pytest
 
+import staging_ops
+from staging_ops import cli, database, operations as operations_module
+from staging_ops.cli import EXIT_REFUSED, EXIT_USAGE, main
 from staging_ops.errors import StagingRefused
-from staging_ops.reset import interactive_confirm, reset
+from staging_ops.reset import reset
 
 from . import helpers as h
 
 PHRASE = f"STG-1/{h.DATABASE}@{h.STAGING_HOST}:5432"
+PACKAGE = pathlib.Path(staging_ops.__file__).parent
 
 
-def reset_probes():
-    # verify, identity re-check, emptied check, build_to_head fresh, after-upgrade
-    return [h.facts(unexpected_objects=7, alembic_revisions=(h.HEAD,)), h.facts(unexpected_objects=7, alembic_revisions=(h.HEAD,)), h.facts(), h.facts(), h.migrated_facts()]
+class Untouchable:
+    """Stands in for every capability; any call or attribute access fails the test."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"the disabled reset touched {name}")
 
 
-def run(ops, confirm, environ=None, flag="staging", said=None, evidence_dir=None):
-    return reset(flag, "STG-1", environ if environ is not None else h.good_environ(), h.approved(), ops.as_operations(), confirm, evidence_dir, say=(said.append if said is not None else (lambda _t: None)))
-
-
-def refuse(ops, confirm, code, **kwargs):
+def refuses(*arguments, **keywords):
     with pytest.raises(StagingRefused) as caught:
-        run(ops, confirm, **kwargs)
+        reset(*arguments, **keywords)
 
-    assert caught.value.code == code, caught.value
-    assert ops.destroyed == 0 and not ops.alembic_arguments, "nothing may be destroyed or rebuilt on a refusal"
-    assert not caught.value.mutated
+    assert caught.value.code == "RESET_DISABLED" and not caught.value.mutated
+    assert "disabled" in caught.value.message and "newly provisioned" in caught.value.message
 
     return caught.value
 
 
-class TestRefusals:
-    def test_missing_confirmation(self):
-        refuse(h.FakeOps(probes=reset_probes()), None, "CONFIRMATION_MISSING")
+class TestTheCallableRefusesFirst:
+    def test_a_fully_valid_request_with_the_exact_phrase_is_still_refused_and_touches_nothing(self):
+        ops = h.FakeOps()
+        refuses("staging", "STG-1", h.good_environ(), h.approved(), ops.as_operations(), lambda _prompt: PHRASE, None, say=lambda _t: None)
 
-    @pytest.mark.parametrize("typed", ["", "yes", "y", "STG-1", f"STG-1/valor_other_staging@{h.STAGING_HOST}:5432", f"STG-1/{h.DATABASE}@other-db.example.test:5432", PHRASE.lower(), PHRASE + " extra", " " + PHRASE])
-    def test_confirmation_must_equal_the_exact_target_identity(self, typed):
-        refuse(h.FakeOps(probes=reset_probes()), lambda _prompt: typed, "CONFIRMATION_MISMATCH")
+        assert ops.calls == [] and ops.mutations == 0
 
-    def test_a_confirmation_naming_a_different_database_is_refused(self):
-        refuse(h.FakeOps(probes=reset_probes()), lambda _prompt: f"STG-1/valor_production_staging@{h.STAGING_HOST}:5432", "CONFIRMATION_MISMATCH")
+    def test_nothing_is_read_from_the_arguments(self):
+        refuses(Untouchable(), Untouchable(), Untouchable(), Untouchable(), Untouchable(), Untouchable())
+        refuses()
+        refuses(environment_flag="staging", staging_id="STG-1", environ=Untouchable(), approved=Untouchable(), operations=Untouchable())
 
-    @pytest.mark.parametrize("flag", [None, "production", "test"])
-    def test_environment_flag_gate_precedes_everything(self, flag):
-        ops = h.FakeOps(probes=reset_probes())
-        refuse(ops, lambda _prompt: PHRASE, "ENV_FLAG_MISSING" if flag is None else "ENV_FLAG_WRONG", flag=flag)
-        assert "describe" not in ops.calls
+    def test_it_does_not_write_evidence(self, tmp_path):
+        refuses("staging", "STG-1", h.good_environ(), h.approved(), h.FakeOps().as_operations(), lambda _p: PHRASE, str(tmp_path))
 
-    def test_identity_failures_refuse_before_any_prompt(self):
-        asked = []
-        ops = h.FakeOps(probes=reset_probes())
+        assert list(tmp_path.iterdir()) == []
 
-        refuse(ops, lambda prompt: asked.append(prompt) or PHRASE, "TARGET_NOT_ALLOWLISTED", environ=h.good_environ(DATABASE_URL=h.database_url(host="other-db.example.test")))
-        assert asked == []
-
-    def test_production_target_refused(self):
-        refuse(h.FakeOps(probes=reset_probes()), lambda _p: PHRASE, "DENYLIST_HIT", environ=h.good_environ(DATABASE_URL=h.database_url(host=h.PRODUCTION_HOST)))
-
-    def test_identity_that_changes_while_the_operator_confirms(self):
-        probes = reset_probes()
-        probes[1] = h.facts(postmaster_start="1700009999.0", unexpected_objects=7, alembic_revisions=(h.HEAD,))
-
-        refuse(h.FakeOps(probes=probes), lambda _p: PHRASE, "IDENTITY_CHANGED")
-
-    def test_non_interactive_input_cannot_confirm(self):
-        # pytest runs without a terminal; `yes | ...` style automation must be refused.
-        with pytest.raises(StagingRefused) as caught:
-            interactive_confirm("prompt: ")
-
-        assert caught.value.code == "CONFIRMATION_NOT_INTERACTIVE"
+    def test_the_old_interactive_confirmation_path_no_longer_exists(self):
+        assert not hasattr(importlib.import_module("staging_ops.reset"), "interactive_confirm")
 
 
-class TestScopePreflight:
-    DEPENDENTS = [("view analytics.totals", "table accounts"), ("constraint fk_x on table audit.log", "table goals")]
+class TestTheCommandLineRefusesFirst:
+    def test_reset_exits_11_with_no_capability_call(self, tmp_path, capsys):
+        ops = h.FakeOps()
+        code = main(["reset", "--environment", "staging", "--staging", "STG-1", "--approved-targets", h.write_approved_file(tmp_path), "--evidence-dir", str(tmp_path / "evidence")], h.good_environ(), ops.as_operations(), say=lambda _t: None)
+        captured = capsys.readouterr()
 
-    def test_external_dependents_are_refused_before_any_prompt_or_description(self):
-        asked, said = [], []
-        ops = h.FakeOps(probes=reset_probes(), dependents=self.DEPENDENTS)
+        assert code == EXIT_REFUSED and ops.calls == [] and ops.mutations == 0
+        assert "RESET_DISABLED" in captured.err and not (tmp_path / "evidence").exists()
 
-        error = refuse(ops, lambda prompt: asked.append(prompt) or PHRASE, "EXTERNAL_DEPENDENCIES", said=said)
+    def test_it_is_refused_before_the_approved_targets_are_read(self, tmp_path, capsys):
+        # The file does not exist: a command that reached it would fail with a different code.
+        code = main(["reset", "--approved-targets", str(tmp_path / "missing.json")], h.good_environ(), h.FakeOps().as_operations(), say=lambda _t: None)
 
-        assert asked == [] and "describe" not in ops.calls
-        assert "2 object(s)" in error.message and any("analytics.totals" in line for line in said)
+        assert code == EXIT_REFUSED and "RESET_DISABLED" in capsys.readouterr().err
 
-    def test_a_scope_refusal_by_the_destroy_transaction_is_reported_as_unchanged(self):
-        for code in ("EXTERNAL_DEPENDENCIES", "EXTERNAL_OBJECT_CHANGED", "RESET_BLOCKED", "LOCK_BUSY"):
-            ops = h.FakeOps(probes=reset_probes())
+    def test_it_is_refused_even_without_any_other_argument(self, capsys):
+        assert main(["reset"], {}, h.FakeOps().as_operations(), say=lambda _t: None) == EXIT_REFUSED
+        assert "RESET_DISABLED" in capsys.readouterr().err
 
-            def destroy(_verified, code=code):
-                raise StagingRefused(code, "rolled back")
+    def test_it_does_not_open_a_database_connection_or_any_socket(self, tmp_path, monkeypatch):
+        from sqlalchemy import create_engine
 
-            operations = ops.as_operations()
-            operations.destroy = destroy
+        import psycopg2
 
-            with pytest.raises(StagingRefused) as caught:
-                reset("staging", "STG-1", h.good_environ(), h.approved(), operations, lambda _p: PHRASE, None, say=lambda _t: None)
+        def forbidden(*_a, **_k):
+            raise AssertionError("a connection was attempted")
 
-            assert caught.value.code == code and not caught.value.mutated and not ops.alembic_arguments
+        monkeypatch.setattr(database, "create_engine", forbidden)
+        monkeypatch.setattr("sqlalchemy.create_engine", forbidden)
+        monkeypatch.setattr(psycopg2, "connect", forbidden)
+        monkeypatch.setattr(socket, "create_connection", forbidden)
+        monkeypatch.setattr(socket.socket, "connect", forbidden)
 
-    def test_an_unclassified_destroy_failure_stays_reported_as_possibly_changed(self):
-        ops = h.FakeOps(probes=reset_probes())
-        operations = ops.as_operations()
-        operations.destroy = lambda _verified: (_ for _ in ()).throw(RuntimeError("driver text"))
+        # The REAL operations are wired, so any attempted use would reach a driver and fail the test.
+        code = main(["reset", "--environment", "staging", "--staging", "STG-1", "--approved-targets", h.write_approved_file(tmp_path), "--evidence-dir", str(tmp_path / "e")], h.good_environ(), None, say=lambda _t: None)
 
-        with pytest.raises(StagingRefused) as caught:
-            reset("staging", "STG-1", h.good_environ(), h.approved(), operations, lambda _p: PHRASE, None, say=lambda _t: None)
+        assert code == EXIT_REFUSED
 
-        assert caught.value.code == "UNEXPECTED" and caught.value.mutated
+    @pytest.mark.parametrize("flag", ["--force", "--yes", "-y", "--skip-confirmation", "--confirm", "--no-verify"])
+    def test_no_flag_can_enable_it(self, flag, tmp_path):
+        ops = h.FakeOps()
 
-    def test_blocker_text_is_redacted(self):
-        said = []
-        ops = h.FakeOps(probes=reset_probes(), dependents=[(f"foreign table x server postgres://u:{h.PASSWORD}@{h.STAGING_HOST}/d", "table accounts")])
+        assert main(["reset", flag, "--staging", "STG-1", "--approved-targets", h.write_approved_file(tmp_path)], h.good_environ(), ops.as_operations()) in (EXIT_USAGE, EXIT_REFUSED)
+        assert ops.calls == []
 
-        refuse(ops, lambda _p: PHRASE, "EXTERNAL_DEPENDENCIES", said=said)
+    def test_the_module_docstring_lists_no_reset_invocation(self):
+        assert not re.search(r"python -m staging_ops reset\s+--", inspect.getsource(cli))
 
-        assert h.PASSWORD not in "\n".join(said) and h.STAGING_HOST not in "\n".join(said)
+    def test_main_no_longer_accepts_a_confirmation_callback(self):
+        assert "confirm" not in inspect.signature(main).parameters
 
 
-class TestConfirmedReset:
-    def test_destroys_then_rebuilds_in_a_safe_order_and_describes_the_loss(self):
-        ops = h.FakeOps(probes=reset_probes())
-        said = []
-        record = run(ops, lambda _p: PHRASE, said=said)
+class TestNoDestructiveCapabilityExists:
+    """The strongest guarantee: there is nothing to call. Grep-level checks over the whole package."""
 
-        assert ops.calls == ["supabase", "probe", "external_dependents", "describe", "probe", "destroy", "probe", "heads", "probe", "alembic", "probe"]
-        assert ops.alembic_arguments == [("upgrade", "head")]
-        assert record.outcome == "OK" and record.details["rows_to_destroy"] == 15
+    def test_the_operations_bundle_has_no_destructive_field(self):
+        fields = set(operations_module.Operations.__dataclass_fields__)
 
-        text = "\n".join(said)
-        assert "PERMANENTLY DESTROY" in text and "accounts: 12 rows" in text and "Supabase Auth users" in text
-        # Only claims the SQL guarantees: RESTRICT, rollback on any out-of-scope change, no "all other schemas are safe" promise.
-        assert "RESTRICT" in text and "other schema" in text and "Privileges granted" in text
+        assert not fields & {"destroy", "describe", "external_dependents", "reset"}
 
-    def test_prompt_shows_the_identity_to_type_but_nothing_secret(self):
-        prompts = []
+    def test_the_database_module_has_no_removal_primitive(self):
+        assert not [name for name in dir(database) if re.search(r"destroy|drop|reset|truncate", name, re.I)]
 
-        run(h.FakeOps(probes=reset_probes()), lambda prompt: prompts.append(prompt) or PHRASE)
+    def test_the_removed_scope_module_cannot_be_imported(self):
+        with pytest.raises(ImportError):
+            importlib.import_module("staging_ops.reset_scope")
 
-        assert PHRASE in prompts[0] and h.PASSWORD not in prompts[0]
+        assert not (PACKAGE / "reset_scope.py").exists()
 
-    def test_database_not_empty_after_the_destroy_stops_the_rebuild(self):
-        probes = reset_probes()
-        probes[2] = h.facts(unexpected_objects=2)
-        ops = h.FakeOps(probes=probes)
+    def test_no_string_in_the_package_can_execute_a_removal(self):
+        statement = re.compile(r"^\s*(DROP|TRUNCATE|ALTER\s+\w+\s+.*\bDROP\b|DELETE\s+FROM)\b|\bCASCADE\b", re.I)
+        offenders = []
 
-        with pytest.raises(StagingRefused) as caught:
-            run(ops, lambda _p: PHRASE)
+        for path in sorted(PACKAGE.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            docstrings = {id(node.body[0].value) for node in ast.walk(tree) if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and node.body and isinstance(node.body[0], ast.Expr) and isinstance(getattr(node.body[0], "value", None), ast.Constant)}
 
-        assert caught.value.code == "POST_RESET_CHECK_FAILED" and caught.value.mutated
-        assert not ops.alembic_arguments
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings and statement.search(node.value):
+                    offenders.append(f"{path.name}:{node.lineno}: {node.value[:60]!r}")
 
-    def test_evidence_of_a_reset_is_redacted(self, tmp_path):
-        run(h.FakeOps(probes=reset_probes()), lambda _p: PHRASE, evidence_dir=str(tmp_path))
-        (name,) = os.listdir(tmp_path)
-        text = (tmp_path / name).read_text()
+        assert offenders == []
 
-        assert json.loads(text)["operation"] == "reset"
+    def test_no_pipeline_script_or_runbook_command_invokes_the_reset(self):
+        root = PACKAGE.parents[2]
+        runbook_files = list((root / "docs" / "operations" / "staging").rglob("*.md")) + list((root / "docs" / "operations" / "staging").rglob("*.sh"))
+        pattern = re.compile(r"staging_ops\s+reset\s+-", re.I)
 
-        for secret in (h.PASSWORD, h.PUBLISHABLE_KEY, h.STAGING_HOST, "svc_user"):
-            assert secret not in text
+        assert runbook_files
+        assert [str(path) for path in runbook_files if pattern.search(path.read_text(encoding="utf-8"))] == []
