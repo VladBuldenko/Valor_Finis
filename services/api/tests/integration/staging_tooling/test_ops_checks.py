@@ -166,19 +166,59 @@ class TestRunnerRefusals:
         assert run(STAGING_RUNNER, pg_bin, local_cluster, "app_database_security", staging_db, PGDATABASE="other_staging")[0] == 64
 
 
+SUPABASE_LIKE_ROLES = "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN; END IF; END $$"
+
+
 class TestSupabaseProjectExposure:
     @pytest.fixture
     def project_db(self, local_cluster):
-        name = f"vfqa1_supabase_like_{os.getpid()}"
-        execute(local_cluster, "postgres", f'DROP DATABASE IF EXISTS "{name}"', f'CREATE DATABASE "{name}"')
+        """A database shaped like a Supabase project database: the three Data API roles and an auth schema."""
 
-        return name
+        name = f"vfqa1_supabase_like_{os.getpid()}"
+        # Roles are cluster-global: never let them leak into another test.
+        execute(local_cluster, "postgres", f'DROP DATABASE IF EXISTS "{name}"', STAND_IN_ROLES)
+        execute(local_cluster, "postgres", f'CREATE DATABASE "{name}"', SUPABASE_LIKE_ROLES)
+        execute(local_cluster, name, "CREATE SCHEMA auth")
+
+        yield name
+
+        execute(local_cluster, "postgres", f'DROP DATABASE IF EXISTS "{name}"', STAND_IN_ROLES)
 
     def test_a_project_database_without_application_relations_passes_but_is_not_parity(self, local_cluster, pg_bin, project_db):
         code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "supabase_project_exposure", project_db, user="postgres")
 
         assert code == 0, output
+        assert row_status(output, "supabase_data_api_roles_present") == "OK" and row_status(output, "supabase_auth_schema_present") == "OK"
         assert "no_application_relations_in_public" in output and PARITY_LINE in output
+
+    @pytest.mark.parametrize("missing_role", ["anon", "authenticated", "service_role"])
+    def test_a_missing_data_api_role_stops_instead_of_passing(self, local_cluster, pg_bin, project_db, missing_role):
+        execute(local_cluster, "postgres", f"DROP ROLE {missing_role}")
+        code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "supabase_project_exposure", project_db, user="postgres")
+
+        assert code == 10 and "RESULT: STOP" in output, output
+        assert row_status(output, "supabase_data_api_roles_present") == "FAIL" and PARITY_LINE in output
+
+    def test_a_plain_database_without_roles_or_auth_schema_stops(self, local_cluster, pg_bin):
+        """The reviewer's case: the wrong database (a plain one) must never produce a PASS."""
+
+        name = f"vfqa1_plain_{os.getpid()}"
+        execute(local_cluster, "postgres", f'DROP DATABASE IF EXISTS "{name}"', STAND_IN_ROLES)
+        execute(local_cluster, "postgres", f'CREATE DATABASE "{name}"')
+
+        try:
+            code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "supabase_project_exposure", name, user="postgres")
+        finally:
+            execute(local_cluster, "postgres", f'DROP DATABASE IF EXISTS "{name}"')
+
+        assert code == 10 and "RESULT: STOP" in output, output
+        assert row_status(output, "supabase_data_api_roles_present") == "FAIL" and row_status(output, "supabase_auth_schema_present") == "FAIL"
+
+    def test_a_missing_auth_schema_stops_even_with_all_roles(self, local_cluster, pg_bin, project_db):
+        execute(local_cluster, project_db, "DROP SCHEMA auth")
+        code, output = run(STAGING_RUNNER, pg_bin, local_cluster, "supabase_project_exposure", project_db, user="postgres")
+
+        assert code == 10 and row_status(output, "supabase_auth_schema_present") == "FAIL", output
 
     @pytest.mark.parametrize("statement, failing", [
         ("CREATE TABLE public.accounts (id int)", "no_application_relations_in_public"),

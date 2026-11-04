@@ -9,6 +9,8 @@
 -- This is an EXPOSURE check. It is NOT parity with the production hardening (migration edcfdf3f7114): that
 -- hardening revokes privileges on the application tables, and there are none here to revoke.
 --
+-- Limitation: it inspects schema public only, and it proves nothing about Data API parity (see the runbook, 6.1).
+--
 -- READ ONLY, rolled back, bounded timeouts, catalog metadata only (no row content).
 BEGIN READ ONLY;
 SET LOCAL statement_timeout = '10s';
@@ -45,9 +47,13 @@ checks(ord, check_name, gating, ok, expected, actual) AS (
         NOT EXISTS (SELECT 1 FROM public_relations), '0', (SELECT count(*)::text FROM public_relations)),
     (6, 'no_application_functions_in_public', true,
         NOT EXISTS (SELECT 1 FROM public_functions), '0', (SELECT count(*)::text FROM public_functions)),
-    (7, 'supabase_data_api_roles_present', false, false, 'informational only',
-        (SELECT count(*)::text FROM supabase_roles) || ' of 3'),
-    (8, 'server_version', false, false, '-', split_part(version(), ' on ', 1))
+    -- A database without the Supabase roles or the auth schema is not a Supabase project database
+    -- (typically the wrong database was targeted), so this exposure check must STOP, never pass vacuously.
+    (7, 'supabase_data_api_roles_present', true,
+        (SELECT count(*) FROM supabase_roles) = 3, 'anon, authenticated, service_role', (SELECT count(*)::text FROM supabase_roles) || ' of 3'),
+    (8, 'supabase_auth_schema_present', true,
+        to_regnamespace('auth') IS NOT NULL, 'schema auth exists', CASE WHEN to_regnamespace('auth') IS NOT NULL THEN 'present' ELSE 'absent' END),
+    (9, 'server_version', false, false, '-', split_part(version(), ' on ', 1))
 )
 SELECT check_name, status, expected, actual FROM (
     SELECT ord, check_name,
