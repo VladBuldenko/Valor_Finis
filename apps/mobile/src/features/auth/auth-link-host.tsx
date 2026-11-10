@@ -3,7 +3,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 
 import { authLinkHandler } from "../../lib/auth-link-runtime";
-import { useAuth } from "./auth-context";
+import { useAuth, useRecoverySnapshot } from "./auth-context";
 import type { LinkOutcome } from "./auth-link-handler";
 
 // Mounted once, inside the AuthProvider. It (1) starts the pending auth link once
@@ -41,6 +41,9 @@ function showNotice(outcome: LinkOutcome, signedIn: boolean, requestNewLink: () 
 export function AuthLinkHost() {
   const { isLoading, session } = useAuth();
   const router = useRouter();
+  const recovery = useRecoverySnapshot();
+  // A link waits for the startup resolution of an earlier recovery (see recovery-startup.ts).
+  const ready = !isLoading && recovery.phase !== "resolving";
   const notice = useSyncExternalStore(
     authLinkHandler.subscribeNotice,
     authLinkHandler.getNotice,
@@ -48,7 +51,7 @@ export function AuthLinkHost() {
   );
 
   useEffect(() => {
-    if (isLoading) {
+    if (!ready) {
       return undefined;
     }
 
@@ -57,7 +60,7 @@ export function AuthLinkHost() {
     return authLinkHandler.subscribePending(() => {
       void authLinkHandler.drain();
     });
-  }, [isLoading]);
+  }, [ready]);
 
   useEffect(() => {
     if (!notice) {

@@ -2,7 +2,7 @@ import { createGuardedPasswordUpdate } from "../../api/auth-operations";
 import type { OwnershipProof } from "../../api/session-lifecycle";
 import { authRedirectUrl, recoveryState } from "../../lib/auth-link-runtime";
 import { authOperations } from "../../lib/auth-queue";
-import { endSessionIfOwned, sessionBoundary } from "../../lib/session-runtime";
+import { endSessionVerified, sessionBoundary } from "../../lib/session-runtime";
 import { supabase } from "../../lib/supabase";
 import {
   registerAccount,
@@ -157,8 +157,10 @@ export async function setRecoveredPassword(
 }
 
 // Leaves the recovery without choosing a password: the recovery session is ended
-// on this device (local scope: the user's other devices stay signed in).
-export async function cancelRecovery(): Promise<"cancelled" | "stale"> {
+// on this device (local scope: the user's other devices stay signed in). "failed" =
+// the session could NOT be ended (for example the auth server is unreachable and the
+// stored session has expired): the recovery stays in force and its record stays.
+export async function cancelRecovery(): Promise<"cancelled" | "stale" | "failed"> {
   const owned = recoveryProof();
 
   if (!owned) {
@@ -167,7 +169,13 @@ export async function cancelRecovery(): Promise<"cancelled" | "stale"> {
 
   navigationIntent.discard();
 
-  const result = await endSessionIfOwned(owned.proof);
+  let result: "signed-out" | "stale";
+
+  try {
+    result = await endSessionVerified(owned.proof);
+  } catch {
+    return "failed";
+  }
 
   if (result === "signed-out") {
     recoveryState.complete(owned.userId);

@@ -3,7 +3,7 @@
 // and the auth provider so both talk to the same instances.
 import { navigationIntent } from "../features/auth/navigation-intent";
 import { SessionBoundary } from "../api/session-boundary";
-import { createGuardedSessionEnd, createQueuedRefresh } from "../api/auth-operations";
+import { createGuardedSessionEnd, createQueuedRefresh, createVerifiedLocalSignOut } from "../api/auth-operations";
 import { createSessionLifecycle } from "../api/session-lifecycle";
 import { SessionQueryClient } from "./session-query-client";
 import { authOperations } from "./auth-queue";
@@ -27,6 +27,17 @@ export const endSessionIfOwned = createGuardedSessionEnd({
   signOutLocal: async () => {
     await rawSupabase.auth.signOut({ scope: "local" });
   },
+});
+
+// Like endSessionIfOwned, but it THROWS unless the session is really gone (see
+// createVerifiedLocalSignOut). For cancelling a password recovery and for the startup
+// resolution, which remove their durable record only because the session ended.
+export const endSessionVerified = createGuardedSessionEnd({
+  queue: authOperations,
+  signOutLocal: createVerifiedLocalSignOut({
+    signOutLocal: () => rawSupabase.auth.signOut({ scope: "local" }),
+    currentUserId: () => sessionBoundary.snapshot().userId,
+  }),
 });
 
 export const sessionLifecycle = createSessionLifecycle({

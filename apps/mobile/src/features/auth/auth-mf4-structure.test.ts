@@ -16,6 +16,8 @@ const LOGIC = [
   "src/features/auth/auth-registration.ts",
   "src/features/auth/password-recovery.ts",
   "src/features/auth/recovery-state.ts",
+  "src/features/auth/recovery-persistence.ts",
+  "src/features/auth/recovery-startup.ts",
   "src/features/auth/native-intent.ts",
 ];
 const SCREENS = [
@@ -145,6 +147,58 @@ describe("routes and the protected-route guard", () => {
     assert.match(signIn, /signInWithEmail\(/);
     assert.match(signIn, /href="\/forgot-password"/);
     assert.match(signIn, /href="\/sign-up"/);
+  });
+});
+
+describe("restart safety is wired in the app, not only in the tests", () => {
+  const runtime = code("src/lib/auth-link-runtime.ts");
+
+  it("the app's recovery state starts closed (resolving) and is kept in step with durable storage", () => {
+    assert.match(runtime, /createRecoveryState\(\{\s*initialPhase:\s*"resolving"\s*\}\)/);
+    assert.match(runtime, /createRecoveryPersistence\(AsyncStorage\)/);
+    assert.match(runtime, /bindRecoveryPersistence\(recoveryState, recoveryPersistence\)/);
+  });
+
+  it("every exchange is preceded by the awaited durable record", () => {
+    assert.match(runtime, /beforeExchange:\s*\(context\)\s*=>\s*recoveryPersistence\.writeVerifying\(context\)/);
+
+    const handler = code("src/features/auth/auth-link-handler.ts");
+
+    assert.ok(handler.indexOf("await deps.beforeExchange") < handler.indexOf("await deps.auth.exchangeCodeForSession"));
+  });
+
+  it("every settled authentication state reaches the resolver BEFORE the session is handed to React", () => {
+    const context = code("src/features/auth/auth-context.tsx");
+
+    assert.match(context, /if \(!nextLoading\)\s*\{\s*onSettledAuthState\(nextSession\?\.user\.id \?\? null, restoreFailed\)/);
+    assert.match(context, /restoreFailed = true/);
+    assert.ok(context.indexOf("recoveryState.reconcile(") < context.indexOf("onSettledAuthState(") && context.indexOf("onSettledAuthState(") < context.indexOf("setSession(nextSession)"));
+    assert.match(runtime, /createStartupResolver\(/);
+    assert.match(runtime, /endRestoredSession:[\s\S]*endSessionVerified\(/);
+  });
+
+  it("links wait for the resolution, and the navigator and rules host are closed while it runs", () => {
+    assert.match(code("src/features/auth/auth-link-host.tsx"), /recovery\.phase !== "resolving"/);
+    assert.match(code("src/features/auth/recovery-state.ts"), /input\.recovery\.phase === "resolving"/);
+    assert.match(code("src/features/auth/auth-context.tsx"), /route === "app" \? userId : null/);
+    assert.match(code("src/features/financial-rules/rules-evaluation-host.tsx"), /useAppUserId\(\)/);
+  });
+
+  it("the durable record holds user ids only and is stored through AsyncStorage in the runtime alone", () => {
+    assert.doesNotMatch(code("src/features/auth/recovery-persistence.ts"), /access_token|refresh_token|password(?!-recovery)|email|\bcode\b/i);
+
+    for (const path of [...SCREENS, "src/features/auth/auth.service.ts", "src/features/auth/auth-link-host.tsx"]) {
+      assert.doesNotMatch(code(path), /RECOVERY_MARKER_KEY|recovery-persistence/, path);
+    }
+  });
+
+  it("ending a recovery never removes the record before the session is gone", () => {
+    const service = code("src/features/auth/auth.service.ts");
+    const cancel = service.slice(service.indexOf("export async function cancelRecovery"));
+
+    assert.ok(cancel.indexOf("endSessionVerified(") < cancel.indexOf("recoveryState.complete("));
+    assert.doesNotMatch(cancel, /endSessionIfOwned/, "the unverified end could report a session as gone that is not");
+    assert.match(cancel, /catch\s*\{\s*return "failed"/);
   });
 });
 

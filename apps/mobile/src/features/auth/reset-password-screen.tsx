@@ -86,6 +86,10 @@ export function ResetPasswordScreen() {
       if (result !== "cancelled") {
         signedOutLanding.clear();
       }
+
+      if (result === "failed" && isMounted()) {
+        setFailure("We could not leave the reset. Check your connection and try again.");
+      }
     } finally {
       guard.end();
 
@@ -102,6 +106,7 @@ export function ResetPasswordScreen() {
           <AuthMessage tone="error">
             This reset session has expired. Request a new link to try again.
           </AuthMessage>
+          {failure ? <AuthMessage tone="error">{failure}</AuthMessage> : null}
           <AuthButton label="Request a new link" busy={busy} onPress={() => leave("/forgot-password")} />
         </>
       ) : (

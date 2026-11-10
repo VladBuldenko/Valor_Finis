@@ -98,10 +98,58 @@ If it falls back, add a `crypto.getRandomValues`/`subtle.digest` polyfill backed
 * **Replays.** The same URL delivered twice (initial URL plus event) is processed once. Opening a link again after it was
   used reports "invalid or expired" without calling the server. A link whose attempt could not reach the server is **not**
   marked used, so opening it again retries.
+* **Restart safety.** See section 4.1.
 * **Restored intent.** The saved location is restored only for the same user, once, and only in the `app` route (never during
   a recovery). Signed-out screens are never saved. Cancelling a recovery discards it.
 * **No automatic retry** of any authentication call; one call per user action, double taps are absorbed by a synchronous
   submit guard.
+
+### 4.1 Restart safety: a recovery session never survives a process kill as an app session
+
+Reported defect: request a reset, open the link, reach the Reset Password screen, kill the app, relaunch; auth-js restores the
+persisted recovery session and the in-memory recovery state is gone, so the data screens opened. Fixed as follows.
+
+* **Durable record** (`recovery-persistence.ts`, AsyncStorage key `valorfinis.password-recovery.v1`, user ids only, never a
+  token, code or email): `verifying {priorUserId, recoveryUserId}` is written and **awaited before every PKCE exchange** (if it
+  cannot be written the exchange is not attempted); `active {userId}` records the recovery session after it is established.
+* **Closed until resolved.** The app's recovery state starts in a `resolving` phase (`recovery-state.ts`). The root route is
+  `loading` and the rules evaluation host receives no user while it is `resolving` or `verifying`; links wait for it
+  (`auth-link-host.tsx`). The first settled authentication state goes to `createStartupResolver` **before** the session is handed
+  to React (`auth-context.tsx`, `lib/auth-link-runtime.ts`).
+* **Startup decision** (`recovery-startup.ts`, table in the file header), failing closed:
+  `active U` + session `U` -> resume the reset screen; `active U` + no/other session -> record cleared; `verifying` + no session
+  -> cleared; `verifying` + the recorded recovery user -> resumed; `verifying` + the unchanged prior user -> kept (the exchange did
+  not replace the session); `verifying` + anybody else, or an unreadable/corrupt record with a session -> the session is **ended**
+  locally through the guarded session end (ownership-checked, in the auth queue) and the record is cleared afterwards. If the
+  session cannot be ended the reset screen (with Cancel) is shown, never the app.
+* **Failed restore.** If the stored session could not be read (the restore reported an error), "no session" may only mean "not
+  loaded yet". The state becomes `deferred`: signed out as far as the app knows, the record is kept, and the state is **sticky**: a
+  link attempt that fails (or is offline) returns to `deferred`, never to `idle`, and the verifying record written before an
+  exchange **accumulates** the earlier evidence (the recovery user id) instead of overwriting it. When a session appears, the
+  gate is closed again synchronously (before it can render), also when that happens while a link attempt is running (it is
+  judged the moment the attempt ends), and the decision is made then. A `deferred` state with a session is never the app.
+* **A sign-out is only "done" when it is.** auth-js reports a failed local sign-out as `{ error }` (for example an expired stored
+  session while the auth server is unreachable: nothing is removed). Cancelling a recovery and the startup resolution use
+  `endSessionVerified` (`createVerifiedLocalSignOut`), which throws unless auth reports success **and** the session boundary shows
+  nobody signed in. Cancel then reports "failed" (the reset screen stays, its record stays, with a retry message); startup falls back
+  to the reset screen. The 401 flow keeps using the unchanged `endSessionIfOwned`.
+* **Order is the safety argument.** The record outlives the session, never the other way round: cancelling signs the session out
+  first and the record is removed when the recovery ends; a password change removes it after `updateUser` succeeded. A crash
+  in between leaves a record without a session (cleared at startup) or the reset screen again (safe), never a session without a
+  record.
+* **Crash windows** covered by tests on the real auth-js: before the record is durable (no exchange), after the exchange but
+  before the `active` record (unexplained session -> ended), during an exchange with no session stored, killed on the reset
+  screen, after a password change, after cancel, between sign-out and record removal, user B signing in after a recovery.
+
+Tests: `recovery-persistence.test.ts`, `recovery-startup.test.ts`, `recovery-state.test.ts` (resolving, reopen),
+`auth-link-handler.test.ts` (record before exchange) and the restart section of `auth-recovery-integration.test.ts`, where a
+process is "killed" (nothing durable is cleaned up) and a new one starts on the same storage, including a failed restore with a
+late session, a failing link while deferred, and a sign-out that cannot complete. Each asserts that the recorded
+route sequence never contains `app` (the only route in which data screens or Smart Rules evaluation exist).
+
+Accepted limit: a recovery link opened by a user who is **already signed in as the same user** on that device is indistinguishable
+from that user's ordinary session after a crash inside the exchange (the user already had full access, so nothing is escalated).
+A storage failure that makes the record unreadable fails closed (any session is ended).
 
 ## 5. Non-enumeration (copy rule C6)
 
@@ -163,9 +211,6 @@ the four new screens; rate-limit behavior.
   code that is useless without the verifier stored by this app, so an app that wins the scheme cannot use it. Verified
   App/Universal Links need a hosted domain and are out of scope here.
 * **Verifier strength** depends on WebCrypto being present at runtime (section 3). Unverified.
-* **Killing the app on the reset screen** leaves the recovery session stored, so the next start opens the app as that user
-  with the old password unchanged. This equals what the user proved (control of the mailbox) but is not what J20 describes;
-  "Cancel" ends the session on this device. A persisted recovery marker would close it and was left out of scope.
 * **The password change does not revoke the user's other sessions.** Add `signOut({ scope: "others" })` after a successful change
   if the owner wants that.
 * **Redirect URL environment.** The scheme is the same for every environment; staging and production are separated by
