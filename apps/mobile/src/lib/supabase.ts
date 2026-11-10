@@ -28,6 +28,12 @@ export const rawSupabase = createClient(
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,
+      // Email links (sign-up confirmation, password recovery) carry a one-time code
+      // that only THIS device can exchange (the code verifier is stored here). The
+      // default implicit flow puts a ready-made session in the link, which anybody
+      // could send to a victim (login CSRF). Password sign-in is unaffected. See
+      // docs/modules/mobile-auth.md.
+      flowType: "pkce",
       lock: processLock,
     },
     global: {

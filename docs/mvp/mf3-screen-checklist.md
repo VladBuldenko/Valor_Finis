@@ -57,6 +57,10 @@ this table and fails when a route is missing, when a "yes" is not backed by the 
 | `(app)/inbox/alerts.tsx` | `features/financial-rules/alerts-screen.tsx` | list (paged) | alert feed (infinite) | F4: refresh + Retry | yes | yes | yes | yes (paging kept) | — | done |
 | `(app)/inbox/proposals/[id].tsx` | `features/financial-rules/proposal-detail-screen.tsx` | detail | proposal | F4: refresh + Retry | yes | n/a | yes | yes | — | done |
 | `sign-in.tsx` | `features/auth/auth.service.ts` | form | none | no reads | n/a | n/a | n/a | n/a | — | done |
+| `sign-up.tsx` | `features/auth/sign-up-screen.tsx` | form | none | no reads (MF-4: new screen, no server data) | n/a | n/a | n/a | n/a | — | done |
+| `check-email.tsx` | `features/auth/check-email-screen.tsx` | form | none | no reads (MF-4: new screen, no server data) | n/a | n/a | n/a | n/a | — | done |
+| `forgot-password.tsx` | `features/auth/forgot-password-screen.tsx` | form | none | no reads (MF-4: new screen, no server data) | n/a | n/a | n/a | n/a | — | done |
+| `reset-password.tsx` | `features/auth/reset-password-screen.tsx` | form | none | no reads (MF-4: new screen, no server data) | n/a | n/a | n/a | n/a | — | done |
 
 ## Foreground refetch (all screens)
 `app/_layout.tsx` installs `lib/app-focus-runtime.ts` once. It reports a real inactive/background → active change to

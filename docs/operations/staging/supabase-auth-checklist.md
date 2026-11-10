@@ -4,9 +4,13 @@ Applies to the **staging** Supabase project only. Nothing below has been configu
 and every status is `NOT RUN` as of 2026-11-03. MF-4 (sign-up, email confirmation, recovery) must not start until this checklist is
 filled by the owner and the QA-1 operator, because drill results depend on these settings (OPS03 section 2.2).
 
-The mobile app currently uses the generic URL scheme `mobile`. The unique, production-appropriate scheme and the recovery screens
-belong to MF-4. **QA-1 must not enable a recovery redirect**: leave the redirect allowlist without any app-scheme entry until MF-4
-chooses the scheme (item A-05).
+The MF-4 *code* was implemented offline (fake and scripted auth responses only) at the owner's direction, ahead of this
+checklist. The staging *drills* (J19, J20) still depend on every item below being recorded first.
+
+MF-4 (`feat/VF-MOB-AUTH-REGISTRATION`) chose the app-specific scheme **`valorfinis`** (`apps/mobile/app.json`); the auth redirect URL
+is `valorfinis://auth/callback` (see [mobile-auth.md](../../modules/mobile-auth.md)). The allowlist entry below is still **not
+configured** by any repository change. **QA-1 must not enable a recovery redirect**: leave the redirect allowlist without any app-scheme entry until the owner adds
+`valorfinis://auth/callback` for the MF-4 staging drills (item A-05).
 
 | ID | Setting | Why it matters | Recorded value | Status |
 |---|---|---|---|---|
