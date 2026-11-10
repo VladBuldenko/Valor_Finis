@@ -27,4 +27,3 @@ export function memoryStorage(initial: Record<string, string> = {}) {
 
   return { storage, data, log, faults };
 }
-
