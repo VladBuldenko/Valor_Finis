@@ -37,6 +37,9 @@ export type Income = {
   source: IncomeSource;
   description: string | null;
   account_id: string | null;
+  // The create idempotency key the record was created with; null when the
+  // create request carried none (and for records created before keys existed).
+  client_request_id: string | null;
   base_amount: string | null;
   base_currency: string | null;
   fx_rate: string | null;
@@ -56,6 +59,11 @@ export type IncomeCreateInput = {
   source: IncomeSource;
   description?: string;
   account_id?: string;
+  // One UUID per logical create, reused when that same create is retried (see
+  // lib/create-attempts.ts). The backend then returns the already-created
+  // Income (200) instead of creating a second one. Optional on the wire: a
+  // request without it keeps the legacy, non-idempotent behavior.
+  client_request_id?: string;
 };
 
 // Mirrors backend IncomeUpdate. Every field is optional because PATCH

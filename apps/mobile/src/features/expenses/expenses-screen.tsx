@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import * as Crypto from "expo-crypto";
 import { Link } from "expo-router";
 import {
   useMutation,
@@ -20,14 +21,24 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getApiErrorMessage } from "../../api/api-error-message";
+import { describeCreateFailure } from "../../api/create-failure";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
 import { LoadError, LoadingState, QueryBoundary } from "../../components/query-states";
+import {
+  createSubmitGuard,
+  resolveCreateAttempt,
+  type CreateAttempt,
+} from "../../lib/create-attempts";
 import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "./expense-cache";
+import {
+  expensePayloadKey,
+  toExpenseCreateInput,
+  type ExpenseCreatePayload,
+} from "./expense-create-attempt";
 import {
   normalizeExpenseAmount,
   validateExpenseForm,
@@ -36,7 +47,6 @@ import {
   createExpense,
   getExpenses,
 } from "./expense.service";
-import type { ExpenseCreateInput } from "./expense.types";
 import { styles } from "./expenses.styles";
 
 function getCurrentLocalDate(): string {
@@ -108,10 +118,23 @@ export function ExpensesScreen() {
       : (categories.find((category) => category.id === selectedCategoryId)
           ?.name ?? "Uncategorized");
 
+  // Create idempotency (VF-MVP-CORE-002). The attempts of this form instance
+  // are kept across failed submissions, so a retry of the same payload reuses
+  // its client_request_id (the backend then replays the saved Expense instead of
+  // adding a second one); they are cleared after a success. Refs, not state:
+  // they never affect rendering and are only read in event handlers. The guard
+  // is synchronous, unlike isPending, which only turns true after a re-render.
+  const createAttemptsRef = useRef<CreateAttempt<ExpenseCreatePayload>[]>([]);
+  const submitGuardRef = useRef(createSubmitGuard());
+
   const createExpenseMutation = useMutation({
     mutationFn: createExpense,
 
+    // 201 (new) and 200 (exact replay of an earlier, possibly lost, attempt)
+    // are the same success: the body is the Expense's current state either way.
     onSuccess: async (createdExpense) => {
+      createAttemptsRef.current = [];
+
       // Date, category, and currency stay for quick repeated entry; the
       // Account resets to "No account" because a ledger link is
       // financially significant and must never carry over to the next
@@ -130,18 +153,33 @@ export function ExpensesScreen() {
       );
     },
 
+    // The attempts are deliberately kept: the request may have been committed
+    // even though it failed here, so resubmitting the unchanged form must reuse
+    // the same key. Only a key the backend rejected as belonging to a different
+    // request is dropped.
     onError: (mutationError) => {
-      Alert.alert(
-        "Create expense failed",
-        getApiErrorMessage(mutationError, "Unable to create expense."),
+      const failure = describeCreateFailure(
+        mutationError,
+        "expense",
+        "Unable to create expense.",
       );
+
+      if (failure.discardAttempt) {
+        createAttemptsRef.current = [];
+      }
+
+      Alert.alert(failure.title, failure.message);
+    },
+
+    onSettled: () => {
+      submitGuardRef.current.release();
     },
   });
 
   function handleCreateExpense() {
     // Guards against duplicate submissions from a double tap while the
     // request is already in flight.
-    if (createExpenseMutation.isPending) {
+    if (createExpenseMutation.isPending || submitGuardRef.current.isBusy()) {
       return;
     }
 
@@ -158,7 +196,7 @@ export function ExpensesScreen() {
       return;
     }
 
-    const payload: ExpenseCreateInput = {
+    const payload: ExpenseCreatePayload = {
       category_id: selectedCategoryId,
       title: title.trim(),
       amount: normalizeExpenseAmount(amount),
@@ -172,7 +210,28 @@ export function ExpensesScreen() {
       payload.account_id = selectedAccountId;
     }
 
-    createExpenseMutation.mutate(payload);
+    // Entered only after validation, so a rejected form never blocks the next
+    // tap; released by onSettled.
+    if (!submitGuardRef.current.tryEnter()) {
+      return;
+    }
+
+    try {
+      const { attempt, attempts } = resolveCreateAttempt(
+        createAttemptsRef.current,
+        session?.user.id ?? "",
+        expensePayloadKey(payload),
+        payload,
+        () => Crypto.randomUUID(),
+      );
+
+      createAttemptsRef.current = attempts;
+      createExpenseMutation.mutate(toExpenseCreateInput(attempt));
+    } catch (error) {
+      // Nothing was sent (onSettled will not run), so the guard must not stay held.
+      submitGuardRef.current.release();
+      throw error;
+    }
   }
 
   return (
