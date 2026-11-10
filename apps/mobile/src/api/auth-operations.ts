@@ -64,6 +64,32 @@ export function createGuardedSessionEnd(deps: {
     });
 }
 
+// The password change of a recovery session (MF-4). Supabase's updateUser acts on
+// whichever session is stored when it runs and is not a session mutator, so the
+// gateway does not queue it. This puts it in the same queue and verifies ownership
+// first, as the guarded sign-out does: a recovery screen opened for user A can never
+// change the password of user B who signed in while it was waiting.
+// `update` must be the guarded client's updateUser (it passes through, so it does not
+// queue behind itself).
+export function createGuardedPasswordUpdate(deps: {
+  queue: AuthOperationQueue;
+  update: (password: string) => Promise<{ error: unknown }>;
+}): (
+  proof: OwnershipProof,
+  password: string,
+) => Promise<{ status: "stale" } | { status: "done"; error: unknown }> {
+  return (proof, password) =>
+    deps.queue.run(async () => {
+      if (!proof.stillOwns()) {
+        return { status: "stale" as const };
+      }
+
+      const { error } = await deps.update(password);
+
+      return { status: "done" as const, error };
+    });
+}
+
 export type RefreshCall = () => Promise<{
   data: { session: { user: { id: string }; access_token: string } | null };
   error: { name?: string; status?: number } | null;
