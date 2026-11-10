@@ -4,11 +4,14 @@ import {
     useContext,
     useEffect,
     useState,
+    useSyncExternalStore,
   } from "react";
   import type { Session } from "@supabase/supabase-js";
   
+  import { recoveryState } from "../../lib/auth-link-runtime";
   import { sessionBoundary } from "../../lib/session-runtime";
   import { startAuthSession } from "./auth-session";
+  import { decideRootRoute, type RootRoute } from "./recovery-state";
   import { supabase } from "../../lib/supabase";
   
   type AuthContextValue = {
@@ -40,6 +43,9 @@ import {
           auth: supabase.auth,
           boundary: sessionBoundary,
           publish: ({ session: nextSession, isLoading: nextLoading }) => {
+            // A password recovery belongs to one user: any other user (or nobody)
+            // ends it, so it can never carry over to a different account.
+            recoveryState.reconcile(nextSession?.user.id ?? null);
             setSession(nextSession);
             setIsLoading(nextLoading);
           },
@@ -72,4 +78,26 @@ import {
     }
   
     return context;
+  }
+
+  // Where the root navigator should be (see recovery-state.ts). While a password
+  // recovery is in progress the session is NOT an app session: data screens stay
+  // unmounted until the new password is set.
+  export function useRootRoute(): { route: RootRoute; userId: string | null } {
+    const { session, isLoading } = useAuth();
+    const recovery = useSyncExternalStore(
+      recoveryState.subscribe,
+      recoveryState.getSnapshot,
+      recoveryState.getSnapshot,
+    );
+    const userId = session?.user.id ?? null;
+
+    return { route: decideRootRoute({ isLoading, userId, recovery }), userId };
+  }
+
+  // The user whose data the app may load, or null (signed out, or recovering).
+  export function useAppUserId(): string | null {
+    const { route, userId } = useRootRoute();
+
+    return route === "app" ? userId : null;
   }

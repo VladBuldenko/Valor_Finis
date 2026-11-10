@@ -7,8 +7,10 @@ import {
 
 import {
   AuthProvider,
-  useAuth,
+  useRootRoute,
 } from "../src/features/auth/auth-context";
+import { AuthLinkHost } from "../src/features/auth/auth-link-host";
+import { signedOutLanding } from "../src/features/auth/pending-confirmation";
 import { RulesEvaluationHost } from "../src/features/financial-rules/rules-evaluation-host";
 import { navigationIntent } from "../src/features/auth/navigation-intent";
 import { installAppFocusRuntime } from "../src/lib/app-focus-runtime";
@@ -16,22 +18,23 @@ import { SessionScope } from "../src/lib/session-scope";
 import { sessionQueryClient } from "../src/lib/session-runtime";
 
 function RootNavigator() {
-  const { session, isLoading } = useAuth();
+  const { route, userId } = useRootRoute();
   const router = useRouter();
   const pathname = usePathname();
-  const userId = session?.user.id ?? null;
 
   // Remember the last in-app location while signed in, so a session the
   // server invalidates can return there after re-authentication.
   useEffect(() => {
-    if (userId) {
+    if (userId && route === "app") {
       navigationIntent.track(userId, pathname);
     }
-  }, [userId, pathname]);
+  }, [userId, route, pathname]);
 
   // After signing in, restore the saved location (same user only, once).
+  // Not while a password recovery is in progress: the recovery session is not an app
+  // session, and the intent is restored (same user only, once) after it ends.
   useEffect(() => {
-    if (!userId) {
+    if (!userId || route !== "app") {
       return;
     }
 
@@ -40,9 +43,23 @@ function RootNavigator() {
     if (restored) {
       router.replace(restored as Href);
     }
-  }, [userId, router]);
+  }, [userId, route, router]);
 
-  if (isLoading) {
+  // A flow that ended the session on purpose (leaving a password recovery) may
+  // name where the signed-out user should land.
+  useEffect(() => {
+    if (route !== "signed-out") {
+      return;
+    }
+
+    const landing = signedOutLanding.consume();
+
+    if (landing) {
+      router.replace(landing);
+    }
+  }, [route, router]);
+
+  if (route === "loading") {
     return (
       <View
         style={{
@@ -58,11 +75,18 @@ function RootNavigator() {
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Protected guard={!session}>
+      <Stack.Protected guard={route === "signed-out"}>
         <Stack.Screen name="sign-in" />
+        <Stack.Screen name="sign-up" />
+        <Stack.Screen name="check-email" />
+        <Stack.Screen name="forgot-password" />
       </Stack.Protected>
 
-      <Stack.Protected guard={!!session}>
+      <Stack.Protected guard={route === "recovery"}>
+        <Stack.Screen name="reset-password" />
+      </Stack.Protected>
+
+      <Stack.Protected guard={route === "app"}>
         <Stack.Screen name="(app)" />
       </Stack.Protected>
     </Stack>
@@ -79,6 +103,7 @@ export default function RootLayout() {
     <AuthProvider>
       <SessionScope holder={sessionQueryClient}>
         <RulesEvaluationHost>
+          <AuthLinkHost />
           <RootNavigator />
         </RulesEvaluationHost>
       </SessionScope>

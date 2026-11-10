@@ -19,6 +19,16 @@ export const sessionBoundary = new SessionBoundary(() => {
 // is gone. Pass the client obtained from useQueryClient() while rendering.
 export const isCurrentQueryClient = sessionQueryClient.isCurrent;
 
+// Ends the local session only while `proof` still holds, inside the auth operation
+// queue (used by the 401 flow below and by cancelling a password recovery).
+// Inside the queue slot the UNGUARDED client is used.
+export const endSessionIfOwned = createGuardedSessionEnd({
+  queue: authOperations,
+  signOutLocal: async () => {
+    await rawSupabase.auth.signOut({ scope: "local" });
+  },
+});
+
 export const sessionLifecycle = createSessionLifecycle({
   // Runs in a queue slot and verifies ownership first (api/auth-operations.ts).
   // Inside the slot the UNGUARDED client is used.
@@ -33,14 +43,6 @@ export const sessionLifecycle = createSessionLifecycle({
     },
   }),
 
-  // Ownership is re-checked inside the queue, immediately before the side
-  // effect. This already runs inside a queue slot, so it must use the UNGUARDED
-  // client (the guarded one would queue behind itself). Every other session
-  // change is queued by the guarded client, so nothing can interleave with it.
-  endSession: createGuardedSessionEnd({
-    queue: authOperations,
-    signOutLocal: async () => {
-      await rawSupabase.auth.signOut({ scope: "local" });
-    },
-  }),
+  // Ownership is re-checked inside the queue, immediately before the side effect.
+  endSession: endSessionIfOwned,
 });

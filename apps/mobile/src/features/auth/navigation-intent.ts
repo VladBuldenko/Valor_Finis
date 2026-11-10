@@ -7,6 +7,14 @@
 const MAX_PATH_LENGTH = 200;
 const INTENT_TTL_MS = 30 * 60 * 1000;
 // Plain route segments only: no query, fragment, scheme, encoding or dots.
+const AUTH_SCREENS: ReadonlySet<string> = new Set([
+  "sign-in",
+  "sign-up",
+  "check-email",
+  "forgot-password",
+  "reset-password",
+  "auth",
+]);
 const SAFE_PATH = /^\/[A-Za-z0-9_\-/]*$/;
 
 export function sanitizeReturnPath(path: unknown): string | null {
@@ -18,7 +26,10 @@ export function sanitizeReturnPath(path: unknown): string | null {
     return null;
   }
 
-  if (path === "/sign-in" || path.startsWith("/sign-in/")) {
+  // The signed-out screens are never a place to return to.
+  const first = path.split("/")[1];
+
+  if (AUTH_SCREENS.has(first)) {
     return null;
   }
 
