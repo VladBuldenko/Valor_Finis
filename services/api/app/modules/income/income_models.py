@@ -87,6 +87,18 @@ class IncomeModel(Base):
         # so a cross-user Income<->Account link is impossible to construct
         # at the database level, not only the service level.
         UniqueConstraint("id", "user_id", name="uq_income_id_user_id"),
+        # VF-MVP-CORE-002: create idempotency. NULL keys (every row created
+        # before this stage, and requests sent without a key) never collide:
+        # PostgreSQL treats NULLs as distinct in a unique constraint.
+        UniqueConstraint(
+            "user_id",
+            "client_request_id",
+            name="uq_income_user_id_client_request_id",
+        ),
+        CheckConstraint(
+            "(client_request_id IS NULL) = (client_request_fingerprint IS NULL)",
+            name="ck_income_client_request_all_or_none",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -151,6 +163,22 @@ class IncomeModel(Base):
 
     fx_source: Mapped[Optional[str]] = mapped_column(
         String(30),
+        nullable=True,
+    )
+
+    # VF-MVP-CORE-002: client-generated create idempotency key, unique per
+    # user (uq_income_user_id_client_request_id); NULL when the request carried
+    # none. The fingerprint is the SHA-256 (hex) of the canonical create
+    # request, set together with the key (never alone), so a replay can be told
+    # apart from the same key reused for a different request even after the
+    # record was edited. Never exposed by the API.
+    client_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    client_request_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(64),
         nullable=True,
     )
 

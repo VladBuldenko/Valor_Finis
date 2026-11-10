@@ -96,7 +96,10 @@ def _rejected(database_engine: Engine, user_id: UUID, **overrides: Any) -> str:
 def test_revision_chain_has_one_head_on_top_of_e9a() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [PROGRESS_REVISION]
+    # Since VF-MVP-CORE-002 (b8e2c5d1f739) this revision is no longer the head, but it is still
+    # in the single chain, directly on top of E9A.
+    assert len(script.get_heads()) == 1
+    assert PROGRESS_REVISION in {revision.revision for revision in script.walk_revisions()}
     assert script.get_revision(PROGRESS_REVISION).down_revision == E9A_REVISION
 
 
@@ -269,7 +272,8 @@ def test_orm_metadata_matches_the_new_schema_exactly(progress_database: Engine) 
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    # The only differences left belong to LATER stages (VF-MVP-CORE-002 income/expenses columns).
+    assert exclude_stages_after(differences, PROGRESS_REVISION) == []
 
 
 def test_older_revision_differs_only_by_the_new_table(e9a_database: Engine) -> None:

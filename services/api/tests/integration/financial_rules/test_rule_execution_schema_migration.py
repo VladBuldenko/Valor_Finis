@@ -850,7 +850,9 @@ def test_orm_metadata_matches_the_e6_schema_exactly(e6_database: Engine) -> None
     # The only remaining differences belong to LATER stages (E9A rule_alerts, E10 progress).
     assert exclude_stages_after(differences, E6_REVISION) == []
     assert all(
-        "rule_alerts" in repr(difference) or "alert_dispatch_progress" in repr(difference)
+        "rule_alerts" in repr(difference)
+        or "alert_dispatch_progress" in repr(difference)
+        or "client_request" in repr(difference)
         for difference in differences
     )
 

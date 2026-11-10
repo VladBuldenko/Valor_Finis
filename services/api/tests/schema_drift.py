@@ -38,6 +38,13 @@ LATER_STAGES = (
     # VF-020E10: the alert_dispatch_progress table (and its constraints/indexes,
     # which carry the table name). The sequence is not diffed by compare_metadata.
     ("c4d8a2f6e193", ("alert_dispatch_progress",)),
+    # VF-MVP-CORE-002: the create-idempotency columns, unique constraints and
+    # CHECKs of income and expenses.
+    ("b8e2c5d1f739", (
+        "client_request_id", "client_request_fingerprint",
+        "uq_income_user_id_client_request_id", "uq_expenses_user_id_client_request_id",
+        "ck_income_client_request_all_or_none", "ck_expenses_client_request_all_or_none",
+    )),
 )
 
 REVISION_ORDER = (
@@ -49,6 +56,7 @@ REVISION_ORDER = (
     "e0503e9ca9d3",
     "a7c3e91d5b24",
     "c4d8a2f6e193",
+    "b8e2c5d1f739",
 )
 
 

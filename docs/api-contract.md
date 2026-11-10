@@ -362,6 +362,14 @@ optional Account to link this Expense to; the Account must belong to the
 authenticated user, must not be archived, and its currency must exactly
 match this Expense's currency
 
+client_request_id
+
+no
+
+optional UUID create idempotency key (VF-MVP-CORE-002), see "Create
+idempotency (Income and Expense)" below. Omitted or null keeps the legacy,
+non-idempotent behavior
+
 If category_id is provided, the category must belong to the authenticated user.
 
 VF-014B5C: the server resolves a base-currency FX snapshot for every
@@ -2716,6 +2724,14 @@ optional Account to link this Income to; the Account must belong to the
 authenticated user, must not be archived, and its currency must exactly
 match this Income's currency
 
+client_request_id
+
+no
+
+optional UUID create idempotency key (VF-MVP-CORE-002), see "Create
+idempotency (Income and Expense)" below. Omitted or null keeps the legacy,
+non-idempotent behavior
+
 Update Income
 
 PATCH /api/v1/income/{income_id}
@@ -2779,6 +2795,58 @@ expense-only and "never a cash-flow/income/savings/net-worth forecast" -
 is unchanged: income-aware analytics were added as new endpoints, not as
 a silent change to what any existing endpoint's numbers mean. There is
 still no cash-flow reconciliation or net-worth surface.
+
+Create idempotency (Income and Expense)
+
+VF-MVP-CORE-002. POST /api/v1/income and POST /api/v1/expenses accept the
+optional client_request_id (UUID), following the AccountTransfer and Goal
+transaction pattern. The client generates one UUID per logical create and
+reuses it when that same create is retried (for example after a lost
+response); a new, intentionally separate create gets a new UUID.
+
+With a client_request_id, the key is unique PER USER and per resource (the
+same UUID may be used by different users, and for an Income and an Expense):
+
+- First request: 201 Created. The record, its FX snapshot, its Account ledger
+  projection and (Income) its income.created event are written atomically,
+  together with the key.
+- Same key, same request: 200 OK with the existing record's CURRENT state
+  (including an edit made since). Nothing is created: no record, no FX
+  resolution, no ledger entry, no event and no event dispatch. A replay is not
+  new Account activity, so it still succeeds when the Account was archived
+  since, and an Expense replay does not validate the category again.
+- Same key, materially different request: 409 with code
+  income_idempotency_conflict / expense_idempotency_conflict. Nothing is
+  created; the message never echoes either request.
+- Concurrent requests with the same key create exactly one record: they are
+  serialized by a per-key advisory lock, with the unique constraint as the
+  backstop (a loser is answered like a replay, never with a 500).
+- A request refused by validation or by an Account rule (422/404/409) does not
+  consume the key.
+
+"Same request" means the same amount, currency, date, source, description and
+account_id (Income) or category_id, title, amount, currency, date,
+description, source and account_id (Expense), after schema normalization
+("100" equals "100.00", "eur" equals "EUR"). description is compared as sent:
+null and "" are different requests. The request is remembered as a SHA-256
+fingerprint at create time, so a later edit of the record never turns a
+retry into a false conflict. The key and fingerprint are never exposed except
+that the response carries client_request_id.
+
+Deleting a record releases its key (there is no tombstone): the same key sent
+afterwards creates a new record. Clients clear their key after a success, so
+this only matters for a retry that arrives after the record was deleted.
+
+Legacy behavior (no client_request_id, or null): unchanged and NOT
+idempotent. Every request creates a new record, even an identical one sent
+twice. Existing clients keep working; a client that wants duplicate
+protection must send a key. Receipt confirmation creates its Expense without
+a key.
+
+The response (Income and Expense) gains client_request_id: the key the record
+was created with, or null.
+
+Account create is not idempotent in this stage.
 
 13. Error Contract
 
@@ -2971,6 +3039,7 @@ Domain error codes (status, code, current detail)
 409  category_in_use_by_budget  -  Category is referenced by a budget and cannot be deleted. Hide it instead.
 404  category_not_found  -  Category not found.
 422  expense_account_currency_mismatch  -  Expense currency must match the account's currency to link them.
+409  expense_idempotency_conflict  -  client_request_id has already been used for a different expense.
 404  expense_not_found  -  Expense not found.
 409  financial_rule_activation_not_available  -  This rule type cannot be enabled yet.
 409  financial_rule_already_exists  -  A rule of this type already exists for this subject.
@@ -2999,6 +3068,7 @@ Domain error codes (status, code, current detail)
 409  goal_transaction_idempotency_conflict  -  client_request_id has already been used for a different goal transaction.
 422  income_account_currency_mismatch  -  Income currency must match the account's currency to link them.
 422  income_future_dated_not_supported  -  A foreign-currency income cannot be dated in the future.
+409  income_idempotency_conflict  -  client_request_id has already been used for a different income.
 404  income_not_found  -  Income not found.
 409  receipt_already_confirmed  -  Receipt has already been confirmed.
 422  receipt_confirmation_data_missing  -  Required receipt confirmation data is missing.

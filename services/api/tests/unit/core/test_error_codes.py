@@ -26,7 +26,9 @@ from app.modules.accounts.account_transfer_errors import (
 from app.modules.financial_rules.financial_rule_errors import (
     FinancialRuleInvalidFieldsError,
 )
+from app.modules.expenses.expenses_errors import ExpenseClientRequestIdTakenError
 from app.modules.goals.goal_errors import GoalTransactionClientRequestIdTakenError
+from app.modules.income.income_errors import IncomeClientRequestIdTakenError
 
 API_ROOT = Path(__file__).resolve().parents[3]
 SNAPSHOT_PATH = Path(__file__).with_name("error_code_registry_snapshot.json")
@@ -111,6 +113,8 @@ def test_internal_only_signals_have_no_public_code() -> None:
     for internal_error in (
         AccountTransferClientRequestIdTakenError,
         GoalTransactionClientRequestIdTakenError,
+        IncomeClientRequestIdTakenError,
+        ExpenseClientRequestIdTakenError,
     ):
         assert internal_error not in DOMAIN_ERROR_CODES
         assert internal_error not in DOMAIN_ERROR_RESPONSES

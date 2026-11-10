@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -25,10 +25,24 @@ router = APIRouter(
     "",
     response_model=IncomeResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_201_CREATED: {
+            "description": "A new income record was created.",
+        },
+        status.HTTP_200_OK: {
+            "model": IncomeResponse,
+            "description": (
+                "Idempotent replay: client_request_id already identifies an "
+                "income created from the same request; its current state is "
+                "returned and nothing new is created."
+            ),
+        },
+    },
 )
 def create_income(
     background_tasks: BackgroundTasks,
     income_data: IncomeCreate,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> IncomeResponse:
@@ -48,23 +62,31 @@ def create_income(
         db_session: Active SQLAlchemy database session provided by FastAPI.
 
     Returns:
-        IncomeResponse with the saved income data.
+        IncomeResponse with the saved income data (201), or with the
+        existing record's current data for an idempotent replay (200).
 
     Raises:
         Domain exceptions propagated to the global exception handlers.
     """
 
-    created = income_service.create_income(
+    result = income_service.create_or_replay_income(
         db_session=db_session,
         income_data=income_data,
         user_id=current_user.id,
     )
+
+    if not result.created:
+        # A replay created nothing: no event exists to dispatch.
+        response.status_code = status.HTTP_200_OK
+
+        return result.income
+
     # Runs after the response is sent; the committed event is already durable.
     background_tasks.add_task(
         financial_event_processor.dispatch_user_events_best_effort, current_user.id,
     )
 
-    return created
+    return result.income
 
 
 @router.get(

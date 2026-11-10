@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from app.core import create_idempotency
 from app.modules.categories import service as categories_service
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,11 @@ from app.modules.accounts import account_repository, account_transaction_reposit
 from app.modules.accounts.account_errors import AccountArchivedError
 from app.modules.accounts.account_models import AccountModel
 from app.modules.expenses import expenses_repository
-from app.modules.expenses.expenses_errors import ExpenseAccountCurrencyMismatchError
+from app.modules.expenses.expenses_errors import (
+    ExpenseAccountCurrencyMismatchError,
+    ExpenseClientRequestIdTakenError,
+    ExpenseIdempotencyConflictError,
+)
 from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.expenses.expenses_schemas import (
     ExpenseCreate,
@@ -113,6 +119,7 @@ def _build_expense_response(
         description=expense_model.description,
         source=expense_model.source,
         account_id=account_id,
+        client_request_id=expense_model.client_request_id,
         base_amount=expense_model.base_amount,
         base_currency=expense_model.base_currency,
         fx_rate=expense_model.fx_rate,
@@ -147,6 +154,10 @@ def _build_expense_response(
 #   account_id.
 # - user_id: authenticated user identifier that owns the expense.
 # - commit: whether the expense should be committed immediately.
+# - client_request_fingerprint: set only by create_or_replay_expense, together
+#   with expense_data.client_request_id, so the key and the fingerprint of the
+#   request it was first used for are stored in the same INSERT. Callers that
+#   do not use idempotency (receipt confirmation) leave it None and send no key.
 # Returns:
 # - ExpenseResponse object created from the saved database model, with
 #   account_id reflecting the (possibly newly-created) linkage.
@@ -168,6 +179,7 @@ def create_expense(
     expense_data: ExpenseCreate,
     user_id: UUID,
     commit: bool = True,
+    client_request_fingerprint: Optional[str] = None,
 ) -> ExpenseResponse:
     if expense_data.category_id is not None:
         categories_service.get_category_by_id(
@@ -210,6 +222,8 @@ def create_expense(
             fx_rate_date=fx_result.actual_rate_date,
             fx_source=fx_result.source,
             commit=commit,
+            client_request_id=expense_data.client_request_id,
+            client_request_fingerprint=client_request_fingerprint,
         )
         return _build_expense_response(expense_model, account_id=None)
 
@@ -233,6 +247,8 @@ def create_expense(
         fx_rate_date=fx_result.actual_rate_date,
         fx_source=fx_result.source,
         commit=False,
+        client_request_id=expense_data.client_request_id,
+        client_request_fingerprint=client_request_fingerprint,
     )
 
     account_transaction_repository.create_expense_projection(
@@ -250,6 +266,165 @@ def create_expense(
         db_session.refresh(expense_model)
 
     return _build_expense_response(expense_model, account_id=account_model.id)
+
+
+@dataclass(frozen=True)
+class ExpenseCreateResult:
+    """
+    Outcome of create_or_replay_expense.
+
+    Fields:
+        expense: the Expense's public representation (its CURRENT state on a
+            replay).
+        created: True if this call created the Expense, False for an
+            idempotent replay of an already-created one. POST /expenses
+            answers 201 or 200 accordingly.
+    """
+
+    expense: ExpenseResponse
+    created: bool
+
+
+# Builds the canonical fingerprint of an Expense create request.
+# This function exists as the single definition of "same request" for Expense
+# create idempotency (VF-MVP-CORE-002): category_id, title, amount, currency,
+# expense_date, description, source and account_id, as the server understood
+# them after schema normalization (so "35.5" and "35.50", or "eur" and "EUR",
+# are the same request). description is compared as sent: None and "" are
+# different requests, the same rule Account Transfer idempotency uses.
+# client_request_id and the user are the lookup scope, not part of the
+# fingerprint.
+def _expense_request_fingerprint(expense_data: ExpenseCreate) -> str:
+    return create_idempotency.compute_request_fingerprint(
+        "expense.create",
+        {
+            "category_id": str(expense_data.category_id) if expense_data.category_id is not None else None,
+            "title": expense_data.title,
+            "amount": format(expense_data.amount.quantize(BASE_AMOUNT_DECIMAL_PLACES), "f"),
+            "currency": expense_data.currency,
+            "expense_date": expense_data.expense_date.isoformat(),
+            "description": expense_data.description,
+            "source": expense_data.source,
+            "account_id": str(expense_data.account_id) if expense_data.account_id is not None else None,
+        },
+    )
+
+
+# Resolves a create request whose client_request_id already identifies a stored
+# Expense. Never validates the category again, recomputes FX, writes a row or a
+# ledger entry: it only compares fingerprints and reads the current state.
+# Raises:
+# - ExpenseIdempotencyConflictError: the key was first used for a different
+#   request.
+def _resolve_existing_expense(
+    db_session: Session,
+    expense_model: ExpenseModel,
+    fingerprint: str,
+    user_id: UUID,
+) -> ExpenseCreateResult:
+    if expense_model.client_request_fingerprint != fingerprint:
+        raise ExpenseIdempotencyConflictError()
+
+    projection = account_transaction_repository.get_expense_projection(
+        db_session=db_session,
+        expense_id=expense_model.id,
+        user_id=user_id,
+    )
+
+    return ExpenseCreateResult(
+        expense=_build_expense_response(
+            expense_model,
+            account_id=projection.account_id if projection is not None else None,
+        ),
+        created=False,
+    )
+
+
+# Creates an Expense exactly once per (user, client_request_id), or replays it.
+# This function exists to make POST /expenses safe to retry after a lost
+# response (VF-MVP-CORE-002); the algorithm is create_or_replay_income's:
+# per-key advisory lock, key lookup (same fingerprint = replay, different =
+# conflict), create with key and fingerprint in the same INSERT, and
+# unique-violation recovery as the backstop. Without a key it is exactly
+# create_expense (the legacy, non-idempotent behavior).
+# Parameters:
+# - db_session, expense_data, user_id, commit: as for create_expense.
+# Returns:
+# - ExpenseCreateResult.
+# Raises:
+# - ExpenseIdempotencyConflictError: the key was first used for a different
+#   request.
+# - Everything create_expense raises, for a new create.
+def create_or_replay_expense(
+    db_session: Session,
+    expense_data: ExpenseCreate,
+    user_id: UUID,
+    commit: bool = True,
+) -> ExpenseCreateResult:
+    client_request_id = expense_data.client_request_id
+
+    if client_request_id is None:
+        return ExpenseCreateResult(
+            expense=create_expense(
+                db_session=db_session,
+                expense_data=expense_data,
+                user_id=user_id,
+                commit=commit,
+            ),
+            created=True,
+        )
+
+    fingerprint = _expense_request_fingerprint(expense_data)
+
+    create_idempotency.acquire_create_key_lock(
+        db_session, "expense.create", user_id, client_request_id,
+    )
+
+    existing_expense = expenses_repository.get_expense_by_client_request_id(
+        db_session=db_session,
+        user_id=user_id,
+        client_request_id=client_request_id,
+    )
+
+    if existing_expense is not None:
+        try:
+            return _resolve_existing_expense(db_session, existing_expense, fingerprint, user_id)
+        finally:
+            # Nothing was written; release the key lock.
+            db_session.rollback()
+
+    try:
+        created_expense = create_expense(
+            db_session=db_session,
+            expense_data=expense_data,
+            user_id=user_id,
+            commit=commit,
+            client_request_fingerprint=fingerprint,
+        )
+    except ExpenseClientRequestIdTakenError:
+        db_session.rollback()
+
+        winning_expense = expenses_repository.get_expense_by_client_request_id(
+            db_session=db_session,
+            user_id=user_id,
+            client_request_id=client_request_id,
+        )
+
+        if winning_expense is None:
+            # The unique violation proves a same-key Expense committed, so
+            # failing to reload it is an unexpected state - never fabricate a
+            # result; surface the original error.
+            raise
+
+        try:
+            return _resolve_existing_expense(db_session, winning_expense, fingerprint, user_id)
+        finally:
+            db_session.rollback()
+    except Exception:
+        db_session.rollback()
+        raise
+
+    return ExpenseCreateResult(expense=created_expense, created=True)
 
 
 # Returns expenses for the authenticated user, each with its

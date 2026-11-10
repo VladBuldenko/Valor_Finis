@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
@@ -24,9 +24,23 @@ router = APIRouter(
     "",
     response_model=ExpenseResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_201_CREATED: {
+            "description": "A new expense was created.",
+        },
+        status.HTTP_200_OK: {
+            "model": ExpenseResponse,
+            "description": (
+                "Idempotent replay: client_request_id already identifies an "
+                "expense created from the same request; its current state is "
+                "returned and nothing new is created."
+            ),
+        },
+    },
 )
 def create_expense(
     expense_data: ExpenseCreate,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user),
     db_session: Session = Depends(get_db_session),
 ) -> ExpenseResponse:
@@ -46,17 +60,23 @@ def create_expense(
         db_session: Active SQLAlchemy database session provided by FastAPI.
 
     Returns:
-        ExpenseResponse with the saved expense data.
+        ExpenseResponse with the saved expense data (201), or with the
+        existing record's current data for an idempotent replay (200).
 
     Raises:
         Domain exceptions propagated to the global exception handlers.
     """
 
-    return expenses_service.create_expense(
+    result = expenses_service.create_or_replay_expense(
         db_session=db_session,
         expense_data=expense_data,
         user_id=current_user.id,
     )
+
+    if not result.created:
+        response.status_code = status.HTTP_200_OK
+
+    return result.expense
 
 
 @router.get(

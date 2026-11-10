@@ -61,3 +61,38 @@ class IncomeFutureDatedNotSupportedError(Exception):
     """
 
     pass
+
+
+class IncomeIdempotencyConflictError(Exception):
+    """
+    Raised when a create request reuses a client_request_id that already
+    identifies a income created from a different request.
+
+    What:
+        Represents a create-idempotency conflict (VF-MVP-CORE-002).
+
+    Why:
+        The same key with the same original request is an idempotent replay
+        (200); the same key with any materially different request is
+        ambiguous and must never silently create, or return, a different
+        income. The message never echoes either request.
+    """
+
+    pass
+
+
+class IncomeClientRequestIdTakenError(Exception):
+    """
+    Raised by the repository when the insert violates the per-user
+    client_request_id unique constraint.
+
+    What:
+        Internal signal (never mapped to HTTP): a concurrent create with the
+        same key committed first.
+
+    Why:
+        The service reacts by reloading the winner and resolving it as a
+        replay or a conflict, so a unique violation never surfaces as a 500.
+    """
+
+    pass

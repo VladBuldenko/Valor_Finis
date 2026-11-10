@@ -2234,6 +2234,8 @@ def test_the_exact_revision_upgrade_with_the_documented_lock_timeout_succeeds_wh
 def test_alembic_stays_single_headed_with_the_expected_chain() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [E10_REVISION]
+    # VF-MVP-CORE-002 (income/expense create idempotency) sits on top of E10.
+    assert script.get_heads() == ["b8e2c5d1f739"]
+    assert script.get_revision("b8e2c5d1f739").down_revision == E10_REVISION
     assert script.get_revision(E10_REVISION).down_revision == E9A_REVISION
     assert script.get_revision(E9A_REVISION).down_revision == E6_REVISION

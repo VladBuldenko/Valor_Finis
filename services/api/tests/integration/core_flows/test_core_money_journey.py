@@ -271,20 +271,40 @@ def test_posted_transfer_replay_after_a_lost_response_has_one_ledger_effect_and_
     _assert_reconciled(client, user, destination["id"], "50.00")
 
 
-def test_create_has_no_idempotency_key_so_a_resent_create_is_a_second_record(
+def test_create_without_a_key_keeps_the_legacy_non_idempotent_behavior(
     client: TestClient, clean_database: None,
 ) -> None:
-    """Documents the contract (docs/api-contract.md): Account/Income/Expense create carry no
-    client_request_id, so duplicate protection is the mobile submit guard + never auto-retrying a
-    mutation (api-transport.ts), not the server. A change here must be a deliberate contract change."""
+    """Characterizes the LEGACY contract that remains for clients that send no client_request_id
+    (docs/api-contract.md, VF-MVP-CORE-002): every such request creates a new record. A client
+    that wants duplicate protection must send a key; see test_create_idempotency.py."""
     user = str(uuid4())
     account = _account(client, user, opening="100.00")
 
-    _expense(client, user, "7.00", D2, account["id"])
-    _expense(client, user, "7.00", D2, account["id"])
+    first = _expense(client, user, "7.00", D2, account["id"])
+    second = _expense(client, user, "7.00", D2, account["id"])
 
+    assert first["id"] != second["id"]
+    assert first["client_request_id"] is None and second["client_request_id"] is None
     assert _sql("select count(*) from expenses where user_id = :u", u=user) == 2
     _assert_reconciled(client, user, account["id"], "86.00")
+
+
+def test_create_with_a_key_is_idempotent_so_the_same_resend_is_one_record(
+    client: TestClient, clean_database: None,
+) -> None:
+    """The counterpart of the legacy test above: the same resend WITH a key creates one record."""
+    user = str(uuid4())
+    account = _account(client, user, opening="100.00")
+    body = {"title": "e", "amount": "7.00", "currency": "EUR", "expense_date": D2,
+            "account_id": account["id"], "client_request_id": str(uuid4())}
+
+    first = client.post("/api/v1/expenses", headers=auth_headers(user), json=body)
+    second = client.post("/api/v1/expenses", headers=auth_headers(user), json=body)
+
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert first.json()["id"] == second.json()["id"]
+    assert _sql("select count(*) from expenses where user_id = :u", u=user) == 1
+    _assert_reconciled(client, user, account["id"], "93.00")
 
 
 @pytest.mark.parametrize(

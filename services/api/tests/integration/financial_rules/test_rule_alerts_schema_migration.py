@@ -525,7 +525,7 @@ def test_orm_metadata_matches_the_e9a_schema_exactly(e9a_database: Engine) -> No
 
     # The only remaining difference belongs to the LATER dispatch-progress stage.
     assert exclude_stages_after(differences, E9A_REVISION) == []
-    assert all("alert_dispatch_progress" in repr(d) for d in differences)
+    assert all("alert_dispatch_progress" in repr(d) or "client_request" in repr(d) for d in differences)
 
 
 def test_older_revision_differs_only_by_the_e9a_table(e6_database: Engine) -> None:
