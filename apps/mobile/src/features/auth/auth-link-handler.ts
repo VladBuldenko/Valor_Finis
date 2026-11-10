@@ -72,6 +72,10 @@ export type AuthLinkHandlerDeps = {
   // The authoritative current user (from the session boundary). Synchronous.
   currentUserId: () => string | null;
   recovery: RecoveryState;
+  // Durably records "a link exchange is starting" BEFORE the exchange, so a process
+  // that dies afterwards leaves evidence (recovery-persistence.ts). Resolves false when
+  // it cannot be recorded; the exchange is then NOT attempted (fail closed).
+  beforeExchange?: (context: { priorUserId: string | null; recoveryUserId: string | null }) => Promise<boolean>;
 };
 
 type Job = {
@@ -118,6 +122,18 @@ export function createAuthLinkHandler(deps: AuthLinkHandlerDeps) {
 
   async function establish(job: Job, code: string): Promise<LinkOutcome> {
     const attempt = job.attempt as number;
+
+    if (deps.beforeExchange) {
+      const recorded = await deps.beforeExchange({
+        priorUserId: deps.currentUserId(),
+        recoveryUserId: deps.recovery.recoveryUserId(),
+      });
+
+      if (!recorded) {
+        return { kind: "unavailable" };
+      }
+    }
+
     const result = await deps.auth.exchangeCodeForSession(code);
 
     if (result.error) {

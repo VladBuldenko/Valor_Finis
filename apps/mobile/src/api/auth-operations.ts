@@ -64,6 +64,29 @@ export function createGuardedSessionEnd(deps: {
     });
 }
 
+// A local sign-out that is only reported as done when it really was: auth-js returns
+// the failure as `{ error }` (for example when the stored session has expired and the
+// auth server cannot be reached to refresh it, nothing is removed), and the session
+// must really be gone from the authoritative boundary afterwards. Used where a record
+// is removed because the session ended (cancelling a recovery, startup), so a
+// still-active recovery session can never lose its gate.
+export function createVerifiedLocalSignOut(deps: {
+  signOutLocal: () => Promise<{ error: unknown }>;
+  currentUserId: () => string | null;
+}): () => Promise<void> {
+  return async () => {
+    const { error } = await deps.signOutLocal();
+
+    if (error) {
+      throw error;
+    }
+
+    if (deps.currentUserId() !== null) {
+      throw new Error("The session is still active after signing out.");
+    }
+  };
+}
+
 // The password change of a recovery session (MF-4). Supabase's updateUser acts on
 // whichever session is stored when it runs and is not a session mutator, so the
 // gateway does not queue it. This puts it in the same queue and verifies ownership

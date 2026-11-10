@@ -401,6 +401,50 @@ describe("concurrent links and identity changes", () => {
   });
 });
 
+describe("recording the exchange before it starts", () => {
+  it("the record is written first, with who was signed in and whose recovery was in force", async () => {
+    const contexts: unknown[] = [];
+    const order: string[] = [];
+    const recovery = createRecoveryState();
+    const state = { current: "user-a" as string | null };
+    const handler = createAuthLinkHandler({
+      parse: { schemes: ["valorfinis"] },
+      auth: { exchangeCodeForSession: async () => { order.push("exchange"); return ok("user-a", "recovery"); } },
+      currentUserId: () => state.current,
+      recovery,
+      beforeExchange: async (context) => { order.push("record"); contexts.push(context); return true; },
+    });
+
+    handler.receive(recoveryLink());
+    await handler.drain();
+    assert.deepEqual(order, ["record", "exchange"]);
+    assert.deepEqual(contexts, [{ priorUserId: "user-a", recoveryUserId: null }]);
+  });
+
+  it("when the record cannot be written the exchange is NOT attempted (fail closed) and the link is not used up", async () => {
+    let attempts = 0;
+    let writable = false;
+    let current: string | null = null;
+    const recovery = createRecoveryState();
+    const handler = createAuthLinkHandler({
+      parse: { schemes: ["valorfinis"] },
+      auth: { exchangeCodeForSession: async () => { attempts += 1; current = "user-a"; return ok("user-a", "recovery"); } },
+      currentUserId: () => current,
+      recovery,
+      beforeExchange: async () => writable,
+    });
+
+    handler.receive(recoveryLink());
+    assert.deepEqual(await handler.drain(), { kind: "unavailable" });
+    assert.equal(attempts, 0);
+    assert.equal(recovery.getSnapshot().phase, "idle");
+    writable = true;
+    handler.receive(recoveryLink());
+    assert.equal((await handler.drain())?.kind, "recovery_ready");
+    assert.equal(attempts, 1);
+  });
+});
+
 describe("confirmation links", () => {
   it("a confirmation code yields a normal session, not a recovery", async () => {
     const w = world();

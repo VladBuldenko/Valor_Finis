@@ -143,7 +143,125 @@ describe("recovery state", () => {
   });
 });
 
+describe("startup resolution (restart safety)", () => {
+  it("starts closed and stays closed until resolved", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+
+    assert.equal(state.getSnapshot().phase, "resolving");
+    state.reconcile(null);
+    state.reconcile("user-a");
+    state.keepRecovery("user-a");
+    assert.equal(state.getSnapshot().phase, "resolving", "nothing but the resolution opens it");
+  });
+
+  it("resumes a recovery only for the current user; anything else opens as idle", () => {
+    const resume = createRecoveryState({ initialPhase: "resolving" });
+
+    resume.finishResolving({ kind: "active", userId: "user-a" }, "user-a");
+    assert.deepEqual(resume.getSnapshot(), { phase: "active", userId: "user-a" });
+
+    for (const current of ["user-b", null]) {
+      const state = createRecoveryState({ initialPhase: "resolving" });
+
+      state.finishResolving({ kind: "active", userId: "user-a" }, current);
+      assert.equal(state.getSnapshot().phase, "idle");
+    }
+
+    const none = createRecoveryState({ initialPhase: "resolving" });
+
+    none.finishResolving({ kind: "idle" }, "user-a");
+    assert.equal(none.getSnapshot().phase, "idle");
+  });
+
+  it("is resolved only once", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+
+    state.finishResolving({ kind: "idle" }, null);
+    state.finishResolving({ kind: "active", userId: "user-a" }, "user-a");
+    assert.equal(state.getSnapshot().phase, "idle");
+  });
+
+  it("a link that arrives while resolving does not open the gate: it takes over when the resolution ends", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+    const attempt = state.begin();
+
+    assert.equal(state.getSnapshot().phase, "resolving");
+    assert.equal(state.activate(attempt, "user-a"), false, "cannot activate before the resolution");
+    state.finishResolving({ kind: "idle" }, null);
+    assert.equal(state.getSnapshot().phase, "verifying");
+    assert.equal(state.activate(attempt, "user-a"), true);
+  });
+
+  it("a waiting link that is dropped does not leave the gate closed", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+    const attempt = state.begin();
+
+    state.finish(attempt);
+    state.finishResolving({ kind: "idle" }, null);
+    assert.equal(state.getSnapshot().phase, "idle");
+  });
+
+  it("a deferred recovery is sticky: link attempts return to it, only a session being judged leaves it", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+
+    state.finishResolving({ kind: "deferred" }, null);
+    assert.equal(state.getSnapshot().phase, "deferred");
+    state.reconcile("user-a");
+    assert.equal(state.getSnapshot().phase, "deferred", "reconcile does not release it");
+
+    const attempt = state.begin();
+
+    assert.equal(state.getSnapshot().phase, "verifying");
+    state.finish(attempt);
+    assert.equal(state.getSnapshot().phase, "deferred", "a failed link does not release it");
+
+    assert.equal(state.reopen(), true);
+    assert.equal(state.getSnapshot().phase, "resolving");
+    state.finishResolving({ kind: "idle" }, "user-a");
+    assert.equal(state.getSnapshot().phase, "idle");
+  });
+
+  it("a successful link attempt replaces a deferred recovery", () => {
+    const state = createRecoveryState({ initialPhase: "resolving" });
+
+    state.finishResolving({ kind: "deferred" }, null);
+    assert.equal(state.activate(state.begin(), "user-a"), true);
+
+    state.complete("user-a");
+    assert.equal(state.getSnapshot().phase, "idle", "no stale deferral comes back");
+  });
+
+  it("reopen closes the gate again, only from deferred", () => {
+    const state = createRecoveryState();
+
+    assert.equal(state.reopen(), false, "not from idle");
+    state.activate(state.begin(), "user-a");
+    assert.equal(state.reopen(), false, "never over an active recovery");
+  });
+
+  it("a deferred state is signed-out without a session and never the app with one", () => {
+    assert.equal(decideRootRoute({ isLoading: false, userId: null, recovery: { phase: "deferred" } }), "signed-out");
+    assert.equal(decideRootRoute({ isLoading: false, userId: "a", recovery: { phase: "deferred" } }), "loading");
+  });
+
+  it("exposes the user whose recovery is in force", () => {
+    const state = createRecoveryState();
+
+    assert.equal(state.recoveryUserId(), null);
+    state.activate(state.begin(), "user-a");
+    assert.equal(state.recoveryUserId(), "user-a");
+    state.begin();
+    assert.equal(state.recoveryUserId(), "user-a", "remembered while a newer attempt runs");
+  });
+});
+
 describe("root route decision (protected routes)", () => {
+  it("resolving is closed: nothing protected, whoever is signed in", () => {
+    for (const userId of [null, "a"]) {
+      assert.equal(decideRootRoute({ isLoading: false, userId, recovery: { phase: "resolving" } }), "loading");
+    }
+  });
+
   const idle = { phase: "idle" } as const;
 
   it("loading while auth initializes or a link is being verified", () => {
