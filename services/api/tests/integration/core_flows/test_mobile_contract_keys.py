@@ -7,8 +7,9 @@ checked (nullability and value shapes stay with the contract docs and the journe
 The test reads the mobile sources as text; it is skipped when they are not checked out.
 """
 import re
+from datetime import date
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Set
 from uuid import uuid4
 
 import pytest
@@ -91,3 +92,91 @@ def test_core_money_responses_match_the_mobile_types(client: TestClient, clean_d
     assert_same_keys(trend, "analytics/analytics.types.ts", "IncomeExpenseTrendResponse")
     assert_same_keys(trend["buckets"][0], "analytics/analytics.types.ts", "IncomeExpenseTrendBucket")
     assert_same_keys(monthly, "analytics/analytics.types.ts", "MonthlySummary")
+
+
+# The string constants `export const NAME = "..."` of a mobile source file (a value may wrap
+# onto the next line). Only plain double-quoted literals are read.
+def ts_string_constants(relative_file: str) -> Dict[str, str]:
+    source = (FEATURES / relative_file).read_text()
+    pairs = re.findall(r'export const (\w+) =\s*"((?:[^"\\]|\\.)*)";', source)
+    return {name: value.replace('\\"', '"') for name, value in pairs}
+
+
+# VF-MVP-CORE-003: the Goal / Transfer shapes the mobile screens render.
+def test_goal_and_transfer_responses_match_the_mobile_types(client: TestClient, clean_database: None) -> None:
+    user = str(uuid4())
+    headers = auth_headers(user)
+
+    def post(path: str, body: dict, expected: int = 201) -> dict:
+        response = client.post(path, headers=headers, json=body)
+        assert response.status_code == expected, response.text
+        return response.json()
+
+    account = post("/api/v1/accounts", {"name": "A", "type": "checking", "currency": "EUR", "opening_balance": "500.00", "opening_balance_date": "2026-03-02"})
+    other = post("/api/v1/accounts", {"name": "B", "type": "cash", "currency": "EUR"})
+    goal = post("/api/v1/goals", {"name": "G", "target_amount": "300.00"})
+    tracked = post(f"/api/v1/goals/{goal['id']}/transactions", {"type": "contribution", "amount": "10.00"})
+    linked = post(f"/api/v1/goals/{goal['id']}/transactions", {"type": "contribution", "amount": "20.00", "account_id": account["id"], "client_request_id": str(uuid4())})
+    transfer = post("/api/v1/account-transfers", {"client_request_id": str(uuid4()), "source_account_id": account["id"], "destination_account_id": other["id"], "amount": "5.00", "transfer_date": "2026-03-05"})
+    planned = post("/api/v1/account-transfers", {"client_request_id": str(uuid4()), "source_account_id": account["id"], "destination_account_id": other["id"], "amount": "5.00", "transfer_date": "2999-01-01"})
+    posted = client.post(f"/api/v1/account-transfers/{planned['id']}/post", headers=headers, json={"effective_date": date.today().isoformat()})
+    assert posted.status_code == 200, posted.text
+
+    assert_same_keys(goal, "goals/goal.types.ts", "Goal")
+    listed = client.get("/api/v1/goals", headers=headers).json()
+    assert listed and all(ts_type_keys("goals/goal.types.ts", "Goal") == set(g.keys()) for g in listed)
+    # the POST response is GoalTransaction + the optional warnings list; a history row has no warnings
+    for created in (tracked, linked):
+        assert set(created.keys()) == ts_type_keys("goals/goal.types.ts", "GoalTransactionCreated")
+    history = client.get(f"/api/v1/goals/{goal['id']}/transactions", headers=headers).json()
+    assert len(history) == 2
+    for row in history:
+        assert_same_keys(row, "goals/goal.types.ts", "GoalTransaction")
+    progress = client.get("/api/v1/analytics/goal-progress", headers=headers).json()
+    assert progress
+    for item in progress:
+        assert_same_keys(item, "analytics/analytics.types.ts", "GoalProgressItem")
+    for record in (transfer, planned, posted.json()):
+        assert_same_keys(record, "transfers/transfer.types.ts", "AccountTransfer")
+    assert_same_keys(client.get("/api/v1/account-transfers", headers=headers).json()[0], "transfers/transfer.types.ts", "AccountTransfer")
+    # the Account carries the reservation read model the Goal screens display
+    assert_same_keys(client.get("/api/v1/accounts", headers=headers).json()[0], "accounts/account.types.ts", "Account")
+
+
+# The mobile Goal-transaction error copy is keyed on EXACT backend detail strings. If the backend
+# wording drifts, the screen silently falls back to generic text and stops refreshing stale data.
+def test_goal_transaction_error_copy_is_keyed_on_the_real_backend_details(client: TestClient, clean_database: None) -> None:
+    constants = ts_string_constants("goals/goal-transaction-errors.ts")
+    user = str(uuid4())
+    headers = auth_headers(user)
+
+    def post(path: str, body: dict) -> dict:
+        response = client.post(path, headers=headers, json=body)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def attempt(goal_id: str, body: dict, status_code: int) -> str:
+        response = client.post(
+            f"/api/v1/goals/{goal_id}/transactions", headers=headers, json={"client_request_id": str(uuid4()), **body}
+        )
+        assert response.status_code == status_code, response.text
+        return response.json()["detail"]
+
+    account = post("/api/v1/accounts", {"name": "A", "type": "checking", "currency": "EUR", "opening_balance": "100.00", "opening_balance_date": "2026-03-02"})
+    archived_account = post("/api/v1/accounts", {"name": "Z", "type": "cash", "currency": "EUR"})
+    assert client.patch(f"/api/v1/accounts/{archived_account['id']}", headers=headers, json={"status": "archived"}).status_code == 200
+    goal = post("/api/v1/goals", {"name": "G", "target_amount": "50.00"})
+    archived_goal = post("/api/v1/goals", {"name": "Old", "target_amount": "50.00"})
+    assert client.patch(f"/api/v1/goals/{archived_goal['id']}", headers=headers, json={"status": "archived"}).status_code == 200
+    key = str(uuid4())
+    post(f"/api/v1/goals/{goal['id']}/transactions", {"type": "contribution", "amount": "5.00", "client_request_id": key})
+
+    assert attempt(str(uuid4()), {"type": "contribution", "amount": "1.00"}, 404) == constants["GOAL_NOT_FOUND_DETAIL"]
+    assert attempt(goal["id"], {"type": "contribution", "amount": "1.00", "account_id": str(uuid4())}, 404) == constants["ACCOUNT_NOT_FOUND_DETAIL"]
+    assert attempt(archived_goal["id"], {"type": "contribution", "amount": "1.00"}, 409) == constants["GOAL_ARCHIVED_DETAIL"]
+    assert attempt(goal["id"], {"type": "contribution", "amount": "1.00", "account_id": archived_account["id"]}, 409) == constants["ACCOUNT_ARCHIVED_DETAIL"]
+    assert attempt(goal["id"], {"type": "contribution", "amount": "100.01", "account_id": account["id"]}, 409) == constants["CAPACITY_DETAIL"]
+    assert attempt(goal["id"], {"type": "withdrawal", "amount": "5.01"}, 409) == constants["TRACKED_SHORTFALL_DETAIL"]
+    conflict = client.post(f"/api/v1/goals/{goal['id']}/transactions", headers=headers,
+                           json={"client_request_id": key, "type": "contribution", "amount": "6.00"})
+    assert conflict.status_code == 409 and conflict.json()["detail"] == constants["IDEMPOTENCY_CONFLICT_DETAIL"]
