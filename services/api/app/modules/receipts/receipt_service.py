@@ -1,5 +1,7 @@
+import logging
 import uuid
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from fastapi import UploadFile
 
@@ -32,6 +34,9 @@ from app.modules.receipts.receipt_schemas import (
 )
 from app.modules.expenses import expenses_service
 from app.modules.expenses.expenses_schemas import ExpenseCreate
+
+
+logger = logging.getLogger(__name__)
 
 
 PROCESSABLE_RECEIPT_STATUSES = (
@@ -127,7 +132,11 @@ def process_receipt(
     receipt_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> ReceiptResponse:
-    receipt = receipt_repository.get_receipt_by_id(
+    # The row is locked for the status check AND the move to "processing"
+    # (committed together below), so two simultaneous process requests for
+    # one receipt cannot both pass the check: the second waits, then sees
+    # "processing" and is rejected instead of running OCR twice.
+    receipt = receipt_repository.get_receipt_by_id_for_update(
         db_session=db_session,
         receipt_id=receipt_id,
         user_id=user_id,
@@ -136,7 +145,9 @@ def process_receipt(
     if receipt.status not in PROCESSABLE_RECEIPT_STATUSES:
         raise ReceiptProcessingNotAllowedError()
 
-    if not receipt.storage_path:
+    storage_path = receipt.storage_path
+
+    if not storage_path:
         raise ReceiptOcrFileNotFoundError()
 
     receipt_repository.update_receipt(
@@ -149,41 +160,57 @@ def process_receipt(
     )
 
     try:
+        # storage_path is client-writable, so OCR only ever reads a file
+        # inside this user's own storage area; any other path is treated
+        # exactly like a missing file (failed + "Receipt file not found").
+        if not receipt_storage_service.is_receipt_storage_path_owned_by(
+            storage_path=storage_path,
+            user_id=user_id,
+        ):
+            raise ReceiptOcrFileNotFoundError()
+
         extracted_text = receipt_ocr_service.extract_receipt_text(
-            storage_path=receipt.storage_path,
+            storage_path=storage_path,
         )
-    except (
-        ReceiptOcrFileNotFoundError,
-        ReceiptOcrProcessingError,
-    ):
-        receipt_repository.update_receipt(
+
+        parsed_data = receipt_parser_service.parse_receipt_text(
+            ocr_text=extracted_text,
+        )
+
+        processed_receipt = receipt_repository.update_receipt(
             db_session=db_session,
             receipt_id=receipt_id,
             receipt_data=ReceiptUpdate(
-                status="failed",
+                status="processed",
+                ocr_text=extracted_text,
+                merchant_detected=parsed_data.merchant_detected,
+                total_amount_detected=parsed_data.total_amount_detected,
+                currency_detected=parsed_data.currency_detected,
+                purchase_date_detected=parsed_data.purchase_date_detected,
             ),
             user_id=user_id,
         )
+    except Exception:
+        # Any failure after "processing" was committed (OCR errors, but also
+        # a result the database refuses) must leave the receipt "failed",
+        # the only non-processable state a retry can start from. Otherwise
+        # it would stay "processing" with no way forward.
+        db_session.rollback()
+
+        try:
+            receipt_repository.update_receipt(
+                db_session=db_session,
+                receipt_id=receipt_id,
+                receipt_data=ReceiptUpdate(
+                    status="failed",
+                ),
+                user_id=user_id,
+            )
+        except Exception:
+            db_session.rollback()
+            logger.error("receipt_processing_failed_state_not_saved")
 
         raise
-
-    parsed_data = receipt_parser_service.parse_receipt_text(
-        ocr_text=extracted_text,
-    )
-
-    processed_receipt = receipt_repository.update_receipt(
-        db_session=db_session,
-        receipt_id=receipt_id,
-        receipt_data=ReceiptUpdate(
-            status="processed",
-            ocr_text=extracted_text,
-            merchant_detected=parsed_data.merchant_detected,
-            total_amount_detected=parsed_data.total_amount_detected,
-            currency_detected=parsed_data.currency_detected,
-            purchase_date_detected=parsed_data.purchase_date_detected,
-        ),
-        user_id=user_id,
-    )
 
     return map_receipt_to_response(processed_receipt)
 
@@ -270,16 +297,22 @@ def confirm_receipt(
     ):
         raise ReceiptConfirmationDataMissingError()
 
-    expense_data = ExpenseCreate(
-        category_id=confirmation_data.category_id,
-        title=title,
-        amount=amount,
-        currency=currency,
-        expense_date=expense_date,
-        description=confirmation_data.description,
-        source="receipt",
-        account_id=confirmation_data.account_id,
-    )
+    try:
+        expense_data = ExpenseCreate(
+            category_id=confirmation_data.category_id,
+            title=title,
+            amount=amount,
+            currency=currency,
+            expense_date=expense_date,
+            description=confirmation_data.description,
+            source="receipt",
+            account_id=confirmation_data.account_id,
+        )
+    except ValidationError as error:
+        # A stored detected value the Expense rules refuse (for example a
+        # malformed currency written through PATCH) is not usable data: the
+        # user is asked to supply it, instead of the request failing as a 500.
+        raise ReceiptConfirmationDataMissingError() from error
 
     try:
         created_expense = expenses_service.create_expense(
@@ -446,9 +479,21 @@ def delete_receipt(
         )
 
         if receipt.storage_path:
-            receipt_storage_service.delete_receipt_file(
+            # storage_path is client-writable: only a file inside this
+            # user's own storage area is ever removed. A foreign or
+            # out-of-area path is left untouched; the receipt row is still
+            # deleted.
+            if receipt_storage_service.is_receipt_storage_path_owned_by(
                 storage_path=receipt.storage_path,
-            )
+                user_id=user_id,
+            ):
+                receipt_storage_service.delete_receipt_file(
+                    storage_path=receipt.storage_path,
+                )
+            else:
+                logger.warning(
+                    "receipt_delete_skipped_foreign_storage_path"
+                )
 
         db_session.commit()
     except Exception:

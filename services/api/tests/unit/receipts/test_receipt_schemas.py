@@ -135,3 +135,20 @@ def test_receipt_update_rejects_total_amount_detected_with_more_than_two_decimal
         ReceiptUpdate(total_amount_detected=Decimal("1.001"))
 
     assert "decimal_max_places" in _error_types(error_info)
+
+
+# VF-MVP-CORE-005: a corrected or detected currency follows the Expense
+# rule (exactly three letters) at the request boundary, so a malformed code
+# is a 422 there and never a failure inside Expense creation.
+@pytest.mark.parametrize("currency", ["E1R", "E-R", "12E", "€UR"])
+def test_receipt_currency_fields_reject_non_alphabetic_codes(currency: str) -> None:
+    with pytest.raises(ValidationError):
+        ReceiptConfirmRequest(currency=currency)
+
+    with pytest.raises(ValidationError):
+        ReceiptUpdate(currency_detected=currency)
+
+
+def test_receipt_currency_fields_normalize_valid_codes() -> None:
+    assert ReceiptConfirmRequest(currency="eur").currency == "EUR"
+    assert ReceiptUpdate(currency_detected="usd").currency_detected == "USD"

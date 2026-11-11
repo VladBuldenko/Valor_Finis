@@ -4,7 +4,10 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from app.modules.expenses.expenses_schemas import ExpenseResponse
+from app.modules.expenses.expenses_schemas import (
+    ExpenseResponse,
+    normalize_and_validate_currency_code,
+)
 
 
 ReceiptStatus = Literal[
@@ -146,7 +149,7 @@ class ReceiptUpdate(BaseModel):
         if value is None:
             return value
 
-        return value.strip().upper()
+        return normalize_and_validate_currency_code(value)
     
     @field_validator("file_url", "storage_path")
     @classmethod
@@ -282,12 +285,15 @@ class ReceiptConfirmRequest(BaseModel):
 
         Why:
             Keeps receipt confirmation data consistent with expense data.
+            The code is validated with the Expense rule (exactly three
+            letters) here, so a malformed correction is rejected as a 422
+            request error instead of failing later inside Expense creation.
         """
 
         if value is None:
             return value
 
-        return value.strip().upper()
+        return normalize_and_validate_currency_code(value)
 
     @field_validator("title")
     @classmethod

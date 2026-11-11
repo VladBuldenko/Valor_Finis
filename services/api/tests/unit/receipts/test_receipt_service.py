@@ -31,6 +31,19 @@ from app.modules.receipts.receipt_schemas import (
 )
 
 
+# Treats every stored path as the user's own by default, so the tests below
+# keep exercising the coordination they were written for. The ownership
+# rule itself is covered by test_receipt_storage_ownership.py and by the
+# receipts journey; the foreign-path cases override this fixture's patch.
+@pytest.fixture(autouse=True)
+def storage_paths_are_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        receipt_service.receipt_storage_service,
+        "is_receipt_storage_path_owned_by",
+        lambda storage_path, user_id: True,
+    )
+
+
 # Creates a mocked SQLAlchemy session for receipt service unit tests.
 # This fixture exists to isolate service behavior from the real database.
 # Parameters:
@@ -1039,7 +1052,7 @@ def test_process_receipt_saves_processed_ocr_result(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         get_receipt_mock,
     )
     monkeypatch.setattr(
@@ -1157,7 +1170,7 @@ def test_process_receipt_rejects_unprocessable_status(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         get_receipt_mock,
     )
     monkeypatch.setattr(
@@ -1219,7 +1232,7 @@ def test_process_receipt_rejects_missing_storage_path(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         get_receipt_mock,
     )
     monkeypatch.setattr(
@@ -1307,7 +1320,7 @@ def test_process_receipt_marks_receipt_as_failed_when_ocr_fails(
 
     monkeypatch.setattr(
         receipt_service.receipt_repository,
-        "get_receipt_by_id",
+        "get_receipt_by_id_for_update",
         get_receipt_mock,
     )
     monkeypatch.setattr(

@@ -526,7 +526,8 @@ def extract_receipt_text(
     except ReceiptFileStorageError as error:
         raise ReceiptOcrProcessingError() from error
 
-    normalized_text = extracted_text.strip()
+    # NUL is not storable in PostgreSQL text and carries no receipt content.
+    normalized_text = extracted_text.replace("\x00", "").strip()
 
     if not normalized_text:
         logger.warning("receipt_ocr_empty_result")

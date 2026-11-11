@@ -1,4 +1,4 @@
-import { validateExpenseForm } from "../expenses/expense-validation";
+import { validateExpenseForm } from "../expenses/expense-validation.ts";
 
 export type ReceiptConfirmFormValues = {
   title: string;

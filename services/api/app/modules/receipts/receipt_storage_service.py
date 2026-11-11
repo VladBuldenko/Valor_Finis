@@ -247,6 +247,61 @@ def parse_supabase_storage_path(
     )
 
 
+# Checks that a stored receipt path points at a file this user's upload created.
+# This function exists because storage_path is a client-writable column
+# (POST /receipts and PATCH /receipts/{id} accept it), so the value that
+# reaches OCR or file deletion is never trusted on its own: without this
+# check a user could point a receipt at any readable or deletable file on
+# the server, or at another user's object, and have it read or removed.
+# Local paths must resolve (symlinks and ".." included) inside
+# <receipt_upload_dir>/<user_id>/. Supabase paths must name the configured
+# bucket and an object under "<user_id>/" with no empty, "." or ".."
+# segment, whichever storage driver is active.
+# Parameters:
+# - storage_path: stored receipt path.
+# - user_id: authenticated user identifier.
+# Returns:
+# - True when the path belongs to the user's own storage area.
+def is_receipt_storage_path_owned_by(
+    storage_path: str,
+    user_id: uuid.UUID,
+) -> bool:
+    try:
+        supabase_path = parse_supabase_storage_path(
+            storage_path=storage_path,
+        )
+    except ReceiptFileStorageError:
+        return False
+
+    if supabase_path is not None:
+        bucket, object_path = supabase_path
+        segments = object_path.split("/")
+
+        return (
+            bucket == settings.receipt_storage_bucket
+            and segments[0] == str(user_id)
+            and len(segments) > 1
+            and all(
+                segment not in ("", ".", "..")
+                for segment in segments
+            )
+        )
+
+    try:
+        user_root = (
+            Path(settings.receipt_upload_dir)
+            / str(user_id)
+        ).resolve()
+        resolved_path = Path(storage_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+    return (
+        resolved_path != user_root
+        and user_root in resolved_path.parents
+    )
+
+
 # Saves an uploaded receipt file in local storage.
 # This function exists to preserve the existing local development
 # storage implementation separately from remote storage.
