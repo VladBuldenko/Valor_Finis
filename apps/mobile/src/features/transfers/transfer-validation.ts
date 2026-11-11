@@ -1,7 +1,7 @@
 import {
   normalizeAccountDecimalAmount,
   validateAccountDecimalAmount,
-} from "../accounts/account-amount-validation";
+} from "../accounts/account-amount-validation.ts";
 import type { Account } from "../accounts/account.types";
 import type { TransferCreatePayload } from "./transfer-create-attempts";
 
