@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import * as Crypto from "expo-crypto";
 import { useRouter } from "expo-router";
 import {
   useMutation,
@@ -18,18 +19,28 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getApiErrorMessage } from "../../api/api-error-message";
+import { describeCreateFailure } from "../../api/create-failure";
+import {
+  createSubmitGuard,
+  resolveCreateAttempt,
+  type CreateAttempt,
+} from "../../lib/create-attempts";
 import { LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { useRulesEvaluation } from "../financial-rules/rules-evaluation-provider";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
 import { invalidateIncomeQueries } from "./income-cache";
+import {
+  incomePayloadKey,
+  toIncomeCreateInput,
+  type IncomeCreatePayload,
+} from "./income-create-attempt";
 import { IncomeSourcePicker } from "./income-source-picker";
 import { normalizeIncomeAmount, validateIncomeForm } from "./income-validation";
 import { createIncome } from "./income.service";
 import { styles } from "./income.styles";
-import type { IncomeCreateInput, IncomeSource } from "./income.types";
+import type { IncomeSource } from "./income.types";
 
 // Returns the user's LOCAL calendar date as YYYY-MM-DD. Deliberately not
 // toISOString(), which converts to UTC first and can yield the previous/
@@ -59,6 +70,16 @@ export function IncomeCreateScreen() {
     null,
   );
 
+  // Create idempotency (VF-MVP-CORE-002). The attempts of this form instance
+  // are kept across failed submissions, so a retry of the same payload reuses
+  // its client_request_id (the backend then replays the saved Income instead of
+  // adding a second one); they are cleared after a success and discarded when
+  // the screen closes. Refs, not state: they never affect rendering and are
+  // only read in event handlers. The guard is synchronous, unlike isPending,
+  // which only turns true after a re-render.
+  const createAttemptsRef = useRef<CreateAttempt<IncomeCreatePayload>[]>([]);
+  const submitGuardRef = useRef(createSubmitGuard());
+
   const {
     data: accounts = [],
     isLoading: isAccountsLoading,
@@ -74,7 +95,11 @@ export function IncomeCreateScreen() {
   const createIncomeMutation = useMutation({
     mutationFn: createIncome,
 
+    // 201 (new) and 200 (exact replay of an earlier, possibly lost, attempt)
+    // are the same success: the body is the Income's current state either way.
     onSuccess: async (createdIncome) => {
+      createAttemptsRef.current = [];
+
       // The backend's returned account_id (not the form's selection) is
       // what decides whether an Account ledger was actually touched.
       await invalidateIncomeQueries(
@@ -90,18 +115,33 @@ export function IncomeCreateScreen() {
       router.back();
     },
 
+    // The attempts are deliberately kept: the request may have been committed
+    // even though it failed here, so resubmitting the unchanged form must reuse
+    // the same key. Only a key the backend rejected as belonging to a different
+    // request is dropped.
     onError: (mutationError) => {
-      Alert.alert(
-        "Create income failed",
-        getApiErrorMessage(mutationError, "Unable to create income."),
+      const failure = describeCreateFailure(
+        mutationError,
+        "income",
+        "Unable to create income.",
       );
+
+      if (failure.discardAttempt) {
+        createAttemptsRef.current = [];
+      }
+
+      Alert.alert(failure.title, failure.message);
+    },
+
+    onSettled: () => {
+      submitGuardRef.current.release();
     },
   });
 
   function handleCreateIncome() {
     // Guards against duplicate submissions from a double tap while the
     // request is already in flight.
-    if (createIncomeMutation.isPending) {
+    if (createIncomeMutation.isPending || submitGuardRef.current.isBusy()) {
       return;
     }
 
@@ -118,7 +158,7 @@ export function IncomeCreateScreen() {
       return;
     }
 
-    const payload: IncomeCreateInput = {
+    const payload: IncomeCreatePayload = {
       amount: normalizeIncomeAmount(amount),
       currency: currency.trim().toUpperCase(),
       received_at: receivedAt.trim(),
@@ -137,7 +177,28 @@ export function IncomeCreateScreen() {
       payload.account_id = selectedAccountId;
     }
 
-    createIncomeMutation.mutate(payload);
+    // Entered only after validation, so a rejected form never blocks the next
+    // tap; released by onSettled.
+    if (!submitGuardRef.current.tryEnter()) {
+      return;
+    }
+
+    try {
+      const { attempt, attempts } = resolveCreateAttempt(
+        createAttemptsRef.current,
+        session?.user.id ?? "",
+        incomePayloadKey(payload),
+        payload,
+        () => Crypto.randomUUID(),
+      );
+
+      createAttemptsRef.current = attempts;
+      createIncomeMutation.mutate(toIncomeCreateInput(attempt));
+    } catch (error) {
+      // Nothing was sent (onSettled will not run), so the guard must not stay held.
+      submitGuardRef.current.release();
+      throw error;
+    }
   }
 
   return (

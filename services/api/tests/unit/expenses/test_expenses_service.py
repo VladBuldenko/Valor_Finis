@@ -52,6 +52,7 @@ def _make_existing_expense(
         fx_rate=fx_rate,
         fx_rate_date=fx_rate_date,
         fx_source=fx_source,
+        client_request_id=None,
         created_at=datetime(2026, 5, 7, 10, 30, 0),
         updated_at=datetime(2026, 5, 7, 10, 30, 0),
     )
@@ -316,7 +317,8 @@ def test_service_update_expense_normalizes_fx_rate_before_computing_base_amount(
             id=existing.id, user_id=existing.user_id, category_id=None,
             title=existing.title, amount=existing.amount, currency="USD",
             expense_date=existing.expense_date, description=existing.description,
-            source=existing.source, created_at=existing.created_at, updated_at=existing.updated_at,
+            source=existing.source, client_request_id=None,
+            created_at=existing.created_at, updated_at=existing.updated_at,
             **kwargs,
         ),
     )
@@ -417,6 +419,7 @@ def test_service_get_expenses_returns_expense_responses_for_user(
         fx_rate=Decimal("1"),
         fx_rate_date=date(2026, 5, 7),
         fx_source="identity",
+        client_request_id=None,
         created_at=created_at,
         updated_at=updated_at,
     )

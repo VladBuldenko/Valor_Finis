@@ -3,11 +3,21 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.expenses.expenses_errors import ExpenseNotFoundError
+from app.modules.expenses.expenses_errors import (
+    ExpenseClientRequestIdTakenError,
+    ExpenseNotFoundError,
+)
 from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
+
+
+# The create-idempotency unique constraint (VF-MVP-CORE-002). Only a violation
+# of exactly this constraint is translated into ExpenseClientRequestIdTakenError;
+# every other IntegrityError propagates unchanged.
+CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT = "uq_expenses_user_id_client_request_id"
 
 
 # Creates a new expense database record, together with its FX snapshot.
@@ -23,9 +33,15 @@ from app.modules.expenses.expenses_schemas import ExpenseCreate, ExpenseUpdate
 # - user_id: authenticated user identifier that owns the expense.
 # - base_amount/base_currency/fx_rate/fx_rate_date/fx_source: the resolved
 #   FX snapshot for this expense (VF-014B5C).
+# - client_request_id/client_request_fingerprint: the create idempotency key and
+#   the fingerprint of the request it was first used for (both or neither).
 # - commit: whether the repository should commit the transaction immediately.
 # Returns:
 # - ExpenseModel instance saved or flushed in the current transaction.
+# Raises:
+# - ExpenseClientRequestIdTakenError: the insert violated the per-user
+#   client_request_id unique constraint (a concurrent create with the same
+#   key committed first); no row was written.
 def create_expense(
     db_session: Session,
     expense_data: ExpenseCreate,
@@ -36,6 +52,8 @@ def create_expense(
     fx_rate_date: date,
     fx_source: str,
     commit: bool = True,
+    client_request_id: Optional[UUID] = None,
+    client_request_fingerprint: Optional[str] = None,
 ) -> ExpenseModel:
     expense_model = ExpenseModel(
         user_id=user_id,
@@ -51,18 +69,58 @@ def create_expense(
         fx_rate=fx_rate,
         fx_rate_date=fx_rate_date,
         fx_source=fx_source,
+        client_request_id=client_request_id,
+        client_request_fingerprint=client_request_fingerprint,
     )
 
     db_session.add(expense_model)
 
-    if commit:
-        db_session.commit()
-    else:
-        db_session.flush()
+    try:
+        if commit:
+            db_session.commit()
+        else:
+            db_session.flush()
+    except IntegrityError as error:
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT:
+            raise ExpenseClientRequestIdTakenError() from error
+
+        raise
 
     db_session.refresh(expense_model)
 
     return expense_model
+
+
+# Returns the user's expense created with a given client request id, if any.
+# This function exists as the single lookup the create-idempotency algorithm
+# uses (fast lookup, lookup under the key lock, unique-violation recovery). It
+# never locks and is scoped by user, so it can never return another user's
+# record.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier.
+# - client_request_id: client-generated create idempotency key.
+# Returns:
+# - ExpenseModel if one exists for this user and key, None otherwise.
+def get_expense_by_client_request_id(
+    db_session: Session,
+    user_id: UUID,
+    client_request_id: UUID,
+) -> Optional[ExpenseModel]:
+    return (
+        db_session.query(ExpenseModel)
+        .filter(
+            ExpenseModel.user_id == user_id,
+            ExpenseModel.client_request_id == client_request_id,
+        )
+        .first()
+    )
 
 
 # Returns expense database records.

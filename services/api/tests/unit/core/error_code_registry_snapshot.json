@@ -93,6 +93,10 @@
       "code": "expense_account_currency_mismatch",
       "status": 422
     },
+    "ExpenseIdempotencyConflictError": {
+      "code": "expense_idempotency_conflict",
+      "status": 409
+    },
     "ExpenseNotFoundError": {
       "code": "expense_not_found",
       "status": 404
@@ -204,6 +208,10 @@
     "IncomeFutureDatedNotSupportedError": {
       "code": "income_future_dated_not_supported",
       "status": 422
+    },
+    "IncomeIdempotencyConflictError": {
+      "code": "income_idempotency_conflict",
+      "status": 409
     },
     "IncomeNotFoundError": {
       "code": "income_not_found",

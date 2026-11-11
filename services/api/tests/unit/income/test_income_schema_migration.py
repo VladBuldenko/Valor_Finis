@@ -22,6 +22,8 @@ def test_income_table_schema_matches_migration() -> None:
         "id", "user_id", "amount", "currency", "received_at", "source",
         "description", "base_amount", "base_currency", "fx_rate",
         "fx_rate_date", "fx_source", "created_at", "updated_at",
+        # VF-MVP-CORE-002 (revision b8e2c5d1f739): create idempotency.
+        "client_request_id", "client_request_fingerprint",
     }
     assert "account_id" not in columns
 
@@ -33,6 +35,10 @@ def test_income_table_schema_matches_migration() -> None:
     assert "ck_income_base_amount_positive" in check_constraints
     assert "ck_income_fx_rate_positive" in check_constraints
     assert "ck_income_fx_snapshot_all_or_none" in check_constraints
+    assert "ck_income_client_request_all_or_none" in check_constraints
+    assert "uq_income_user_id_client_request_id" in {
+        constraint["name"] for constraint in inspector.get_unique_constraints("income")
+    }
 
     index_names = {index["name"] for index in inspector.get_indexes("income")}
     assert "ix_income_user_id" in index_names

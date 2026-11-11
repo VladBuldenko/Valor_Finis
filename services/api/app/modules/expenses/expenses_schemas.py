@@ -94,6 +94,19 @@ class ExpenseCreate(ExpenseBase):
         ),
     )
 
+    client_request_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional client-generated idempotency key (UUID), one per logical "
+            "create and reused when that same create is retried. The same key "
+            "with the same request returns the already-created record (200) "
+            "and creates nothing; the same key with a different request is a "
+            "409. Omit it to keep the legacy, non-idempotent behavior: every "
+            "request then creates a new record."
+        ),
+        examples=["0f8c5f5e-6a38-4a8e-9b0e-2f7d0a6f1c11"],
+    )
+
 
 class ExpenseUpdate(BaseModel):
     """
@@ -245,6 +258,16 @@ class ExpenseResponse(ExpenseBase):
             "from its AccountTransaction projection. Read-only. Null "
             "means unlinked."
         ),
+    )
+
+    client_request_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "The create idempotency key this record was created with, or "
+            "null when the create request carried none (and for every "
+            "record created before idempotency existed). Read-only."
+        ),
+        examples=[None],
     )
 
     base_amount: Optional[Decimal] = Field(

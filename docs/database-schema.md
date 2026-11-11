@@ -513,6 +513,13 @@ of linkage changes; only a genuine monetary field change (amount,
 currency, or expense_date - the same pre-existing rule described above,
 completely independent of account_id) can ever trigger FX resolution.
 
+Create idempotency (VF-MVP-CORE-002, revision b8e2c5d1f739): the same two
+NULLABLE columns, client_request_id UUID and client_request_fingerprint
+VARCHAR(64), with uq_expenses_user_id_client_request_id UNIQUE (user_id,
+client_request_id) and ck_expenses_client_request_all_or_none CHECK
+((client_request_id IS NULL) = (client_request_fingerprint IS NULL)), exactly
+as on income (section 8). Legacy rows and keyless requests keep NULL in both.
+
 5. Budgets
 
 Table:
@@ -2332,6 +2339,17 @@ No production/backfill logic exists for this table - income is a
 brand-new table with no pre-existing data to migrate. The account_id
 linkage columns/constraints added by VF-017D live entirely on
 account_transactions (7.1 above), not on this table.
+
+Create idempotency (VF-MVP-CORE-002, revision b8e2c5d1f739): two NULLABLE
+columns, client_request_id UUID and client_request_fingerprint VARCHAR(64)
+(SHA-256 hex of the canonical create request), with
+uq_income_user_id_client_request_id UNIQUE (user_id, client_request_id) and
+ck_income_client_request_all_or_none CHECK ((client_request_id IS NULL) =
+(client_request_fingerprint IS NULL)). Every earlier row and every request
+sent without a key has NULL in both, which never collides (NULLs are distinct
+in a unique constraint). The migration is additive, contains no data
+statement and rewrites no row. See docs/api-contract.md "Create idempotency
+(Income and Expense)".
 
 9. Receipts
 

@@ -26,7 +26,8 @@ what the tests use.
 - The session `Authorization` header is set last on a case-insensitive `Headers` object; a caller cannot replace it.
   `FormData` requests never carry a manual `Content-Type`; 204 returns `undefined`.
 - A timeout does not mean the server did nothing: for a mutation the outcome is unknown. The user must check before
-  repeating it (the goal contribution flow already protects retries with `client_request_id`).
+  repeating it (the goal contribution, transfer, Income and Expense create flows protect retries with
+  `client_request_id`; see "Create idempotency" below).
 
 ## Errors
 
@@ -261,3 +262,24 @@ Per-screen status: `docs/mvp/mf3-screen-checklist.md` (checked against the code 
 - The package change of MF-2 R2 (`react-test-renderer`, `@types/react-test-renderer` as exact devDependencies) will
   conflict textually with the owner's local `package.json`/`package-lock.json` edits; merge those after this branch
   and regenerate the lockfile.
+
+## Create idempotency (Income and Expense, VF-MVP-CORE-002)
+
+The Income create screen and the Expense create form send a `client_request_id` (UUID, `expo-crypto` `randomUUID`)
+with every create. The server answers 201 for a new record and 200 for a replay of the same request; the client
+treats both as the same success.
+
+- `src/lib/create-attempts.ts` (pure): `resolveCreateAttempt` keeps every not-yet-successful attempt of a form
+  instance. The same payload reuses its key; a changed payload gets a new one; editing back to an earlier payload
+  reuses that earlier key (the first submission may have been saved). Attempts are scoped to the signed-in user, are
+  cleared after a success (so a deliberately repeated entry is a new operation) and are discarded when the screen
+  closes. Only a 409 `income_idempotency_conflict` / `expense_idempotency_conflict` drops them.
+- `createSubmitGuard` is a synchronous single-flight guard: `isPending` only turns true after a re-render, so two taps
+  delivered before it would both send. The guard is released in `onSettled`.
+- The transport still never retries a POST, so the only repeated request is a user-initiated retry with the same key.
+- `src/api/create-failure.ts`: a network error, timeout, unreadable body, cancellation or 502/503/504 is reported as
+  "could not confirm whether it was saved", never as "not saved". No local balance or cache is edited speculatively;
+  the cache is invalidated from the server's response after a success.
+- Requests that send no key (older app versions, receipt confirmation) keep the legacy, non-idempotent behavior.
+- The rules-evaluation request after an Income create is a debounced, idempotent re-evaluation; the replay's 200 and
+  the first 201 are indistinguishable to it, and it creates no financial effect by itself.

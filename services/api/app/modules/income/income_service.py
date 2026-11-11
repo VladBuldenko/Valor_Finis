@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Optional
@@ -5,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core import create_idempotency
 from app.modules.accounts import account_repository, account_transaction_repository
 from app.modules.accounts.account_errors import AccountArchivedError
 from app.modules.accounts.account_models import AccountModel
@@ -16,7 +18,9 @@ from app.modules.fx.fx_schemas import FxRateResult
 from app.modules.income import income_repository
 from app.modules.income.income_errors import (
     IncomeAccountCurrencyMismatchError,
+    IncomeClientRequestIdTakenError,
     IncomeFutureDatedNotSupportedError,
+    IncomeIdempotencyConflictError,
 )
 from app.modules.income.income_models import IncomeModel
 from app.modules.income.income_schemas import (
@@ -155,6 +159,7 @@ def _build_income_response(
         source=income_model.source,
         description=income_model.description,
         account_id=account_id,
+        client_request_id=income_model.client_request_id,
         base_amount=income_model.base_amount,
         base_currency=income_model.base_currency,
         fx_rate=income_model.fx_rate,
@@ -183,6 +188,10 @@ def _build_income_response(
 #   account_id.
 # - user_id: authenticated user identifier that owns the income record.
 # - commit: whether the whole operation should be committed immediately.
+# - client_request_fingerprint: set only by create_or_replay_income, together
+#   with income_data.client_request_id, so the key and the fingerprint of the
+#   request it was first used for are stored in the same INSERT. Callers that
+#   do not use idempotency leave it None and send no key.
 # Returns:
 # - IncomeResponse object created from the saved database model, with
 #   account_id reflecting the (possibly newly-created) linkage.
@@ -202,6 +211,7 @@ def create_income(
     income_data: IncomeCreate,
     user_id: UUID,
     commit: bool = True,
+    client_request_fingerprint: Optional[str] = None,
 ) -> IncomeResponse:
     base_currency = financial_settings_service.get_base_currency(
         db_session=db_session,
@@ -236,6 +246,8 @@ def create_income(
             fx_rate_date=fx_result.actual_rate_date,
             fx_source=fx_result.source,
             commit=False,
+            client_request_id=income_data.client_request_id,
+            client_request_fingerprint=client_request_fingerprint,
         )
 
         financial_event_service.record_income_created(
@@ -270,6 +282,8 @@ def create_income(
         fx_rate_date=fx_result.actual_rate_date,
         fx_source=fx_result.source,
         commit=False,
+        client_request_id=income_data.client_request_id,
+        client_request_fingerprint=client_request_fingerprint,
     )
 
     account_transaction_repository.create_income_projection(
@@ -294,6 +308,170 @@ def create_income(
         db_session.refresh(income_model)
 
     return _build_income_response(income_model, account_id=account_model.id)
+
+
+@dataclass(frozen=True)
+class IncomeCreateResult:
+    """
+    Outcome of create_or_replay_income.
+
+    Fields:
+        income: the Income's public representation (its CURRENT state on a
+            replay).
+        created: True if this call created the Income, False for an idempotent
+            replay of an already-created one. POST /income answers 201 or 200
+            accordingly, and only a created Income triggers its create side
+            effects (outbox event and its dispatch).
+    """
+
+    income: IncomeResponse
+    created: bool
+
+
+# Builds the canonical fingerprint of an Income create request.
+# This function exists as the single definition of "same request" for Income
+# create idempotency (VF-MVP-CORE-002): amount, currency, received_at, source,
+# description and account_id, as the server understood them after schema
+# normalization (so "2500" and "2500.00", or "eur" and "EUR", are the same
+# request). description is compared as sent: None and "" are different
+# requests, the same rule Account Transfer idempotency uses. client_request_id
+# and the user are the lookup scope, not part of the fingerprint.
+def _income_request_fingerprint(income_data: IncomeCreate) -> str:
+    return create_idempotency.compute_request_fingerprint(
+        "income.create",
+        {
+            "amount": format(income_data.amount.quantize(BASE_AMOUNT_DECIMAL_PLACES), "f"),
+            "currency": income_data.currency,
+            "received_at": income_data.received_at.isoformat(),
+            "source": income_data.source,
+            "description": income_data.description,
+            "account_id": str(income_data.account_id) if income_data.account_id is not None else None,
+        },
+    )
+
+
+# Resolves a create request whose client_request_id already identifies a stored
+# Income. Never recomputes FX, writes a row, a ledger entry or an event: it only
+# compares fingerprints and reads the current state.
+# Raises:
+# - IncomeIdempotencyConflictError: the key was first used for a different
+#   request.
+def _resolve_existing_income(
+    db_session: Session,
+    income_model: IncomeModel,
+    fingerprint: str,
+    user_id: UUID,
+) -> IncomeCreateResult:
+    if income_model.client_request_fingerprint != fingerprint:
+        raise IncomeIdempotencyConflictError()
+
+    projection = account_transaction_repository.get_income_projection(
+        db_session=db_session,
+        income_id=income_model.id,
+        user_id=user_id,
+    )
+
+    return IncomeCreateResult(
+        income=_build_income_response(
+            income_model,
+            account_id=projection.account_id if projection is not None else None,
+        ),
+        created=False,
+    )
+
+
+# Creates an Income exactly once per (user, client_request_id), or replays it.
+# This function exists to make POST /income safe to retry after a lost response
+# (VF-MVP-CORE-002). Without a key it is exactly create_income (the legacy,
+# non-idempotent behavior: every request creates a record). With a key:
+#   1. take the per-key advisory lock, so a concurrent request with the same key
+#      waits here instead of racing this one;
+#   2. look the key up; an existing record with the same request fingerprint is
+#      returned as a replay (nothing is created, no FX is resolved, no Account
+#      row is locked, no event is recorded), a different fingerprint is a
+#      conflict;
+#   3. otherwise create it with the key and fingerprint in the same INSERT as
+#      the Income itself, so the key can never exist without its record;
+#   4. if the unique constraint still fires (the backstop), reload the winner
+#      and resolve it like step 2.
+# Parameters:
+# - db_session, income_data, user_id, commit: as for create_income.
+# Returns:
+# - IncomeCreateResult.
+# Raises:
+# - IncomeIdempotencyConflictError: the key was first used for a different
+#   request.
+# - Everything create_income raises, for a new create.
+def create_or_replay_income(
+    db_session: Session,
+    income_data: IncomeCreate,
+    user_id: UUID,
+    commit: bool = True,
+) -> IncomeCreateResult:
+    client_request_id = income_data.client_request_id
+
+    if client_request_id is None:
+        return IncomeCreateResult(
+            income=create_income(
+                db_session=db_session,
+                income_data=income_data,
+                user_id=user_id,
+                commit=commit,
+            ),
+            created=True,
+        )
+
+    fingerprint = _income_request_fingerprint(income_data)
+
+    create_idempotency.acquire_create_key_lock(
+        db_session, "income.create", user_id, client_request_id,
+    )
+
+    existing_income = income_repository.get_income_by_client_request_id(
+        db_session=db_session,
+        user_id=user_id,
+        client_request_id=client_request_id,
+    )
+
+    if existing_income is not None:
+        try:
+            return _resolve_existing_income(db_session, existing_income, fingerprint, user_id)
+        finally:
+            # Nothing was written; release the key lock.
+            db_session.rollback()
+
+    try:
+        created_income = create_income(
+            db_session=db_session,
+            income_data=income_data,
+            user_id=user_id,
+            commit=commit,
+            client_request_fingerprint=fingerprint,
+        )
+    except IncomeClientRequestIdTakenError:
+        db_session.rollback()
+
+        winning_income = income_repository.get_income_by_client_request_id(
+            db_session=db_session,
+            user_id=user_id,
+            client_request_id=client_request_id,
+        )
+
+        if winning_income is None:
+            # The unique violation proves a same-key Income committed, so
+            # failing to reload it is an unexpected state - never fabricate a
+            # result; surface the original error.
+            raise
+
+        try:
+            return _resolve_existing_income(db_session, winning_income, fingerprint, user_id)
+        finally:
+            db_session.rollback()
+    except Exception:
+        db_session.rollback()
+        raise
+
+    return IncomeCreateResult(income=created_income, created=True)
 
 
 # Returns income records for the authenticated user, each with its

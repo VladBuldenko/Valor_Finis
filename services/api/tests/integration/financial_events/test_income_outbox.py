@@ -636,7 +636,7 @@ def test_income_http_response_shape_is_unchanged(
 
     expected_keys = {
         "id", "user_id", "amount", "currency", "received_at", "source", "description",
-        "account_id", "base_amount", "base_currency", "fx_rate", "fx_rate_date",
+        "account_id", "client_request_id", "base_amount", "base_currency", "fx_rate", "fx_rate_date",
         "fx_source", "created_at", "updated_at",
     }
     assert set(body) == expected_keys and set(listed) == expected_keys

@@ -2,11 +2,23 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from typing import Optional
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.income.income_errors import IncomeNotFoundError
+from app.modules.income.income_errors import (
+    IncomeClientRequestIdTakenError,
+    IncomeNotFoundError,
+)
 from app.modules.income.income_models import IncomeModel
 from app.modules.income.income_schemas import IncomeCreate, IncomeUpdate
+
+
+# The create-idempotency unique constraint (VF-MVP-CORE-002). Only a violation
+# of exactly this constraint is translated into IncomeClientRequestIdTakenError;
+# every other IntegrityError propagates unchanged.
+CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT = "uq_income_user_id_client_request_id"
 
 
 # Creates a new income database record, together with its FX snapshot.
@@ -22,10 +34,16 @@ from app.modules.income.income_schemas import IncomeCreate, IncomeUpdate
 # - user_id: authenticated user identifier that owns the income record.
 # - base_amount/base_currency/fx_rate/fx_rate_date/fx_source: the resolved
 #   FX snapshot for this income record.
+# - client_request_id/client_request_fingerprint: the create idempotency key and
+#   the fingerprint of the request it was first used for (both or neither).
 # - commit: whether the repository should commit the transaction
 #   immediately.
 # Returns:
 # - IncomeModel instance saved or flushed in the current transaction.
+# Raises:
+# - IncomeClientRequestIdTakenError: the insert violated the per-user
+#   client_request_id unique constraint (a concurrent create with the same
+#   key committed first); no row was written.
 def create_income(
     db_session: Session,
     income_data: IncomeCreate,
@@ -36,6 +54,8 @@ def create_income(
     fx_rate_date: date,
     fx_source: str,
     commit: bool = True,
+    client_request_id: Optional[UUID] = None,
+    client_request_fingerprint: Optional[str] = None,
 ) -> IncomeModel:
     income_model = IncomeModel(
         user_id=user_id,
@@ -49,18 +69,58 @@ def create_income(
         fx_rate=fx_rate,
         fx_rate_date=fx_rate_date,
         fx_source=fx_source,
+        client_request_id=client_request_id,
+        client_request_fingerprint=client_request_fingerprint,
     )
 
     db_session.add(income_model)
 
-    if commit:
-        db_session.commit()
-    else:
-        db_session.flush()
+    try:
+        if commit:
+            db_session.commit()
+        else:
+            db_session.flush()
+    except IntegrityError as error:
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == CLIENT_REQUEST_ID_UNIQUE_CONSTRAINT:
+            raise IncomeClientRequestIdTakenError() from error
+
+        raise
 
     db_session.refresh(income_model)
 
     return income_model
+
+
+# Returns the user's income created with a given client request id, if any.
+# This function exists as the single lookup the create-idempotency algorithm
+# uses (fast lookup, lookup under the key lock, unique-violation recovery). It
+# never locks and is scoped by user, so it can never return another user's
+# record.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier.
+# - client_request_id: client-generated create idempotency key.
+# Returns:
+# - IncomeModel if one exists for this user and key, None otherwise.
+def get_income_by_client_request_id(
+    db_session: Session,
+    user_id: UUID,
+    client_request_id: UUID,
+) -> Optional[IncomeModel]:
+    return (
+        db_session.query(IncomeModel)
+        .filter(
+            IncomeModel.user_id == user_id,
+            IncomeModel.client_request_id == client_request_id,
+        )
+        .first()
+    )
 
 
 # Returns income database records for one user, newest received_at first.

@@ -45,6 +45,7 @@ from app.modules.categories.errors import (
 )
 from app.modules.expenses.expenses_errors import (
     ExpenseAccountCurrencyMismatchError,
+    ExpenseIdempotencyConflictError,
     ExpenseNotFoundError,
 )
 from app.modules.fx.fx_errors import (
@@ -85,6 +86,7 @@ from app.modules.goals.goal_errors import (
 from app.modules.income.income_errors import (
     IncomeAccountCurrencyMismatchError,
     IncomeFutureDatedNotSupportedError,
+    IncomeIdempotencyConflictError,
     IncomeNotFoundError,
 )
 from app.modules.receipts.receipt_errors import (
@@ -238,6 +240,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "Expense currency must match the account's currency to link them.",
     ),
+    ExpenseIdempotencyConflictError: (
+        status.HTTP_409_CONFLICT,
+        "client_request_id has already been used for a different expense.",
+    ),
     FxProviderUnavailableError: (
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "Currency conversion is temporarily unavailable. Please try again shortly.",
@@ -336,6 +342,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "Income currency must match the account's currency to link them.",
     ),
+    IncomeIdempotencyConflictError: (
+        status.HTTP_409_CONFLICT,
+        "client_request_id has already been used for a different income.",
+    ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Receipt not found.",
@@ -425,6 +435,7 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     CategoryInUseByBudgetError: "category_in_use_by_budget",
     ExpenseNotFoundError: "expense_not_found",
     ExpenseAccountCurrencyMismatchError: "expense_account_currency_mismatch",
+    ExpenseIdempotencyConflictError: "expense_idempotency_conflict",
     FxProviderUnavailableError: "fx_provider_unavailable",
     FxRateUnavailableError: "fx_rate_unavailable",
     FxFutureDatedNotSupportedError: "fx_future_dated_not_supported",
@@ -448,6 +459,7 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     IncomeNotFoundError: "income_not_found",
     IncomeFutureDatedNotSupportedError: "income_future_dated_not_supported",
     IncomeAccountCurrencyMismatchError: "income_account_currency_mismatch",
+    IncomeIdempotencyConflictError: "income_idempotency_conflict",
     ReceiptNotFoundError: "receipt_not_found",
     ReceiptExpenseNotFoundError: "receipt_expense_not_found",
     ReceiptFileEmptyError: "receipt_file_empty",
