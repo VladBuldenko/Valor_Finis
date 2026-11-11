@@ -330,6 +330,7 @@ Status / source error / `detail`:
 | 422 | FxFutureDatedNotSupported | A foreign-currency expense cannot be dated in the future. |
 | 404 | BudgetNotFound | Budget not found. |
 | 409 | BudgetRetroactiveDeactivation | Budget end date cannot be set to a date before today. |
+| 422 | BudgetDateRange | Budget end date must be on or after its start date. |
 | 409 | BudgetAlreadyExists, BudgetImmutableField | (multi-line text; see source) |
 | 404 | GoalNotFound | Goal not found. |
 | 409 | GoalInsufficientFunds | Withdrawal exceeds the current goal balance. |

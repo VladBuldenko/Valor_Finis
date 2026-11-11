@@ -7,7 +7,7 @@ checked (nullability and value shapes stay with the contract docs and the journe
 The test reads the mobile sources as text; it is skipped when they are not checked out.
 """
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Set
 from uuid import uuid4
@@ -180,3 +180,35 @@ def test_goal_transaction_error_copy_is_keyed_on_the_real_backend_details(client
     conflict = client.post(f"/api/v1/goals/{goal['id']}/transactions", headers=headers,
                            json={"client_request_id": key, "type": "contribution", "amount": "6.00"})
     assert conflict.status_code == 409 and conflict.json()["detail"] == constants["IDEMPOTENCY_CONFLICT_DETAIL"]
+
+
+# VF-MVP-CORE-004: the Budget and Budget status shapes the mobile screens render.
+def test_budget_and_budget_status_responses_match_the_mobile_types(client: TestClient, clean_database: None) -> None:
+    user = str(uuid4())
+    headers = auth_headers(user)
+    today = date.today()
+
+    def post(path: str, body: dict) -> dict:
+        response = client.post(path, headers=headers, json=body)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    category = post("/api/v1/categories", {"name": "Food", "color": "#FF5733", "icon": "x"})
+    # one budget per lifecycle state: active, not started, ended (the status shape is the same)
+    active = post("/api/v1/budgets", {"name": "Active", "limit_amount": "100.00", "start_date": today.replace(day=1).isoformat(), "category_id": category["id"]})
+    future = post("/api/v1/budgets", {"name": "Future", "limit_amount": "100.00", "start_date": (today.replace(day=1) + timedelta(days=95)).isoformat()})
+    post("/api/v1/budgets", {"name": "Ended", "limit_amount": "100.00", "start_date": (today - timedelta(days=90)).isoformat(), "end_date": (today - timedelta(days=60)).isoformat()})
+    post("/api/v1/expenses", {"title": "t", "amount": "10.00", "currency": "EUR", "expense_date": today.isoformat(), "category_id": category["id"]})
+
+    updated = client.patch(f"/api/v1/budgets/{future['id']}", headers=headers, json={"limit_amount": "120.00"})
+    assert updated.status_code == 200, updated.text
+
+    listed = client.get("/api/v1/budgets", headers=headers).json()
+    assert len(listed) == 3
+    for record in (active, future, updated.json(), *listed):
+        assert_same_keys(record, "budgets/budget.types.ts", "Budget")
+
+    status = client.get("/api/v1/analytics/budget-status", headers=headers).json()
+    assert {item["period_state"] for item in status} == {"active", "not_started", "ended"}
+    for item in status:
+        assert_same_keys(item, "analytics/analytics.types.ts", "BudgetStatusItem")

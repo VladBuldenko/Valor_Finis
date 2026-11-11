@@ -53,6 +53,10 @@
       "code": "budget_already_exists",
       "status": 409
     },
+    "BudgetDateRangeError": {
+      "code": "budget_date_range_invalid",
+      "status": 422
+    },
     "BudgetImmutableFieldError": {
       "code": "budget_immutable_field",
       "status": 409

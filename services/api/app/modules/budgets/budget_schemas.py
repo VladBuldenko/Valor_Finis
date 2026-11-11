@@ -12,6 +12,43 @@ from pydantic import (
 )
 
 
+# Validates a budget name sent by a client: trimmed and not blank.
+# This function exists so the request schemas reject a name made only of
+# whitespace and never store leading/trailing spaces, as Accounts do. It is
+# applied to requests only, never to BudgetResponse, so a row that already
+# exists can always be read back.
+# Parameters:
+# - value: raw name from the client.
+# Returns:
+# - The trimmed name.
+# Raises:
+# - ValueError: when the trimmed name is empty.
+def _normalize_budget_name(value: str) -> str:
+    trimmed = value.strip()
+
+    if not trimmed:
+        raise ValueError("name cannot be blank.")
+
+    return trimmed
+
+
+# Validates a currency code sent by a client: exactly three letters A-Z.
+# This function exists to apply the same shape rule Expenses, Income and
+# Accounts already enforce, so a code such as "E1R" or "12 " can never
+# become a budget that no expense can match. Request schemas only.
+# Parameters:
+# - value: currency code, already upper-cased and stripped by the base schema.
+# Returns:
+# - The validated code.
+# Raises:
+# - ValueError: when it is not exactly three ASCII letters.
+def _validate_budget_currency(value: str) -> str:
+    if len(value) != 3 or not value.isascii() or not value.isalpha():
+        raise ValueError("currency must be exactly 3 alphabetic characters.")
+
+    return value
+
+
 class BudgetBase(BaseModel):
     """
     Base schema containing fields shared by budget operations.
@@ -101,6 +138,16 @@ class BudgetCreate(BudgetBase):
 
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return _normalize_budget_name(value)
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency_shape(cls, value: str) -> str:
+        return _validate_budget_currency(value)
+
 
 class BudgetUpdate(BaseModel):
     """
@@ -184,6 +231,22 @@ class BudgetUpdate(BaseModel):
             return value
 
         return value.strip().upper()
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+
+        return _normalize_budget_name(value)
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency_shape(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+
+        return _validate_budget_currency(value)
 
     @model_validator(mode="after")
     def validate_update_payload(self) -> "BudgetUpdate":

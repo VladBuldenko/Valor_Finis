@@ -556,7 +556,7 @@ name
 
 yes
 
-1–120 characters
+1–120 characters; trimmed, must not be blank
 
 limit_amount
 
@@ -568,7 +568,7 @@ currency
 
 no
 
-default EUR; normalized to uppercase
+default EUR; normalized to uppercase; exactly 3 letters
 
 period
 
@@ -590,6 +590,8 @@ must not be before start_date
 
 Duplicate budgets are rejected for the same user, name, period, and start date.
 
+Budgets are listed newest start date first; budgets with the same start date keep a stable order (creation time).
+
 Update Budget
 
 PATCH /api/v1/budgets/{budget_id}
@@ -597,6 +599,18 @@ PATCH /api/v1/budgets/{budget_id}
 At least one field is required.
 
 category_id and end_date may be set to null.
+
+Rules (errors carry a stable `code`):
+
+- currency cannot be changed (409 budget_immutable_field).
+- period and start_date can be changed only until the budget's first period has completed (409
+  budget_immutable_field afterwards). Sending the stored value again is not a change.
+- end_date cannot be set before today (409 budget_retroactive_deactivation).
+- The resulting end_date must not be before the resulting start_date, including when only one of the two
+  is sent (422 budget_date_range_invalid); nothing is saved.
+- A limit or category change adds one version to the budget history; it applies from the current period,
+  or from the first period for a budget that has not started yet.
+- Renaming onto an existing name, period and start date is 409 budget_already_exists.
 
 Budget Response
 

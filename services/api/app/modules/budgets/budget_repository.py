@@ -9,6 +9,7 @@ from app.modules.budgets.budget_errors import (
     BudgetNotFoundError,
 )
 from app.modules.budgets.budget_schemas import BudgetCreate, BudgetUpdate
+from app.modules.budgets.budget_version_models import BudgetVersionModel
 from app.modules.budgets.budgets_models import BudgetModel
 
 
@@ -86,7 +87,15 @@ def get_budgets(
     if user_id is not None:
         query = query.filter(BudgetModel.user_id == user_id)
 
-    return query.order_by(BudgetModel.start_date.desc()).all()
+    # Newest start date first. start_date is shared by most budgets (monthly
+    # budgets all start on the 1st), so created_at and id make the order
+    # total: without them PostgreSQL returns ties in physical row order and
+    # an edited budget jumped to the bottom of the list after every update.
+    return query.order_by(
+        BudgetModel.start_date.desc(),
+        BudgetModel.created_at.asc(),
+        BudgetModel.id.asc(),
+    ).all()
 
 
 # Returns one budget by budget id and authenticated user id.
@@ -254,11 +263,26 @@ def has_budget_referencing_category(
     category_id: UUID,
     user_id: UUID,
 ) -> bool:
-    return (
+    if (
         db_session.query(BudgetModel)
         .filter(
             BudgetModel.category_id == category_id,
             BudgetModel.user_id == user_id,
+        )
+        .first()
+        is not None
+    ):
+        return True
+
+    # A budget that moved to another category still keeps its earlier
+    # versions, and those scope past periods to the old category. The
+    # foreign key from budget_versions restricts deleting it, so it must
+    # be reported here as "in use" instead of failing in the database.
+    return (
+        db_session.query(BudgetVersionModel)
+        .filter(
+            BudgetVersionModel.category_id == category_id,
+            BudgetVersionModel.user_id == user_id,
         )
         .first()
         is not None

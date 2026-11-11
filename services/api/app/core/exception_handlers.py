@@ -31,6 +31,7 @@ from app.modules.accounts.account_transfer_errors import (
 )
 from app.modules.budgets.budget_errors import (
     BudgetAlreadyExistsError,
+    BudgetDateRangeError,
     BudgetImmutableFieldError,
     BudgetNotFoundError,
     BudgetReferencedByRuleError,
@@ -278,6 +279,10 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_409_CONFLICT,
         "Budget end date cannot be set to a date before today.",
     ),
+    BudgetDateRangeError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Budget end date must be on or after its start date.",
+    ),
     GoalNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Goal not found.",
@@ -443,6 +448,7 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     BudgetNotFoundError: "budget_not_found",
     BudgetImmutableFieldError: "budget_immutable_field",
     BudgetRetroactiveDeactivationError: "budget_retroactive_deactivation",
+    BudgetDateRangeError: "budget_date_range_invalid",
     GoalNotFoundError: "goal_not_found",
     GoalInsufficientFundsError: "goal_insufficient_funds",
     GoalPartitionInsufficientFundsError: "goal_partition_insufficient_funds",
