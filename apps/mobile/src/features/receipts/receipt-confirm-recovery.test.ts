@@ -2,6 +2,7 @@
 // query families are refreshed after a confirmation, and how a FAILED confirmation is reconciled by
 // rereading the receipt (the write itself is never resent).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { QueryClient } from "@tanstack/react-query";
@@ -140,5 +141,30 @@ describe("recoverFailedConfirmation (the confirm request failed; was it committe
     });
 
     assert.deepEqual(asked, ["r-1"]);
+  });
+});
+
+describe("stale sessions", () => {
+  it("only ever writes to the client it was given, never to another session's cache", async () => {
+    const oldSession = seeded();
+    const newSession = seeded();
+    const confirmed = receipt({ status: "confirmed", expense_id: "e-1" });
+
+    await recoverFailedConfirmation(oldSession, USER, "r-1", async () => confirmed);
+
+    assert.deepEqual(invalidated(newSession), []);
+    assert.equal(newSession.getQueryData(receiptDetailKey("r-1")) instanceof Array, true, "the new session's cache is untouched");
+  });
+
+  it("the review screen drops the result of a confirmation that finished after the user changed (static source check)", () => {
+    const source = readFileSync(new URL("./receipt-review-screen.tsx", import.meta.url), "utf8");
+    const recovered = source.indexOf("await recoverFailedConfirmation(");
+    const alertAfterRecovery = source.indexOf("Alert.alert(", recovered);
+    const guard = source.indexOf("isCurrentQueryClient(queryClient)", recovered);
+    const navigation = source.indexOf("router.replace(");
+    const successGuard = source.lastIndexOf("isCurrentQueryClient(queryClient)", navigation);
+
+    assert.ok(recovered > 0 && guard > recovered && guard < alertAfterRecovery, "no alert before the session check");
+    assert.ok(successGuard > 0 && successGuard < navigation, "no navigation before the session check");
   });
 });

@@ -415,10 +415,23 @@ def test_a_failed_processing_attempt_creates_nothing_and_can_be_retried(client: 
     assert _sql("select count(*) from receipts where user_id = :u", u=api.user) == 1
 
 
-def test_files_the_ocr_engine_cannot_read_fail_safely(client: TestClient, clean_database: None, storage: Path) -> None:
-    """Real provider, no stub: a PDF and a non-image named .jpg are accepted at upload and fail OCR cleanly."""
+def _real_pdf() -> bytes:
+    """A genuine, valid single-page PDF that contains the same receipt text a PNG would."""
+    buffer = io.BytesIO()
+    Image.open(io.BytesIO(_png(["LIDL", "SUMME 3,68 EUR"]))).save(buffer, "PDF")
+    return buffer.getvalue()
+
+
+def test_pdf_ocr_is_not_supported_and_unreadable_files_fail_safely(client: TestClient, clean_database: None, storage: Path) -> None:
+    """REAL provider, no stub. UNRESOLVED LIMITATION: the configured Tesseract provider opens images only, so even a
+    valid PDF is accepted at upload and then fails OCR (422, status failed). This test pins that fail-safe behavior;
+    it is NOT evidence that PDF OCR works. A non-image named .jpg fails the same way."""
     api = Api(TestClient(client.app, raise_server_exceptions=False))
-    unreadable = [api.upload("r.pdf", PDF, "application/pdf"), api.upload("r.jpg", b"not an image", "image/jpeg")]
+    unreadable = [
+        api.upload("r.pdf", _real_pdf(), "application/pdf"),
+        api.upload("r.pdf", PDF, "application/pdf"),
+        api.upload("r.jpg", b"not an image", "image/jpeg"),
+    ]
 
     for receipt in unreadable:
         assert api.process(receipt["id"], expect=422).json()["code"] == "receipt_ocr_processing_failed"
