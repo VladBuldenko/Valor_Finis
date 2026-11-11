@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.modules.budgets import budget_repository, budget_version_repository
 from app.modules.financial_rules import financial_rule_repository
 from app.modules.budgets.budget_errors import (
+    BudgetDateRangeError,
     BudgetReferencedByRuleError,
     BudgetImmutableFieldError,
     BudgetRetroactiveDeactivationError,
@@ -170,10 +171,18 @@ def update_budget(
 
     redefines_first_period = False
 
-    if ("period" in fields_set or "start_date" in fields_set) and (
-        budget_data.period != existing_budget.period
-        or budget_data.start_date != existing_budget.start_date
-    ):
+    # Only a field that is actually present AND different counts as a change
+    # to the period definition. An omitted field is "unchanged", not None,
+    # and resending the stored value is a no-op - it must not be refused
+    # (or reset the version history) just because the other field is omitted.
+    period_definition_changed = (
+        "period" in fields_set and budget_data.period != existing_budget.period
+    ) or (
+        "start_date" in fields_set
+        and budget_data.start_date != existing_budget.start_date
+    )
+
+    if period_definition_changed:
         if not _is_within_first_period(existing_budget, today):
             # Changing period/start_date after periods have already
             # occurred would make those periods non-reconstructible.
@@ -189,6 +198,20 @@ def update_budget(
         # Retroactively deactivating a budget would erase already-completed
         # periods that were counted against it.
         raise BudgetRetroactiveDeactivationError()
+
+    # The schema can only compare start_date and end_date when both are in
+    # the payload. A partial update that sends one of them is checked here
+    # against the stored value of the other, so a budget can never be saved
+    # ending before it starts.
+    resulting_start_date = (
+        budget_data.start_date if "start_date" in fields_set else existing_budget.start_date
+    )
+    resulting_end_date = (
+        budget_data.end_date if "end_date" in fields_set else existing_budget.end_date
+    )
+
+    if resulting_end_date is not None and resulting_end_date < resulting_start_date:
+        raise BudgetDateRangeError()
 
     if (
         "category_id" in budget_data.model_fields_set
@@ -250,7 +273,15 @@ def update_budget(
                 commit=False,
             )
         elif limit_amount_changed or category_changed:
-            current_period = resolve_period(budget_model.period, today)
+            # A budget that has not started yet is measured from its first
+            # period, which lies after today's period. The new version must
+            # be anchored there: anchored to today's (earlier) period it
+            # would sort below the initial version and the edit would never
+            # show in the budget's status.
+            current_period = resolve_period(
+                budget_model.period,
+                max(today, budget_model.start_date),
+            )
             change_reason = (
                 VERSION_CHANGE_REASON_CATEGORY_CHANGE
                 if category_changed

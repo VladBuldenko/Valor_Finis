@@ -70,3 +70,21 @@ class BudgetReferencedByRuleError(Exception):
     """
 
     pass
+
+
+class BudgetDateRangeError(Exception):
+    """
+    Raised when an update would leave a budget ending before it starts.
+
+    What:
+        Represents a partial update whose merged start_date/end_date are
+        inverted (for example only end_date is sent, and it is earlier than
+        the stored start_date).
+
+    Why:
+        The request schema can only compare the two dates when both are in
+        the same payload. Without this check the inverted row was committed
+        and every later read of the user's budgets failed validation.
+    """
+
+    pass
