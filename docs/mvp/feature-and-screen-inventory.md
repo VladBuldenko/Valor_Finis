@@ -130,7 +130,7 @@ Limitation: the `client_request_id` lives in the open form; leaving the form aft
 | Upload | `/receipts/upload` · `receipt-upload-screen.tsx` | Camera or library picker; upload; process (OCR); handles a failed process by keeping the receipt id. | `POST /receipts/upload` (multipart), `POST /receipts/{id}/process` | none | IMPLEMENTED / R |
 | Review/confirm | `/receipts/[id]` · `receipt-review-screen.tsx` | Detected merchant, amount, currency, date; editable title, amount, currency, date, description, category, Account; "already confirmed" branch; confirm creates an Expense and navigates to it. | `GET /receipts/{id}`, `GET /categories`, `GET /accounts`, `POST /receipts/{id}/confirm` | `["receipts","detail",id]` (no user id in key), invalidates `["receipts"]` + expense set | IMPLEMENTED / R |
 
-Limitation: no receipt list, delete or edit screen although `GET/PATCH/DELETE /receipts` exist (M13).
+Limitation: no receipt list, delete or edit screen although `GET/DELETE /receipts` exist (M13); the former create/PATCH routes were removed in CORE-005A.
 
 ### Analytics and Financial Overview
 | Screen | Route · component | Displays | Endpoints | Cache | Status / MVP |

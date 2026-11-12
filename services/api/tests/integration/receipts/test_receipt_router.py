@@ -21,91 +21,8 @@ from tests.helpers import (
     create_category,
     create_expense,
     create_receipt,
+    set_receipt_state,
 )
-
-
-# Tests that an authenticated user can create a receipt.
-# This test exists to verify receipt creation through the HTTP API.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the API returns the created receipt.
-def test_create_receipt_endpoint_creates_receipt(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-
-    payload = {
-        "storage_path": f"receipts/{user_id}/receipt-1.jpg",
-    }
-
-    # Act
-    response = client.post(
-        "/api/v1/receipts",
-        json=payload,
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 201, response.text
-
-    response_data = response.json()
-
-    assert response_data["user_id"] == user_id
-    assert response_data["storage_path"] == payload["storage_path"]
-    assert response_data["file_url"] is None
-    assert response_data["status"] == "uploaded"
-    assert response_data["expense_id"] is None
-
-
-# Tests that receipt creation rejects missing authentication.
-# This test exists to verify that receipt data is protected by auth.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the API returns unauthorized status code.
-def test_create_receipt_endpoint_rejects_missing_authentication(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Act
-    response = client.post(
-        "/api/v1/receipts",
-        json={"storage_path": "receipts/receipt-1.jpg"},
-    )
-
-    # Assert
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Missing authentication credentials."
-
-
-# Tests that receipt creation rejects empty payloads.
-# This test exists to verify that a receipt must contain a file reference.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the API returns validation error status code.
-def test_create_receipt_endpoint_rejects_missing_file_reference(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-
-    # Act
-    response = client.post(
-        "/api/v1/receipts",
-        json={},
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 422
 
 
 # Tests that users can list only their own receipts.
@@ -202,136 +119,6 @@ def test_get_receipt_by_id_endpoint_rejects_other_user_receipt(
     # Assert
     assert response.status_code == 404
     assert response.json()["detail"] == "Receipt not found."
-
-
-# Tests that a user can update their own receipt.
-# This test exists to verify OCR metadata updates through the API.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the receipt is updated.
-def test_update_receipt_endpoint_updates_own_receipt(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-    receipt = create_receipt(client=client, user_id=user_id)
-
-    payload = {
-        "status": "processed",
-        "ocr_text": "Lidl total 24.99 EUR",
-        "merchant_detected": "Lidl",
-        "total_amount_detected": "24.99",
-        "currency_detected": "eur",
-        "purchase_date_detected": "2026-07-25",
-    }
-
-    # Act
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json=payload,
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 200, response.text
-
-    response_data = response.json()
-
-    assert response_data["id"] == receipt["id"]
-    assert response_data["status"] == "processed"
-    assert response_data["ocr_text"] == "Lidl total 24.99 EUR"
-    assert response_data["merchant_detected"] == "Lidl"
-    assert response_data["total_amount_detected"] == "24.99"
-    assert response_data["currency_detected"] == "EUR"
-    assert response_data["purchase_date_detected"] == "2026-07-25"
-
-
-# Tests that receipt update rejects empty payloads.
-# This test exists to prevent PATCH requests that do not change anything.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the API returns validation error status code.
-def test_update_receipt_endpoint_rejects_empty_payload(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-    receipt = create_receipt(client=client, user_id=user_id)
-
-    # Act
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={},
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 422
-
-
-# Tests that a receipt can be linked to an expense owned by the same user.
-# This test exists to verify valid receipt-to-expense linking.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the receipt is linked to the expense.
-def test_update_receipt_endpoint_links_to_own_expense(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-
-    receipt = create_receipt(client=client, user_id=user_id)
-    expense = create_expense(client=client, user_id=user_id)
-
-    # Act
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={"expense_id": expense["id"]},
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 200, response.text
-    assert response.json()["expense_id"] == expense["id"]
-
-
-# Tests that a receipt cannot be linked to another user's expense.
-# This test exists to prevent cross-user receipt-to-expense linking.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that clears database tables before and after the test.
-# Returns:
-# - None. The test passes if the API returns not found.
-def test_update_receipt_endpoint_rejects_other_user_expense_link(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    # Arrange
-    user_id = str(uuid4())
-    other_user_id = str(uuid4())
-
-    receipt = create_receipt(client=client, user_id=user_id)
-    other_expense = create_expense(client=client, user_id=other_user_id)
-
-    # Act
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={"expense_id": other_expense["id"]},
-        headers=auth_headers(user_id),
-    )
-
-    # Assert
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Linked expense not found."
 
 
 # Tests that a user can delete their own receipt.
@@ -884,13 +671,9 @@ def test_process_receipt_endpoint_rejects_unprocessable_status(
 
     receipt = upload_response.json()
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": receipt_status,
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1258,17 +1041,13 @@ def test_confirm_receipt_endpoint_uses_user_corrections(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "L1DL",
             "total_amount_detected": "28.99",
             "currency_detected": "USD",
             "purchase_date_detected": "2026-07-30",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1333,17 +1112,13 @@ def test_confirm_receipt_endpoint_foreign_currency_gets_fx_snapshot(
 
     receipt = create_receipt(client=client, user_id=user_id)
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "NYC DELI",
             "total_amount_detected": "20.00",
             "currency_detected": "USD",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
     assert update_response.status_code == 200, update_response.text
 
     confirm_response = client.post(
@@ -1419,17 +1194,13 @@ def test_confirm_receipt_endpoint_atomic_across_settings_bootstrap_and_fx_failur
     monkeypatch.setattr(fx_ecb_provider.httpx, "get", MagicMock(return_value=response_mock))
 
     receipt = create_receipt(client=client, user_id=user_id)
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "NYC DELI",
             "total_amount_detected": "20.00",
             "currency_detected": "USD",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
     assert update_response.status_code == 200, update_response.text
 
     failed_confirm_response = client.post(
@@ -1510,13 +1281,9 @@ def test_confirm_receipt_endpoint_accepts_complete_manual_data(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1560,13 +1327,9 @@ def test_confirm_receipt_endpoint_rejects_missing_required_data(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1628,13 +1391,9 @@ def test_confirm_receipt_endpoint_rejects_unconfirmable_status(
     )
 
     if receipt_status != "uploaded":
-        update_response = client.patch(
-            f"/api/v1/receipts/{receipt['id']}",
-            json={
+        update_response = set_receipt_state(receipt['id'], user_id, {
                 "status": receipt_status,
-            },
-            headers=auth_headers(user_id),
-        )
+            })
 
         assert update_response.status_code == 200, update_response.text
 
@@ -1673,17 +1432,13 @@ def test_confirm_receipt_endpoint_rejects_repeated_confirmation(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "LIDL",
             "total_amount_detected": "24.99",
             "currency_detected": "EUR",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1734,17 +1489,13 @@ def test_confirm_receipt_endpoint_rejects_other_user_receipt(
         user_id=other_user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], other_user_id, {
             "status": "processed",
             "merchant_detected": "LIDL",
             "total_amount_detected": "24.99",
             "currency_detected": "EUR",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(other_user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1824,17 +1575,13 @@ def test_confirm_receipt_endpoint_allows_own_category(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "LIDL",
             "total_amount_detected": "24.99",
             "currency_detected": "EUR",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1900,17 +1647,13 @@ def test_confirm_receipt_endpoint_rejects_other_user_category(
         user_id=user_id,
     )
 
-    update_response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    update_response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "LIDL",
             "total_amount_detected": "24.99",
             "currency_detected": "EUR",
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert update_response.status_code == 200, update_response.text
 
@@ -1972,17 +1715,13 @@ def _create_processed_receipt(
 ) -> dict:
     receipt = create_receipt(client=client, user_id=user_id)
 
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={
+    response = set_receipt_state(receipt['id'], user_id, {
             "status": "processed",
             "merchant_detected": "LIDL",
             "total_amount_detected": amount,
             "currency_detected": currency,
             "purchase_date_detected": "2026-07-31",
-        },
-        headers=auth_headers(user_id),
-    )
+        })
 
     assert response.status_code == 200, response.text
 
@@ -2496,34 +2235,3 @@ def test_confirm_receipt_endpoint_rejects_description_over_expense_limit(
     assert response.status_code == 422, response.text
 
     _assert_receipt_still_processed_without_expense(client, user_id, receipt["id"])
-
-
-# Verifies that a detected total the Expense amount column cannot store is
-# rejected when written to the receipt, so it can never reach ExpenseCreate
-# through a confirmation that omits a corrected amount.
-# Parameters:
-# - client: FastAPI test client.
-# - clean_database: fixture that isolates database state.
-# Returns:
-# - None.
-def test_update_receipt_endpoint_rejects_total_amount_detected_outside_expense_limits(
-    client: TestClient,
-    clean_database: None,
-) -> None:
-    user_id = str(uuid.uuid4())
-    receipt = _create_processed_receipt(client, user_id, amount="24.99")
-
-    response = client.patch(
-        f"/api/v1/receipts/{receipt['id']}",
-        json={"total_amount_detected": "1.001"},
-        headers=auth_headers(user_id),
-    )
-
-    assert response.status_code == 422, response.text
-
-    stored = client.get(
-        f"/api/v1/receipts/{receipt['id']}",
-        headers=auth_headers(user_id),
-    ).json()
-
-    assert stored["total_amount_detected"] == "24.99"

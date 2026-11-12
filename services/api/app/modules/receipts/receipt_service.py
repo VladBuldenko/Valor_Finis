@@ -5,8 +5,6 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from fastapi import UploadFile
 
-from app.modules.expenses.expenses_errors import ExpenseNotFoundError
-from app.modules.expenses import expenses_repository
 from app.modules.receipts import (
     receipt_ocr_service,
     receipt_parser_service,
@@ -15,7 +13,6 @@ from app.modules.receipts import (
     receipt_storage_service,
 )
 from app.modules.receipts.receipt_errors import (
-    ReceiptExpenseNotFoundError,
     ReceiptFileStorageError,
     ReceiptOcrFileNotFoundError,
     ReceiptOcrProcessingError,
@@ -384,63 +381,6 @@ def get_receipt_by_id(
     receipt = receipt_repository.get_receipt_by_id(
         db_session=db_session,
         receipt_id=receipt_id,
-        user_id=user_id,
-    )
-
-    return map_receipt_to_response(receipt)
-
-
-# Validates that an expense exists and belongs to the authenticated user.
-# This function exists to prevent linking receipts to another user's expenses.
-# Parameters:
-# - db_session: active SQLAlchemy session.
-# - expense_id: requested expense identifier.
-# - user_id: authenticated user identifier.
-# Returns:
-# - None.
-# Raises:
-# - ReceiptExpenseNotFoundError when the expense does not exist for the user.
-def validate_receipt_expense_link(
-    db_session: Session,
-    expense_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> None:
-    try:
-        expenses_repository.get_expense_by_id(
-            db_session=db_session,
-            expense_id=expense_id,
-            user_id=user_id,
-        )
-    except ExpenseNotFoundError as error:
-        raise ReceiptExpenseNotFoundError() from error
-
-
-# Updates an existing receipt owned by the authenticated user.
-# This function exists to apply receipt update business rules before persistence.
-# Parameters:
-# - db_session: active SQLAlchemy session.
-# - receipt_id: receipt identifier.
-# - receipt_data: validated partial receipt update data.
-# - user_id: authenticated user identifier.
-# Returns:
-# - ReceiptResponse schema containing the updated receipt.
-def update_receipt(
-    db_session: Session,
-    receipt_id: uuid.UUID,
-    receipt_data: ReceiptUpdate,
-    user_id: uuid.UUID,
-) -> ReceiptResponse:
-    if "expense_id" in receipt_data.model_fields_set and receipt_data.expense_id is not None:
-        validate_receipt_expense_link(
-            db_session=db_session,
-            expense_id=receipt_data.expense_id,
-            user_id=user_id,
-        )
-
-    receipt = receipt_repository.update_receipt(
-        db_session=db_session,
-        receipt_id=receipt_id,
-        receipt_data=receipt_data,
         user_id=user_id,
     )
 

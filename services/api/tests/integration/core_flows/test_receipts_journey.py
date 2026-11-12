@@ -44,7 +44,7 @@ from app.modules.receipts import (
     receipt_service,
     receipt_storage_service,
 )
-from tests.helpers import auth_headers
+from tests.helpers import auth_headers, create_receipt, set_receipt_state
 
 TODAY = date.today()
 TODAY_ISO = TODAY.isoformat()
@@ -334,10 +334,13 @@ def test_storage_path_can_never_make_the_server_read_or_delete_files_outside_the
     ]
 
     for hostile in hostile_paths:
-        # Both client-writable entry points: create with the path, and PATCH an own upload to it.
-        created = attacker.call("POST", "/api/v1/receipts", 201, json={"storage_path": hostile}).json()
+        # Defense in depth: the public routes no longer accept a path (VF-MVP-CORE-005A), but a row that already
+        # holds one (legacy data, a future regression) must still never reach the file system. Seed it directly.
+        created = create_receipt(client, attacker.user, {"storage_path": hostile})
         own = attacker.upload()
-        attacker.call("PATCH", f"/api/v1/receipts/{own['id']}", 200, json={"storage_path": hostile})
+        with SessionLocal() as session:
+            session.execute(text("update receipts set storage_path = :p where id = :r"), {"p": hostile, "r": own["id"]})
+            session.commit()
 
         for receipt_id in (created["id"], own["id"]):
             refused = attacker.process(receipt_id, expect=404)
@@ -690,7 +693,7 @@ def test_foreign_archived_and_mismatched_links_are_refused_atomically(client: Te
 def test_a_stored_detected_currency_the_expense_rules_refuse_asks_for_a_correction_instead_of_failing(
     client: TestClient, clean_database: None, ocr: Ocr,
 ) -> None:
-    """PATCH is client-writable: a malformed detected value must not turn confirmation into a 500."""
+    """A malformed stored detected value (legacy data) must not turn confirmation into a 500."""
     api = Api(TestClient(client.app, raise_server_exceptions=False))
     receipt = api.processed()
     with SessionLocal() as session:
@@ -702,7 +705,6 @@ def test_a_stored_detected_currency_the_expense_rules_refuse_asks_for_a_correcti
 
     assert refused.json()["code"] == "receipt_confirmation_data_missing"
     assert _ledger(api.user) == before and _receipt_row(receipt["id"])["status"] == "processed"
-    assert api.call("PATCH", f"/api/v1/receipts/{receipt['id']}", 422, json={"currency_detected": "E1R"}).status_code == 422
     api.confirm(receipt["id"], {"currency": "EUR"})
     assert _sql("select count(*) from expenses where user_id = :u", u=api.user) == 1
 
@@ -793,11 +795,10 @@ def test_receipts_of_another_user_are_invisible_and_untouchable(client: TestClie
         intruder.call("GET", f"/api/v1/receipts/{receipt['id']}", None),
         intruder.call("POST", f"/api/v1/receipts/{receipt['id']}/process", None),
         intruder.call("POST", f"/api/v1/receipts/{receipt['id']}/confirm", None, json={}),
-        intruder.call("PATCH", f"/api/v1/receipts/{receipt['id']}", None, json={"status": "failed"}),
         intruder.call("DELETE", f"/api/v1/receipts/{receipt['id']}", None),
     ]
 
-    assert [a.status_code for a in attempts] == [404] * 5
+    assert [a.status_code for a in attempts] == [404] * 4
     assert intruder.call("GET", "/api/v1/receipts", 200).json() == []
     assert (_ledger(owner.user), _receipt_row(receipt["id"])) == before
     assert _ledger(intruder.user).startswith("0:")
@@ -834,7 +835,7 @@ def test_the_refusal_messages_the_mobile_tests_pin_are_the_backends_exact_detail
     done = api.process(uploaded["id"])
     seen(api.process(done["id"], expect=None))  # processed -> not processable (409)
     seen(api.get(str(uuid4()), expect=None))  # 404 not found
-    no_file = api.call("POST", "/api/v1/receipts", 201, json={"file_url": "https://example.com/r.jpg"}).json()
+    no_file = create_receipt(client, api.user, {"file_url": "https://example.com/r.jpg"})
     seen(api.process(no_file["id"], expect=None))  # 404 file not found
     ocr.text = "nothing readable"
     seen(api.confirm(api.processed()["id"], {}, expect=None))  # 422 data missing

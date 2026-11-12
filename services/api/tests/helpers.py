@@ -301,36 +301,88 @@ def create_account_transaction(
     return response.json()
 
 
-# Creates a receipt through the API for integration tests.
-# This helper exists to avoid repeating receipt creation request code.
+# Seeds a receipt row for integration tests (VF-MVP-CORE-005A).
+# There is no public route that creates a receipt from metadata or edits its
+# server-owned fields any more, so tests that need a receipt in a particular
+# state seed it through the repository, exactly as the upload and processing
+# services do. Real uploads go through POST /api/v1/receipts/upload.
 # Parameters:
-# - client: FastAPI test client.
-# - user_id: authenticated user identifier as string.
-# - payload: optional custom receipt creation payload.
+# - client: FastAPI test client (kept so call sites stay unchanged).
+# - user_id: owner of the receipt, as string.
+# - payload: optional ReceiptCreate fields (file_url / storage_path).
 # Returns:
-# - Created receipt response body.
+# - The created receipt as the API would return it (JSON-compatible dict).
 def create_receipt(
     client: TestClient,
     user_id: str,
     payload: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    request_payload = (
-        payload
-        if payload is not None
-        else {
-            "storage_path": f"receipts/{user_id}/receipt-1.jpg",
-        }
+    from uuid import UUID
+
+    from app.db.database_session import SessionLocal
+    from app.modules.receipts import receipt_repository
+    from app.modules.receipts.receipt_schemas import ReceiptCreate, ReceiptResponse
+
+    receipt_data = ReceiptCreate(
+        **(
+            payload
+            if payload is not None
+            else {"storage_path": f"receipts/{user_id}/receipt-1.jpg"}
+        )
     )
 
-    response = client.post(
-        "/api/v1/receipts",
-        json=request_payload,
-        headers=auth_headers(user_id),
-    )
+    with SessionLocal() as session:
+        receipt = receipt_repository.create_receipt(
+            db_session=session,
+            receipt_data=receipt_data,
+            user_id=UUID(user_id),
+        )
 
-    assert response.status_code == 201, response.text
+        return ReceiptResponse.model_validate(receipt).model_dump(mode="json")
 
-    return response.json()
+
+# A stand-in for the HTTP response of the removed PATCH route, so tests that
+# only need to put a receipt into a state keep their assertions unchanged.
+class SeededReceiptResponse:
+    status_code = 200
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self._body = body
+        self.text = str(body)
+
+    def json(self) -> dict[str, Any]:
+        return self._body
+
+
+# Moves a seeded receipt into a state, the way OCR processing / confirmation
+# do (repository level, never through a public route).
+# Parameters:
+# - receipt_id / user_id: the receipt and its owner, as strings.
+# - fields: ReceiptUpdate fields to write (status, detected values, ...).
+# Returns:
+# - SeededReceiptResponse carrying the updated receipt.
+def set_receipt_state(
+    receipt_id: str,
+    user_id: str,
+    fields: dict[str, Any],
+) -> SeededReceiptResponse:
+    from uuid import UUID
+
+    from app.db.database_session import SessionLocal
+    from app.modules.receipts import receipt_repository
+    from app.modules.receipts.receipt_schemas import ReceiptResponse, ReceiptUpdate
+
+    with SessionLocal() as session:
+        receipt = receipt_repository.update_receipt(
+            db_session=session,
+            receipt_id=UUID(receipt_id),
+            receipt_data=ReceiptUpdate(**fields),
+            user_id=UUID(user_id),
+        )
+
+        return SeededReceiptResponse(
+            ReceiptResponse.model_validate(receipt).model_dump(mode="json")
+        )
 
 
 # Creates an account transfer through the API (VF-018C).
