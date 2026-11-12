@@ -28,6 +28,11 @@ MERCHANT_EXCLUDED_PREFIXES = (
     "MWST",
 )
 
+# Largest amount the receipts and expenses tables can store (NUMERIC(12, 2)).
+# An OCR reading above it is a misread, so it is treated as "no amount
+# detected" and the user supplies the amount instead.
+MAX_DETECTED_AMOUNT = Decimal("9999999999.99")
+
 AMOUNT_PATTERN = re.compile(
     r"(?<![\d.,])"
     r"("
@@ -220,7 +225,7 @@ def parse_decimal_amount(value: str) -> Optional[Decimal]:
     except InvalidOperation:
         return None
 
-    if amount <= 0:
+    if amount <= 0 or amount > MAX_DETECTED_AMOUNT:
         return None
 
     return amount

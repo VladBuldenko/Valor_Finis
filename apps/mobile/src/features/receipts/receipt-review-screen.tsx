@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   useMutation,
@@ -23,8 +23,12 @@ import { getAccounts } from "../accounts/account.service";
 import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
-import { invalidateExpenseQueries } from "../expenses/expense-cache";
+import { isCurrentQueryClient } from "../../lib/session-runtime";
 import { normalizeExpenseAmount } from "../expenses/expense-validation";
+import {
+  invalidateConfirmedReceiptQueries,
+  recoverFailedConfirmation,
+} from "./receipt-confirm-recovery";
 import { validateReceiptConfirmForm } from "./receipt-validation";
 import {
   confirmReceipt,
@@ -116,6 +120,10 @@ export function ReceiptReviewScreen() {
     setSelectedAccountId(null);
   }
 
+  // Closes the gap between a tap and the mutation's pending state reaching a
+  // render: a second tap in that window would otherwise send a second POST.
+  const confirmInFlight = useRef(false);
+
   const confirmMutation = useMutation({
     mutationFn: (payload: ReceiptConfirmInput) => confirmReceipt(id, payload),
 
@@ -124,14 +132,16 @@ export function ReceiptReviewScreen() {
       // set (plus the Account caches when the backend linked it -- decided
       // from the returned expense, not the form) is refreshed through the
       // shared helper; ["receipts"] also covers ["receipts","detail",id].
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["receipts"] }),
-        invalidateExpenseQueries(
-          queryClient,
-          session?.user.id,
-          result.expense.account_id !== null,
-        ),
-      ]);
+      await invalidateConfirmedReceiptQueries(
+        queryClient,
+        session?.user.id,
+        result.expense.account_id !== null,
+      );
+
+      // The user may have changed while the caches were refreshing.
+      if (!isCurrentQueryClient(queryClient)) {
+        return;
+      }
 
       router.replace({
         pathname: "/expenses/[id]",
@@ -139,26 +149,47 @@ export function ReceiptReviewScreen() {
       });
     },
 
-    onError: (mutationError) => {
-      // A confirm can fail because another session already confirmed this
-      // receipt first (backend-enforced). Refetch the receipt so the
-      // screen switches to the "already confirmed" branch instead of
-      // staying on a stale editable form the user could keep resubmitting.
-      // Other failures (e.g. an Account currency mismatch) leave the
-      // receipt processed, so the refetch keeps the form and its values.
-      queryClient.invalidateQueries({
-        queryKey: ["receipts", "detail", id],
-      });
+    onError: async (mutationError) => {
+      // The confirmation is never resent. A failed request does not prove
+      // that nothing happened (a lost response, or another device confirmed
+      // first), so the receipt is reread: when it reads "confirmed" the
+      // Expense exists, the Expense/Account/analytics caches are refreshed
+      // and the screen switches to its "already confirmed" branch. When it
+      // is still processed (e.g. an Account currency mismatch) the form and
+      // its values stay for another attempt.
+      const recovery = await recoverFailedConfirmation(
+        queryClient,
+        session?.user.id,
+        id,
+        getReceiptById,
+      );
+
+      if (!isCurrentQueryClient(queryClient)) {
+        return;
+      }
+
+      if (recovery.confirmed) {
+        Alert.alert(
+          "Receipt already confirmed",
+          "This receipt was confirmed and its expense has been created.",
+        );
+
+        return;
+      }
 
       Alert.alert(
         "Confirm failed",
         getApiErrorMessage(mutationError, "Unable to confirm receipt."),
       );
     },
+
+    onSettled: () => {
+      confirmInFlight.current = false;
+    },
   });
 
   function handleConfirm() {
-    if (confirmMutation.isPending) {
+    if (confirmMutation.isPending || confirmInFlight.current) {
       return;
     }
 
@@ -191,6 +222,7 @@ export function ReceiptReviewScreen() {
       payload.account_id = selectedAccountId;
     }
 
+    confirmInFlight.current = true;
     confirmMutation.mutate(payload);
   }
 

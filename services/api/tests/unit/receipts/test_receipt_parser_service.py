@@ -384,3 +384,20 @@ def test_normalize_year_returns_four_digit_year(
     )
 
     assert result == expected_year
+
+# VF-MVP-CORE-005: an amount the receipts/expenses tables cannot store is a
+# misread, so it is "not detected" (the user supplies it) and the next
+# candidate line is still considered; it must never reach the database.
+def test_parse_receipt_text_ignores_amounts_beyond_the_storable_range() -> None:
+    parsed = receipt_parser_service.parse_receipt_text(
+        "SHOP\nGESAMT 1.234.567.890.123,45 EUR\nSUMME 9.999.999.999,99 EUR\n",
+    )
+
+    assert parsed.total_amount_detected == Decimal("9999999999.99")
+
+    oversized_only = receipt_parser_service.parse_receipt_text(
+        "SHOP\nSUMME 10.000.000.000,00 EUR\n",
+    )
+
+    assert oversized_only.total_amount_detected is None
+    assert oversized_only.currency_detected == "EUR"

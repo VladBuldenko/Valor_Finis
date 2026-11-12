@@ -212,3 +212,39 @@ def test_budget_and_budget_status_responses_match_the_mobile_types(client: TestC
     assert {item["period_state"] for item in status} == {"active", "not_started", "ended"}
     for item in status:
         assert_same_keys(item, "analytics/analytics.types.ts", "BudgetStatusItem")
+
+
+# VF-MVP-CORE-005: the Receipt flow (upload -> process -> review -> confirm) is typed by hand in the
+# mobile app. Every key it reads must exist in the real responses, and the confirm payload the
+# review screen sends must be accepted exactly as typed.
+def test_receipt_responses_and_confirm_input_match_the_mobile_types(
+    client: TestClient, clean_database: None, tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.receipts import receipt_ocr_service, receipt_storage_service
+
+    user = str(uuid4())
+    headers = auth_headers(user)
+    monkeypatch.setattr(receipt_storage_service.settings, "receipt_upload_dir", str(tmp_path))
+
+    class Ocr:
+        def extract_text(self, file_path):
+            return "LIDL\n11.11.2026\nSUMME 3,68 EUR"
+
+    monkeypatch.setattr(receipt_ocr_service, "receipt_ocr_provider", Ocr())
+
+    uploaded = client.post("/api/v1/receipts/upload", headers=headers, files={"file": ("r.png", b"\x89PNG....", "image/png")}).json()
+    processed = client.post(f"/api/v1/receipts/{uploaded['id']}/process", headers=headers).json()
+    fetched = client.get(f"/api/v1/receipts/{uploaded['id']}", headers=headers).json()
+    account = client.post("/api/v1/accounts", headers=headers, json={"name": "a", "type": "checking", "currency": "EUR"}).json()
+
+    # Every key the review screen sends, in the shape the mobile type declares (account_id omitted when unlinked).
+    confirm_input = {"category_id": None, "title": "Lidl", "amount": "3.68", "currency": "EUR", "expense_date": "2026-11-11", "description": None, "account_id": account["id"]}
+    confirmed = client.post(f"/api/v1/receipts/{uploaded['id']}/confirm", headers=headers, json=confirm_input)
+    assert confirmed.status_code == 200, confirmed.text
+
+    receipt_keys = ts_type_keys("receipts/receipt.types.ts", "Receipt")
+    for body in (uploaded, processed, fetched, confirmed.json()["receipt"]):
+        assert set(body.keys()) == receipt_keys
+    assert set(confirmed.json().keys()) == ts_type_keys("receipts/receipt.types.ts", "ReceiptConfirmResult")
+    assert set(confirm_input.keys()) == ts_type_keys("receipts/receipt.types.ts", "ReceiptConfirmInput")
+    assert set(confirmed.json()["expense"].keys()) == ts_type_keys("expenses/expense.types.ts", "Expense")

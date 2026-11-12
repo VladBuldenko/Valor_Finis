@@ -1343,6 +1343,12 @@ file
 
 The backend validates the file, stores it, and creates a receipt record.
 
+Accepted: JPEG (.jpg/.jpeg), PNG (.png) and PDF (.pdf), where the declared MIME type and the file extension must belong together (415 otherwise), the file must not be empty (422) and must not exceed the configured size limit (413). A refused or failed upload leaves no receipt row and no stored file.
+
+The file is stored under the uploader's own area (`<upload dir>/<user_id>/<generated name>`); the client's file name never decides where it lands.
+
+OCR reads images only. A PDF is accepted at upload but OCR cannot read it: processing it ends in 422 "Receipt OCR processing failed." and status `failed`. The mobile app offers images only.
+
 Create Receipt Metadata
 
 POST /api/v1/receipts
@@ -1358,6 +1364,8 @@ At least one of these must be provided:
 
 file_url
 storage_path
+
+`storage_path` is client-writable (here and through PATCH), so it is never trusted when it is used: OCR reads, and receipt deletion removes, only a file inside the requesting user's own storage area (a local path must resolve inside `<upload dir>/<user_id>/`; a `supabase://` path must name the configured bucket and an object under `<user_id>/`). Any other path is treated as a missing file when processing (status `failed`, 404 "Receipt file not found.") and is left untouched when deleting (the receipt row is still deleted).
 
 Process Receipt
 
@@ -1381,6 +1389,10 @@ processed
 OCR failure transitions the receipt to:
 
 failed
+
+Any failure after the receipt moved to `processing` (not only an OCR error) leaves it `failed`, so a retry is always possible; a receipt is never left in `processing` by a failed request. The status check and the move to `processing` are one locked step: two simultaneous process requests run OCR once and the second gets 409 "Receipt cannot be processed in its current status.". OCR never creates an Expense or any other financial record.
+
+An amount larger than the storable maximum (9,999,999,999.99) is treated as a misread and left undetected (`total_amount_detected` null) for the user to supply.
 
 Processed data may include:
 
@@ -1444,6 +1456,10 @@ Expense creation, the optional account debit, and receipt confirmation are one a
 
 Confirmation locks the receipt row before checking its status, so concurrent confirmations of the same receipt are serialized: exactly one succeeds and the other is rejected as already confirmed.
 
+`currency` follows the Expense rule (exactly three letters, otherwise 422 at the request boundary). A stored detected value the Expense rules refuse (for example a malformed currency written through PATCH) is treated as missing: 422 "Required receipt confirmation data is missing." until the user supplies it.
+
+Confirmation has no idempotency key. When the response is lost, the outcome is read back with `GET /api/v1/receipts/{id}` (`status` "confirmed" and `expense_id` mean it was committed); a blind repeat is refused with 409 and cannot create a second Expense.
+
 Response:
 
 {
@@ -1461,7 +1477,7 @@ Update Receipt
 
 PATCH /api/v1/receipts/{receipt_id}
 
-The current API supports partial updates to receipt metadata, status, OCR fields, and expense linkage.
+The current API supports partial updates to receipt metadata, status, OCR fields, and expense linkage. These fields are server-owned by the upload/process/confirm flow, but the endpoint does not restrict them (the mobile app never calls it); treat PATCH as an administrative surface. `currency_detected` follows the Expense currency rule.
 
 At least one field is required.
 
