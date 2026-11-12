@@ -305,7 +305,7 @@ def test_monthly_summary_endpoint_returns_zero_for_empty_month(
     response_data = response.json()
 
     assert response.status_code == 200
-    assert response_data["total_spent"] in ["0", "0.00"]
+    assert response_data["total_spent"] == "0.00"
     assert response_data["expenses_count"] == 0
 
 # Tests that the monthly summary endpoint rejects invalid month query parameter.
@@ -685,7 +685,7 @@ def test_category_summary_endpoint_unresolved_only_category_still_appears(
     body = response.json()
     assert len(body) == 1
     assert body[0]["category_id"] == category["id"]
-    assert body[0]["total_spent"] == "0" or body[0]["total_spent"] == "0.00"
+    assert body[0]["total_spent"] == "0.00"
     assert body[0]["expenses_count"] == 0
     assert body[0]["unresolved_expenses_count"] == 1
 
@@ -712,7 +712,7 @@ def test_monthly_summary_endpoint_zero_expenses_returns_base_currency(
 
     # Assert
     body = response.json()
-    assert body["total_spent"] in ["0", "0.00"]
+    assert body["total_spent"] == "0.00"
     assert body["expenses_count"] == 0
     assert body["unresolved_expenses_count"] == 0
     assert body["base_currency"] == "EUR"
@@ -750,7 +750,7 @@ def test_summary_endpoints_ownership_isolation(
     )
 
     # Assert
-    assert monthly_response.json()["total_spent"] in ["0", "0.00"]
+    assert monthly_response.json()["total_spent"] == "0.00"
     assert monthly_response.json()["expenses_count"] == 0
     assert category_response.json() == []
 
@@ -2147,7 +2147,7 @@ def test_budget_status_endpoint_returns_budget_status(
     assert response_data[0]["period_state"] == "active"
     assert response_data[0]["limit_amount"] == "100.00"
     assert response_data[0]["spent"] == "120.00"
-    assert response_data[0]["remaining"] in ["0", "0.00"]
+    assert response_data[0]["remaining"] == "0.00"
     assert response_data[0]["exceeded_amount"] == "20.00"
     assert response_data[0]["utilization_percent"] == "120.00"
     assert response_data[0]["is_exceeded"] is True

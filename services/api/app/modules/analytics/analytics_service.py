@@ -137,7 +137,7 @@ def get_monthly_summary(
         and expense.expense_date.month == month
     ]
 
-    total_spent = Decimal("0")
+    total_spent = BUCKET_AMOUNT_DECIMAL_PLACES
     expenses_count = 0
     unresolved_expenses_count = 0
 
@@ -204,7 +204,7 @@ def get_category_summary(
     )
 
     category_totals: dict[Optional[UUID], Decimal] = defaultdict(
-        lambda: Decimal("0")
+        lambda: BUCKET_AMOUNT_DECIMAL_PLACES
     )
     category_resolved_counts: dict[Optional[UUID], int] = defaultdict(int)
     category_unresolved_counts: dict[Optional[UUID], int] = defaultdict(int)
@@ -214,7 +214,7 @@ def get_category_summary(
         # Touch category_totals for every matching expense (resolved or
         # not) so a category is registered - and therefore returned below
         # - even when none of its expenses are resolved.
-        category_totals.setdefault(category_id, Decimal("0"))
+        category_totals.setdefault(category_id, BUCKET_AMOUNT_DECIMAL_PLACES)
 
         if expense.base_amount is None or expense.base_currency != base_currency:
             category_unresolved_counts[category_id] += 1
@@ -223,6 +223,17 @@ def get_category_summary(
         category_totals[category_id] += expense.base_amount
         category_resolved_counts[category_id] += 1
 
+    # Ordered by category name (case-insensitive), then id, exactly like the
+    # category trend: the order never depends on which Expense is newest or on
+    # database row order, so the Dashboard list does not reshuffle.
+    ordered_category_ids = sorted(
+        category_totals.keys(),
+        key=lambda candidate_id: (
+            get_category_name(candidate_id, category_name_map).casefold(),
+            str(candidate_id) if candidate_id is not None else "",
+        ),
+    )
+
     return [
         CategorySummaryItem(
             category_id=category_id,
@@ -230,12 +241,12 @@ def get_category_summary(
                 category_id=category_id,
                 category_name_map=category_name_map,
             ),
-            total_spent=total_spent,
+            total_spent=category_totals[category_id],
             expenses_count=category_resolved_counts[category_id],
             unresolved_expenses_count=category_unresolved_counts[category_id],
             base_currency=base_currency,
         )
-        for category_id, total_spent in category_totals.items()
+        for category_id in ordered_category_ids
     ]
 
 
@@ -718,10 +729,10 @@ def build_budget_status_item(
     )
 
     if lifecycle.period_state == PERIOD_NOT_STARTED:
-        spent = Decimal("0")
+        spent = BUCKET_AMOUNT_DECIMAL_PLACES
     else:
         expense_cutoff = min(window.effective_end, as_of)
-        spent = Decimal("0")
+        spent = BUCKET_AMOUNT_DECIMAL_PLACES
 
         for expense in expenses:
             # Currency correctness: only same-currency expenses can be
@@ -747,8 +758,8 @@ def build_budget_status_item(
 
             spent += expense.amount
 
-    remaining = max(version.limit_amount - spent, Decimal("0"))
-    exceeded_amount = max(spent - version.limit_amount, Decimal("0"))
+    remaining = max(version.limit_amount - spent, BUCKET_AMOUNT_DECIMAL_PLACES)
+    exceeded_amount = max(spent - version.limit_amount, BUCKET_AMOUNT_DECIMAL_PLACES)
     utilization_percent = (
         spent / version.limit_amount * Decimal("100")
     ).quantize(Decimal("0.01"))
@@ -927,7 +938,7 @@ def get_goal_progress(
                 current_amount=current_amount,
                 remaining_amount=max(
                     goal.target_amount - current_amount,
-                    Decimal("0"),
+                    BUCKET_AMOUNT_DECIMAL_PLACES,
                 ),
                 progress_percent=(
                     current_amount / goal.target_amount * Decimal("100")
