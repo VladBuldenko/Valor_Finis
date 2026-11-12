@@ -2,7 +2,7 @@ import type {
   SpendingForecastStatus,
   SpendingTrendDirection,
   SpendingTrendPeriod,
-} from "./analytics.types";
+} from "./analytics.types.ts";
 
 // Presentation-only label maps and string formatters for Analytics v2
 // (VF-015E). These never derive meaning -- the backend remains the sole

@@ -1,8 +1,8 @@
-import { formatDateRange } from "./analytics-presentation";
+import { formatDateRange } from "./analytics-presentation.ts";
 import type {
   FinancialFlowFigures,
   FinancialOverviewResponse,
-} from "./analytics.types";
+} from "./analytics.types.ts";
 
 // Presentation-only wording for the Financial Overview (VF-019C). Nothing
 // here computes a financial value: every amount, Net, savings rate, count,
