@@ -4,7 +4,7 @@ Date: 2026-10-27. Basis: `main` @ `08d985c030a38823fe43863c806d90bbc86e97b4`.
 Authority: the OpenAPI document produced by `app.openapi()` and the routers, schemas and
 `app/core/exception_handlers.py`. The written contract (`docs/api-contract.md`, `docs/modules/smart-goals-rules.md`)
 was compared against it; differences are in section 4. No endpoint in this document is invented: every row
-exists in OpenAPI (67 operations under `/api/v1`, plus `GET /` and `GET /health`).
+exists in OpenAPI (65 operations under `/api/v1` after CORE-005A removed two Receipt routes; 67 at the original audit, plus `GET /` and `GET /health`).
 
 ## 1. Cross-cutting behavior
 
@@ -22,9 +22,9 @@ exists in OpenAPI (67 operations under `/api/v1`, plus `GET /` and `GET /health`
 
 ## 2. Endpoint inventory (generated from OpenAPI)
 
-"Mobile uses" = a call to this method and path exists in `apps/mobile/src/features/*/*.service.ts`. 47 of 67
-operations are used; the 20 unused are exactly: all 9 `financial-rules`, 4 `rule-proposals`, 2 `rule-alerts`,
-1 `rule-executions`, and 4 `receipts` operations (`POST /receipts`, `GET /receipts`, `PATCH`, `DELETE`).
+"Mobile uses" = a call to this method and path exists in `apps/mobile/src/features/*/*.service.ts`. 47 of 65
+operations are used (`POST /receipts` and `PATCH /receipts/{id}` were removed in CORE-005A); the 18 unused are exactly: all 9 `financial-rules`, 4 `rule-proposals`, 2 `rule-alerts`,
+1 `rule-executions`, and 2 `receipts` operations (`GET /receipts`, `DELETE`).
 
 ### account-transfers
 
@@ -127,11 +127,9 @@ operations are used; the 20 unused are exactly: all 9 `financial-rules`, 4 `rule
 
 | Method | Endpoint | Request | Response | Query | Mobile uses |
 |---|---|---|---|---|---|
-| POST | `/api/v1/receipts` | `ReceiptCreate` | 201 `ReceiptResponse` | - | **no** |
 | GET | `/api/v1/receipts` | - | 200 `[ReceiptResponse]` | - | **no** |
 | POST | `/api/v1/receipts/upload` | multipart (`file`) | 201 `ReceiptResponse` | - | yes |
 | GET | `/api/v1/receipts/{receipt_id}` | - | 200 `ReceiptResponse` | - | yes |
-| PATCH | `/api/v1/receipts/{receipt_id}` | `ReceiptUpdate` | 200 `ReceiptResponse` | - | **no** |
 | DELETE | `/api/v1/receipts/{receipt_id}` | - | 204 no body | - | **no** |
 | POST | `/api/v1/receipts/{receipt_id}/confirm` | `ReceiptConfirmRequest` | 200 `ReceiptConfirmResponse` | - | yes |
 | POST | `/api/v1/receipts/{receipt_id}/process` | - | 200 `ReceiptResponse` | - | yes |
@@ -366,7 +364,7 @@ Designers and mobile engineers must treat them as dependencies, not as available
 | Supabase Auth `resetPasswordForEmail`, session from link, `updateUser({password})` | Client calls (not FastAPI) | MF-4 | Password recovery (Q5) |
 | Inbox | **No endpoint, by decision** (Q9 A) | F-4 | Composed from `GET /rule-proposals`, `GET /rule-alerts`, `GET /rule-executions` |
 
-Unused endpoints by decision: `POST/GET/PATCH/DELETE /receipts` (Q6 deferral). Unused because the feature is missing
+Unused endpoints by decision: `GET/DELETE /receipts` (Q6 deferral); `POST /receipts` and `PATCH /receipts/{id}` no longer exist (CORE-005A). Unused because the feature is missing
 (not by decision): the nine `financial-rules`, four `rule-proposals`, two `rule-alerts` and one `rule-executions`
 operations.
 

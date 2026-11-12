@@ -16,9 +16,7 @@ from app.modules.receipts import receipt_service
 from app.modules.receipts.receipt_schemas import (
     ReceiptConfirmRequest,
     ReceiptConfirmResponse,
-    ReceiptCreate,
     ReceiptResponse,
-    ReceiptUpdate,
 )
 
 
@@ -27,33 +25,14 @@ router = APIRouter(
     tags=["Receipts"],
 )
 
-
-# Creates a new receipt through the API.
-# This function exists to receive validated HTTP input
-# and delegate receipt creation to the service layer.
-# Parameters:
-# - receipt_data: validated request body containing receipt metadata.
-# - current_user: authenticated user resolved from request authentication data.
-# - db_session: active SQLAlchemy session injected by FastAPI.
-# Returns:
-# - ReceiptResponse containing the saved receipt.
-# Raises:
-# - Domain exceptions propagated to the global exception handlers.
-@router.post(
-    "",
-    response_model=ReceiptResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_receipt(
-    receipt_data: ReceiptCreate,
-    current_user: CurrentUser = Depends(get_current_user),
-    db_session: Session = Depends(get_db_session),
-) -> ReceiptResponse:
-    return receipt_service.create_receipt(
-        db_session=db_session,
-        receipt_data=receipt_data,
-        user_id=current_user.id,
-    )
+# Receipt lifecycle and financial references are server-owned (VF-MVP-CORE-005A).
+# A receipt is created only by POST /receipts/upload, moved forward only by
+# POST /receipts/{id}/process and POST /receipts/{id}/confirm, and linked to its
+# Expense only by the atomic confirmation. There is deliberately NO public create-
+# from-metadata or PATCH route: a client-writable status, expense_id, OCR result or
+# file location would let a caller forge states, bypass OCR and confirmation, or
+# reset a confirmed receipt and confirm it again (a second Expense and Account debit).
+# Calls to those two paths answer 405.
 
 
 # Uploads a receipt file and creates its database record.
@@ -189,37 +168,6 @@ def get_receipt_by_id(
     return receipt_service.get_receipt_by_id(
         db_session=db_session,
         receipt_id=receipt_id,
-        user_id=current_user.id,
-    )
-
-
-# Updates a receipt owned by the authenticated user.
-# This function exists to receive partial receipt updates
-# and delegate business rules to the service layer.
-# Parameters:
-# - receipt_id: requested receipt identifier from the URL path.
-# - receipt_data: validated partial receipt update data.
-# - current_user: authenticated user resolved from request authentication data.
-# - db_session: active SQLAlchemy session injected by FastAPI.
-# Returns:
-# - ReceiptResponse containing the updated receipt.
-# Raises:
-# - Domain exceptions propagated to the global exception handlers.
-@router.patch(
-    "/{receipt_id}",
-    response_model=ReceiptResponse,
-    status_code=status.HTTP_200_OK,
-)
-def update_receipt(
-    receipt_id: UUID,
-    receipt_data: ReceiptUpdate,
-    current_user: CurrentUser = Depends(get_current_user),
-    db_session: Session = Depends(get_db_session),
-) -> ReceiptResponse:
-    return receipt_service.update_receipt(
-        db_session=db_session,
-        receipt_id=receipt_id,
-        receipt_data=receipt_data,
         user_id=current_user.id,
     )
 

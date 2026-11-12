@@ -16,7 +16,7 @@ that design can start as early as it safely can without any claim about producti
 | 2 | Complete screen inventory | **MET** | [feature-and-screen-inventory.md](feature-and-screen-inventory.md): all 28 route screens (plus 2 layouts), 11 feature directories, 12 missing Smart Rules surfaces | Update when navigation changes |
 | 3 | Agreed primary user journeys | **DRAFTED, not agreed** | [mvp-user-journeys.md](mvp-user-journeys.md) J01–J18 | Owner and design review; J13–J18 depend on Q3 and Q4 |
 | 4 | Stable financial terminology and semantics | **MET (documented)** | Scope §3 table; reservation ≠ transfer; release ≠ transfer; reservable ≠ bank cash; Net ≠ cash flow | Owner confirms the glossary; copy deck still to be written |
-| 5 | Actual API capabilities known | **MET** | [api-mobile-contract-matrix.md](api-mobile-contract-matrix.md) from OpenAPI (67 operations), 12 discrepancies | Re-run the OpenAPI inventory if the backend changes |
+| 5 | Actual API capabilities known | **MET** | [api-mobile-contract-matrix.md](api-mobile-contract-matrix.md) from OpenAPI (67 operations at audit; 65 after CORE-005A), 12 discrepancies | Re-run the OpenAPI inventory if the backend changes |
 | 6 | Missing mobile features identified | **MET** | Scope §5 M01–M17; inventory §4 | — |
 | 7 | Screen state matrix completed | **MET (draft)** | [screen-state-and-design-requirements.md](screen-state-and-design-requirements.md) | Design review; fill state copy |
 | 8 | Critical implementation dependencies classified | **MET** | Scope §7/§9; ops document | — |

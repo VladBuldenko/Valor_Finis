@@ -23,8 +23,12 @@ class ReceiptCreate(BaseModel):
     """
     Schema for creating a receipt.
 
+    INTERNAL ONLY (VF-MVP-CORE-005A): used by the upload service after it
+    stored the file itself. It must never be a request body of a public
+    route: file_url / storage_path are server-owned.
+
     What:
-        Validates receipt metadata received from the client.
+        Validates receipt metadata supplied by the service layer.
 
     Why:
         Keeps uploaded receipt data structured before OCR processing starts.
@@ -68,6 +72,12 @@ class ReceiptCreate(BaseModel):
 class ReceiptUpdate(BaseModel):
     """
     Schema for updating a receipt.
+
+    INTERNAL ONLY (VF-MVP-CORE-005A): used by OCR processing and the atomic
+    confirmation to write server-owned fields (status, expense_id, OCR
+    results). It must never be a request body of a public route: a
+    client-writable status or expense_id would let a caller forge states,
+    bypass OCR/confirmation or re-confirm a receipt.
 
     What:
         Validates partial receipt update data.

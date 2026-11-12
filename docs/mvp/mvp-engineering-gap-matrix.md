@@ -53,6 +53,6 @@ Classification into functional completeness and production readiness, and the P1
 
 ## 3. Intentionally unused API endpoints (not gaps)
 
-`POST /receipts`, `GET /receipts`, `PATCH /receipts/{id}`, `DELETE /receipts/{id}`: unused by decision (Q6 deferral).
+`GET /receipts`, `DELETE /receipts/{id}`: unused by decision (Q6 deferral). `POST /receipts` and `PATCH /receipts/{id}` were removed in CORE-005A (receipt state is server-owned).
 The nine `financial-rules`, four `rule-proposals`, two `rule-alerts` and one `rule-executions` operations are
 **unused because the mobile feature is missing**, which is the gap list above.

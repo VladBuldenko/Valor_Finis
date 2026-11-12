@@ -1273,12 +1273,6 @@ Success
 
 POST
 
-/api/v1/receipts
-
-201
-
-POST
-
 /api/v1/receipts/upload
 
 201
@@ -1302,12 +1296,6 @@ GET
 200
 
 GET
-
-/api/v1/receipts/{receipt_id}
-
-200
-
-PATCH
 
 /api/v1/receipts/{receipt_id}
 
@@ -1349,23 +1337,11 @@ The file is stored under the uploader's own area (`<upload dir>/<user_id>/<gener
 
 OCR reads images only. A PDF is accepted at upload but OCR cannot read it: processing it ends in 422 "Receipt OCR processing failed." and status `failed`. The mobile app offers images only.
 
-Create Receipt Metadata
+Receipt Lifecycle Is Server-Owned
 
-POST /api/v1/receipts
+A receipt exists only because POST /api/v1/receipts/upload stored a file, moves forward only through POST .../process and POST .../confirm, and is linked to its Expense only by the atomic confirmation. There is no public route that creates a receipt from client-supplied metadata (`POST /api/v1/receipts`) or edits one (`PATCH /api/v1/receipts/{id}`): both answer 405 (`method_not_allowed`). They were removed in VF-MVP-CORE-005A because a client-writable status, expense_id, OCR result or file location let an authenticated user forge a processed or confirmed receipt, link an unrelated Expense, rewrite OCR evidence, or reset a confirmed receipt and confirm it again (a second Expense and a second Account debit). The mobile app never used either route. OCR processing and confirmation still write these fields internally.
 
-Request:
-
-{
-  "file_url": null,
-  "storage_path": "receipts/user-id/receipt.jpg"
-}
-
-At least one of these must be provided:
-
-file_url
-storage_path
-
-`storage_path` is client-writable (here and through PATCH), so it is never trusted when it is used: OCR reads, and receipt deletion removes, only a file inside the requesting user's own storage area (a local path must resolve inside `<upload dir>/<user_id>/`; a `supabase://` path must name the configured bucket and an object under `<user_id>/`). Any other path is treated as a missing file when processing (status `failed`, 404 "Receipt file not found.") and is left untouched when deleting (the receipt row is still deleted).
+A stored `storage_path` is never trusted when it is used (defense in depth for legacy rows): OCR reads, and receipt deletion removes, only a file inside the requesting user's own storage area (a local path must resolve inside `<upload dir>/<user_id>/`; a `supabase://` path must name the configured bucket and an object under `<user_id>/`). Any other path is treated as a missing file when processing (status `failed`, 404 "Receipt file not found.") and is left untouched when deleting (the receipt row is still deleted).
 
 Process Receipt
 
@@ -1472,16 +1448,6 @@ Response:
 }
 
 A confirmed receipt cannot be confirmed again.
-
-Update Receipt
-
-PATCH /api/v1/receipts/{receipt_id}
-
-The current API supports partial updates to receipt metadata, status, OCR fields, and expense linkage. These fields are server-owned by the upload/process/confirm flow, but the endpoint does not restrict them (the mobile app never calls it); treat PATCH as an administrative surface. `currency_detected` follows the Expense currency rule.
-
-At least one field is required.
-
-If expense_id is provided, the linked expense must belong to the authenticated user.
 
 Receipt Response
 
