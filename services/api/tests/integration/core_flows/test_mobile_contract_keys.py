@@ -9,7 +9,7 @@ The test reads the mobile sources as text; it is skipped when they are not check
 import re
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 from uuid import uuid4
 
 import pytest
@@ -248,3 +248,49 @@ def test_receipt_responses_and_confirm_input_match_the_mobile_types(
     assert set(confirmed.json().keys()) == ts_type_keys("receipts/receipt.types.ts", "ReceiptConfirmResult")
     assert set(confirm_input.keys()) == ts_type_keys("receipts/receipt.types.ts", "ReceiptConfirmInput")
     assert set(confirmed.json()["expense"].keys()) == ts_type_keys("expenses/expense.types.ts", "Expense")
+
+
+# VF-MVP-CORE-006: every Analytics response the Dashboard and Analytics screens read, key for key, including
+# nested items and the nullable blocks (period_over_period, incomplete forecast).
+def test_every_analytics_response_matches_the_mobile_types(client: TestClient, clean_database: None) -> None:
+    user = str(uuid4())
+    headers = auth_headers(user)
+    category = client.post("/api/v1/categories", headers=headers, json={"name": "Contract", "color": "#FF5733", "icon": "x"}).json()
+    this_month = date.today().replace(day=1)
+    previous_month = (this_month - timedelta(days=1)).replace(day=1)
+    for day, category_id in ((previous_month + timedelta(days=2), category["id"]), (this_month, None)):
+        body = {"title": "t", "amount": "4.00", "currency": "EUR", "expense_date": day.isoformat(), "client_request_id": str(uuid4())}
+        if category_id:
+            body["category_id"] = category_id
+        assert client.post("/api/v1/expenses", headers=headers, json=body).status_code == 201
+    assert client.post("/api/v1/budgets", headers=headers, json={"name": "B", "limit_amount": "10.00", "period": "monthly", "start_date": this_month.isoformat()}).status_code == 201
+    assert client.post("/api/v1/goals", headers=headers, json={"name": "G", "target_amount": "10.00"}).status_code == 201
+
+    def read(path: str) -> Any:
+        response = client.get(f"/api/v1/analytics/{path}", headers=headers)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    summary = read(f"category-summary?year={this_month.year}&month={this_month.month}")
+    spending = read("spending-trend?period=month&count=3")
+    by_category = read("category-trend?period=month&count=3")
+    forecast = read("spending-forecast")
+
+    assert summary
+    for item in summary:
+        assert_same_keys(item, "analytics/analytics.types.ts", "CategorySummaryItem")
+    assert_same_keys(spending, "analytics/analytics.types.ts", "SpendingTrendResponse")
+    for bucket in spending["buckets"]:
+        assert_same_keys(bucket, "analytics/analytics.types.ts", "SpendingTrendBucket")
+    assert spending["period_over_period"] is not None, "two complete months exist for a user with older data"
+    assert_same_keys(spending["period_over_period"], "analytics/analytics.types.ts", "PeriodOverPeriodComparison")
+    assert_same_keys(by_category, "analytics/analytics.types.ts", "CategoryTrendResponse")
+    for item in by_category["categories"]:
+        assert_same_keys(item, "analytics/analytics.types.ts", "CategoryTrendItem")
+        for bucket in item["buckets"]:
+            assert_same_keys(bucket, "analytics/analytics.types.ts", "SpendingTrendBucket")
+    assert_same_keys(forecast, "analytics/analytics.types.ts", "SpendingForecastResponse")
+    for item in read("budget-status"):
+        assert_same_keys(item, "analytics/analytics.types.ts", "BudgetStatusItem")
+    for item in read("goal-progress"):
+        assert_same_keys(item, "analytics/analytics.types.ts", "GoalProgressItem")

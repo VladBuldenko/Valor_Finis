@@ -1524,6 +1524,12 @@ excluded from total_spent but are never silently treated as zero-valued;
 expenses_count + unresolved_expenses_count is the total number of
 matching Expenses for the period.
 
+VF-MVP-CORE-006: every money and percentage value in every Analytics
+response is an exact two-place decimal string, including zero ("0.00",
+never "0") - an empty month, an untouched Budget (spent), a Budget that is
+not exceeded (exceeded_amount) or is exceeded (remaining) and a fully
+funded Goal (remaining_amount).
+
 Category Summary
 
 GET /api/v1/analytics/category-summary
@@ -1543,7 +1549,12 @@ VF-014B5D: total_spent/expenses_count/base_currency/
 unresolved_expenses_count follow the same base-currency rules as Monthly
 Summary above, applied per category. A category whose matching Expenses
 are all unresolved is still returned (never silently omitted), with
-total_spent 0, expenses_count 0, and unresolved_expenses_count > 0.
+total_spent "0.00", expenses_count 0, and unresolved_expenses_count > 0.
+
+VF-MVP-CORE-006: the list is ordered by category_name (case-insensitive),
+then category_id, exactly like the category trend - never by which Expense
+is newest or by database row order - so a client list does not reshuffle.
+Uncategorized sorts by its name like any other entry.
 
 Spending Trend
 

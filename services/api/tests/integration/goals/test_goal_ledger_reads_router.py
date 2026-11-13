@@ -177,11 +177,10 @@ def test_goal_progress_endpoint_uncapped_overfunded_progress_percent(
     # Assert
     response_data = response.json()[0]
     assert response_data["current_amount"] == "1200.00"
-    # remaining_amount is floored via max(target - current, Decimal("0")):
-    # when clamped, the literal Decimal("0") floor value is returned as-is,
-    # which serializes as "0" rather than "0.00" - pre-existing formula
-    # behavior, unrelated to VF-016D.
-    assert response_data["remaining_amount"] == "0"
+    # remaining_amount is floored at zero; since VF-MVP-CORE-006 the floor is
+    # Decimal("0.00"), so a clamped value serializes as "0.00" like every
+    # other money value.
+    assert response_data["remaining_amount"] == "0.00"
     assert response_data["progress_percent"] == "120.00"
 
 
