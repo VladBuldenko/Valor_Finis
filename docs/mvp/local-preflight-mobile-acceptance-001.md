@@ -214,4 +214,4 @@ metadata was intact, so the pointer file was recreated and the tracked files wer
 See [tools/local-auth/README.md](../../tools/local-auth/README.md). In short: `npx supabase@3.1.0 start -x …` from
 `tools/local-auth`, create `status.env`, create a disposable database and migrate it, `source tools/local-auth/api-env.sh`,
 run uvicorn on 8766, put the three `EXPO_PUBLIC_*` values in `apps/mobile/.env.local`, start Metro on 127.0.0.1, open
-`exp://127.0.0.1:8081`. Stop with `npx supabase@3.1.0 stop --no-backup`, drop the database, delete `status.env`.
+`exp://127.0.0.1:8081`. Stop with `npx supabase@3.1.0 stop` (Auth data is kept; restart restores it). The destructive reset (`stop --no-backup`, drop the database, delete `status.env`) is a separate, explicit step in the README.

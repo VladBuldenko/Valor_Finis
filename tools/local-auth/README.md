@@ -18,7 +18,7 @@ Nothing is installed globally: the Supabase CLI runs through `npx supabase@3.1.0
 cd tools/local-auth
 export DO_NOT_TRACK=1
 npx supabase@3.1.0 start -x realtime,storage-api,imgproxy,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
-npx supabase@3.1.0 status -o env > status.env && chmod 600 status.env     # gitignored; holds local keys
+( umask 077; npx supabase@3.1.0 status -o env > status.env )     # gitignored, mode 600; holds local keys
 ```
 Kept services: Auth (`:54321/auth/v1`), the Kong gateway, the Auth Postgres (`:54322`) and Mailpit (UI `:54324`).
 `supabase/config.toml` turns email confirmation on and allows the redirect `valorfinis://auth/callback`.
@@ -50,9 +50,21 @@ request the link without following the redirect (`curl -s -o /dev/null -w '%{red
 `code=` value and deliver it to the app: `xcrun simctl openurl booted "exp://127.0.0.1:8081/--/auth/callback?code=<code>"`.
 Do not paste the code into logs or commits.
 
-## Stop and clean up
+## Stop (keeps your data) and restart
 ```bash
-npx supabase@3.1.0 stop --no-backup          # removes the local Auth data volumes
-dropdb -h 127.0.0.1 -p 54332 -U postgres valor_localauth
-rm -rf tools/local-auth/status.env tools/local-auth/receipt-uploads
+cd tools/local-auth && npx supabase@3.1.0 stop      # stops only this project's containers; Auth data volumes are KEPT
+npx supabase@3.1.0 start -x realtime,storage-api,imgproxy,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
 ```
+Restarting restores the previous Auth users. `status.env` can be reused (the local keys do not change); regenerate it
+with the `status -o env` command above if it is missing. Stop Metro and uvicorn with Ctrl+C in their terminals.
+
+## Reset (only when you explicitly want to discard all local users and data)
+Run from anywhere inside the repository; every path is scoped to `tools/local-auth` and the disposable database:
+```bash
+cd "$(git rev-parse --show-toplevel)/tools/local-auth"
+npx supabase@3.1.0 stop --no-backup          # DELETES this project's local Auth data volumes
+dropdb -h 127.0.0.1 -p 54332 -U postgres valor_localauth
+rm -rf ./status.env ./receipt-uploads
+```
+These commands never touch other Docker containers or databases: the CLI acts only on the project id
+`valor-local-auth` from `supabase/config.toml`.
