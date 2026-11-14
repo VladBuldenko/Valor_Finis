@@ -1,5 +1,10 @@
 # MOBILE-ACCEPTANCE-001 — Local Runtime Preflight (not official acceptance)
 
+> **Update 2026-11-14 (LOCAL-AUTH-001).** The authentication blocker in sections 2 and 4 below was **resolved locally**:
+> a real local Supabase Auth stack now exists ([tools/local-auth](../../tools/local-auth/README.md)) and the signed-in
+> journeys J01–J04, J11 and J12 were run in the iOS Simulator. Sections 2 and 4 are kept as the original 2026-11-13
+> evidence; **section 8 at the end of this file is current** and takes precedence wherever they differ.
+
 Date: 2026-11-13. Repository commit: `main` @ `d46781d246f6fa334be59f4a582190b62561d989`. Branch `qa/VF-MVP-MOBILE-ACCEPTANCE-001`.
 
 **Scope and status.** This is a *local preflight* on the developer's machine. It is **not** the official staging or
@@ -119,3 +124,94 @@ No application defect was reproduced, so **no source change was made**.
 
 Production source files were not changed, so the mobile suite, `tsc`, `lint` and backend tests were not re-run for this
 slice. `npm ci` and the Expo bundle completed without errors. `git diff --check` is clean.
+
+## 8. LOCAL-AUTH-001 — real local authentication and signed-in smoke test (2026-11-14)
+
+Evidence class: **LOCAL SMOKE** on an iOS Simulator with Expo Go. Not official staging or physical-device acceptance.
+No hosted Supabase, Render, production or staging system was contacted. No credential is recorded here.
+
+### 8.1 Environment
+| Item | Value |
+|---|---|
+| Container runtime | Docker 29.3.1 (8 GB, 11 CPUs); no other project's container or volume was touched |
+| Supabase CLI | 3.1.0, installed as a local npm package in a scratch directory (not global) |
+| Local images | Auth (GoTrue) v2.197.0, Kong 2.8.1, Postgres 17.11.0.018, Mailpit v1.31.3; excluded: realtime, storage-api, imgproxy, postgrest, postgres-meta, studio, edge-runtime, logflare, vector, supavisor |
+| Application database | dedicated disposable database on a throwaway PostgreSQL 18.1 cluster; Alembic at head `b8e2c5d1f739`; pytest was not run against it |
+| FastAPI | `AUTH_MODE=supabase`, local Auth URL, local publishable key, local receipt storage, Tesseract 5.5.3 OCR; the secret/service keys were never exported to the API process |
+| Mobile config | `apps/mobile/.env.local` (gitignored). Redacted summary: `API_URL=http://127.0.0.1:8766`, `SUPABASE_URL=http://127.0.0.1:54321`, publishable key = local key (46 chars, not printed); every URL is loopback; no secret or service-role key present |
+| Device | iPhone 17 Simulator, iOS 26.3, Expo Go 57.0.9, Metro via `REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1` |
+
+### 8.2 Connectivity (probe user, plumbing evidence only)
+Auth health 200. Signup returned no session before confirmation (`email_not_confirmed`), Mailpit received the mail, the
+verify link redirected (303), password sign-in returned 200, `GET /auth/v1/user` with that token returned 200, and
+FastAPI answered 200 on `/accounts` and `/expenses` for the same token. In supabase mode FastAPI answered 401 to no
+credentials, to a malformed bearer and to an `X-User-Id`-only request.
+
+### 8.3 Authentication journey, observed in the Simulator UI
+| Step | Result | Observed |
+|---|---|---|
+| Signup (Create account form) | PASS | "Check your email" screen; Mailpit received "Confirm your email address" |
+| Email confirmation | PASS | Link redirected to `valorfinis://auth/callback?code=…` (PKCE). Delivered to Expo Go as an Expo dev link; the app showed "Email confirmed", opened the Dashboard, and FastAPI served its requests with the new bearer token (all 200) |
+| Sign in with a genuine local session | PASS | Dashboard loaded real data from FastAPI |
+| Force-close and reopen | PASS | Went straight to the Dashboard without signing in |
+| Log out | PASS | Returned to Sign in |
+| Protected screen while signed out | PASS | `exp://…/--/accounts` showed Sign in; the API log gained 0 requests |
+| Invalid credentials | PASS | Alert "Login failed — Invalid login credentials" |
+| Unreachable auth host (earlier, 2026-11-13) | PASS | "Unable to reach the sign-in service…" |
+| Second user cannot see the first user's data | PASS | User B signed in through the UI: Dashboard all 0.00; opening user A's Account id showed "Account not found." (API 404) |
+
+### 8.4 First financial smoke test (synthetic data, user A)
+| Step | Expected | Actual |
+|---|---|---|
+| Create checking Account, opening balance 1000.00 EUR | listed at 1000.00 EUR | `POST /accounts` 201; "Main Checking, Checking, Active, 1000.00 EUR" |
+| Income 500.00 EUR linked | balance 1500.00 | `POST /income` 201; balance 1500.00 EUR |
+| Expense 120.00 EUR linked ("Groceries") | balance 1380.00 | `POST /expenses` 201; Accounts screen **1380.00 EUR** |
+| Financial Overview | Income 500.00, Expenses 120.00, Net 380.00, savings 76.00% | exactly that; "1 income record · 1 expense", In progress through 2026-11-14 |
+| Dashboard | agrees with the API | This month 120.00 EUR (1 expense); Income 500.00; Expenses 120.00; Net 380.00 (surplus) |
+| Restart and re-check | data still visible | identical after a force-close and relaunch |
+
+SQL reconciliation (independent of the app): ledger credits 1000.00 + 500.00, debit 120.00 → 1380.00; one income row
+500.00 EUR with base snapshot 500.00 EUR; one expense row 120.00 EUR with base snapshot 120.00 EUR.
+
+### 8.5 Expanded journeys (user B unless stated)
+| ID | Result | Notes |
+|---|---|---|
+| J11 Receipt: pick from library, upload, OCR, review, confirm | **PASS** | Real native photo picker and Expo `File`/`FormData` upload: `POST /receipts/upload` 201, `/process` 200 (real Tesseract on a synthetic receipt), review showed LIDL / 3.68 / EUR / 2026-11-11, `POST /confirm` 200; SQL: receipt `confirmed`, linked Expense LIDL 3.68 EUR 2026-11-11, same user |
+| Photo-library permission | PASS (Expo Go) | The iOS prompt appeared and "Allow full access" opened the picker. The text is Expo Go's, not the app's `photosPermission` string: **verify in a development build** |
+| Camera ("Take photo") | NOT RUN | The Simulator has no camera |
+| J12 Analytics / Overview / Dashboard | PASS | Analytics renders for an empty user (forecast 0.00 EUR, "14 of 30 days", monthly trend); Overview and Dashboard verified with data (8.4) |
+| Categories | PASS (render) | Default categories listed |
+| J05 Budgets, J06–J09 Goals, J10 Transfers, Inbox, Rules | **NOT RUN** | Routes were visited with no `5xx`/crash in the API or Metro logs, but their screens were not inspected and no data was created. Not marked PASS |
+| J13–J18 | NOT RUN | Unchanged from section 4 |
+| Network interruption on data screens | NOT RUN | |
+| Small screen | NOT RUN | No small device installed |
+
+API log over the whole session: 116×200, 4×201 (account, income, expense, receipt upload), 3×401, 3×404, **no 5xx**.
+Every 4xx was deliberate: three 401 curl probes (no credentials, malformed bearer, `X-User-Id` only), one 404 from a
+wrong path in my own probe (`/incomes`), and two 404s from the app asking for user A's Account as user B.
+
+### 8.6 Defects and findings (none fixed in this slice)
+| ID | Severity | Finding | Reproduce / cause | Suggested action |
+|---|---|---|---|---|
+| F1 | Medium (verify) | **PKCE falls back to the `plain` code-challenge method in Expo Go.** Metro logs "WebCrypto API is not supported. Code challenge method will default to use plain instead of sha256" during signup. `docs/modules/mobile-auth.md` relies on PKCE to stop link injection; `plain` is weaker | Sign up or request recovery in Expo Go and read the Metro log | Confirm whether a development/production build has `crypto.subtle`; if not, polyfill it (`expo-crypto` is already a dependency). Needs an auth-owner decision; not changed here |
+| F2 | Low–medium (UX) | Receipt upload, Receipt review and Expense edit screens look unfinished: the header shows the raw route name (`receipts/upload`, `receipts/[id]`, `expenses/[id]`), content has no padding, and the review fields have no labels or borders | Open the screens. Cause for the titles: those three routes are not registered in `app/(app)/_layout.tsx`. The bodies use no `StyleSheet` | Register the three `Stack.Screen`s; style the bodies with the design owner. Not a redesign task here |
+| F3 | Low | 24 files still import `SafeAreaView` from `react-native` (deprecated in RN 0.86); Metro warns at every start | See section 5 | Schedule the migration |
+| F4 | Info | The iOS "Strong password" sheet appears on the new-password field and a "Save password?" prompt after sign-in. System UI, not the app. The sheet can clear a field already typed into | Create account in the Simulator | none |
+| F5 | Info (test harness) | Simulator text injection and taps are racy; typing needed short waits between actions. Not an app issue | | none |
+
+### 8.7 Remaining blockers
+- Android: no JDK, Android SDK, `adb` or emulator on this machine: **BLOCKED**.
+- Physical device: none connected: **NOT RUN**. Official BR-5 acceptance still needs an owner-approved device and QA-1 staging.
+- Native behavior beyond Expo Go (app-specific permission strings, `valorfinis://` link handling, PKCE in a real build) needs a development build, which needs Xcode 26.4+ and CocoaPods.
+- Budgets, Goals, Transfers, Rules/Inbox journeys remain to be exercised in the Simulator.
+
+### 8.8 Incident during this task
+The system temp directory cleanup had deleted the `.git` pointer and 675 tracked files of this worktree. Git's own
+metadata was intact, so the pointer file was recreated and the tracked files were restored from the index
+(`git restore --worktree -- .`); nothing was modified, no new worktree was created, and HEAD `ce80b5b` was unchanged.
+
+### 8.9 Run, stop and clean up
+See [tools/local-auth/README.md](../../tools/local-auth/README.md). In short: `npx supabase@3.1.0 start -x …` from
+`tools/local-auth`, create `status.env`, create a disposable database and migrate it, `source tools/local-auth/api-env.sh`,
+run uvicorn on 8766, put the three `EXPO_PUBLIC_*` values in `apps/mobile/.env.local`, start Metro on 127.0.0.1, open
+`exp://127.0.0.1:8081`. Stop with `npx supabase@3.1.0 stop --no-backup`, drop the database, delete `status.env`.
