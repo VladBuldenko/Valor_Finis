@@ -70,11 +70,33 @@ Consequences: a confirmation or recovery link opened on a **different device** t
 sign that device in (it shows "invalid or expired"; for a confirmation the account is already confirmed, so signing in works);
 only the newest request's link works (one verifier slot); and the app must have requested the email itself.
 
-**Verifier strength is device-dependent (not verified):** auth-js uses SHA-256 challenges only if a WebCrypto `crypto.subtle`
-exists and otherwise falls back to the `plain` method (with a console warning) and a non-cryptographic random verifier.
-Whether Hermes in the Expo 57 build provides `crypto` was **not verified** (no device run). The login-CSRF protection holds in
-both cases (the attacker cannot know the victim's verifier); only on-path observation of the verifier is weaker with `plain`.
-If it falls back, add a `crypto.getRandomValues`/`subtle.digest` polyfill backed by `expo-crypto` (already a dependency).
+### 3.1 PKCE cryptography on React Native (MOBILE-002A, verified)
+
+**The defect (observed on the iOS Simulator, Expo Go 57 / RN 0.86 / Hermes, auth-js 2.112.3).** auth-js reads the *global*
+`crypto` and has no injection point. Hermes defines **no `crypto` at all** (`typeof crypto === "undefined"`; `TextEncoder` and
+`btoa` exist), and `expo-crypto` does not define one either (it only exports functions). So, before this fix, every sign-up and
+recovery request:
+
+* drew the code verifier **and the flow id from `Math.random`** (auth-js's silent fallback when `crypto` is undefined);
+* sent `code_challenge_method=plain` with the challenge equal to the verifier (the "WebCrypto API is not supported ... plain
+  instead of sha256" warning, which only mentioned the second problem).
+
+**The fix** (`src/lib/pkce-crypto.ts`, wired by `src/lib/pkce-crypto-runtime.ts`, imported first in `src/lib/supabase.ts`):
+installs only the two functions auth-js needs, `crypto.getRandomValues` and `crypto.subtle.digest("SHA-256")`, backed by
+`expo-crypto` (iOS: `SecRandomCopyBytes` and the platform SHA-256). Rules: nothing falls back (no `Math.random`, no JS hash, and
+`expo-crypto`'s `getRandomBytes`, which has a development `Math.random` path, is not used); a missing or misbehaving primitive
+throws, so auth-js aborts before any request is sent; an existing complete native WebCrypto (web) is left untouched; and the
+app's fetch refuses (`guardAgainstPlainPkce`) any request that would carry `code_challenge_method=plain`, whatever auth-js does
+in a future runtime.
+
+**Evidence, by tier.**
+
+| Tier | Result |
+|---|---|
+| Automated (`src/lib/pkce-crypto.test.ts`, 9 tests, **real** `@supabase/supabase-js` in a Hermes-like runtime) | baseline reproduces the defect (plain, `Math.random` used 88 times per sign-up); with the fix: no `Math.random`, challenge = base64url(SHA-256(verifier)) computed independently, method `s256`, the code exchange passes the server-side hash check, broken primitives fail closed with nothing sent, a native WebCrypto is untouched. Mutation-checked: a `Math.random` verifier, an unhashed digest and a removed wiring import each fail the suite |
+| Real iOS Simulator, local Supabase Auth + FastAPI (**LOCAL SMOKE**, Expo Go, links delivered with the documented `exp://` dev-link method) | sign-up and password-recovery flows both stored `code_challenge_method = s256` in GoTrue's `flow_state`; the 43-character challenge equals SHA-256 of the 112-character verifier read from the app's AsyncStorage (compared by script, values never printed); the old warning no longer appears. Confirmation link -> "Email confirmed" and a session; restart restores it; sign-out revokes it server-side; sign-in; recovery link opened in the requesting instance shows "Choose a new password" (not the Dashboard); the new password works and the old one is rejected; a replayed consumed code and a code from a different PKCE flow are refused (GoTrue: `bad_code_verifier`) with no session |
+| Native custom scheme `valorfinis://` delivery in a real build | **NOT RUN** (Expo Go cannot open it) |
+| Physical iPhone / Android | **NOT RUN** |
 
 ## 4. Race and ownership rules
 
@@ -186,6 +208,9 @@ session boundary, coordinator, recovery state and link handler against a scripte
 rejected links, replay, login CSRF with a code from another request, user B signing in during a recovery, sign-out during a
 recovery, junk links during a recovery, cache reset counts).
 
+`src/lib/pkce-crypto.test.ts` (section 3.1): the real `@supabase/supabase-js` inside a runtime shaped like Hermes (no `crypto`),
+with only the network, the storage and the native primitives faked; helpers in `src/lib/pkce-test-support.ts`.
+
 ## 8. NOT done here: hosted configuration and device acceptance
 
 Hosted Supabase configuration (not done; this repository configures nothing remotely):
@@ -210,7 +235,9 @@ the four new screens; rate-limit behavior.
 * **Custom scheme interception (Android especially).** Any app can register `valorfinis://`. With PKCE the link carries only a
   code that is useless without the verifier stored by this app, so an app that wins the scheme cannot use it. Verified
   App/Universal Links need a hosted domain and are out of scope here.
-* **Verifier strength** depends on WebCrypto being present at runtime (section 3). Unverified.
+* **Verifier strength** (section 3.1): fixed and verified on the iOS Simulator in Expo Go (S256, secure randomness). Still **NOT
+  RUN** in a development/production build or on a physical device, where the same `expo-crypto` path should be re-checked once.
+  The code challenge method auth-js sends is lowercase `s256`; the local GoTrue accepts it and verifies the hash.
 * **The password change does not revoke the user's other sessions.** Add `signOut({ scope: "others" })` after a successful change
   if the owner wants that.
 * **Redirect URL environment.** The scheme is the same for every environment; staging and production are separated by
