@@ -3,10 +3,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createClient, processLock } from "@supabase/supabase-js";
 import "react-native-url-polyfill/auto";
 
+// Must run before the client below generates any PKCE challenge: Hermes has no `crypto`, which would
+// otherwise make auth-js use Math.random and the plain challenge method (pkce-crypto.ts).
+import "./pkce-crypto-runtime";
 import { queueSessionMutations } from "../api/auth-gateway";
 import { createFetchWithTimeout } from "../api/fetch-with-timeout";
 import { env } from "../config/env";
 import { authOperations } from "./auth-queue";
+import { guardAgainstPlainPkce } from "./pkce-crypto";
 
 // Bounds every Supabase request. A sign-out holds the auth operation queue while
 // its server call is in flight, so an unanswered request must not block signing
@@ -38,7 +42,7 @@ export const rawSupabase = createClient(
     },
     global: {
       fetch: createFetchWithTimeout(
-        (input, init) => fetch(input, init),
+        guardAgainstPlainPkce((input, init) => fetch(input, init)),
         SUPABASE_REQUEST_TIMEOUT_MS,
       ),
     },
