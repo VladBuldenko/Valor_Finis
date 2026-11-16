@@ -7,6 +7,7 @@ from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.goals import goal_service
+from app.modules.goals.goal_history_schemas import GoalHistoryComparisonResponse
 from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
 from app.modules.goals.goal_schemas import (
     GoalCreate,
@@ -276,4 +277,33 @@ def get_goal_plan(
         goal_id=goal_id,
         user_id=current_user.id,
         plan_request=plan_request,
+    )
+
+
+# Compares a Goal's required installment with recorded history
+# (VF-GOALS-PLANNING-002A).
+# GET because it takes no input and performs no write. Advisory: recorded past
+# activity, not a guarantee that a contribution is affordable.
+# Parameters:
+# - goal_id: financial goal identifier from the URL path.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - GoalHistoryComparisonResponse.
+# Raises:
+# - GoalNotFoundError (404) for a missing or foreign Goal.
+@router.get(
+    "/{goal_id}/plan/history-comparison",
+    response_model=GoalHistoryComparisonResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_goal_history_comparison(
+    goal_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> GoalHistoryComparisonResponse:
+    return goal_service.get_goal_history_comparison(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=current_user.id,
     )

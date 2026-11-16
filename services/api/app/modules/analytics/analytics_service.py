@@ -1219,6 +1219,8 @@ def get_financial_overview(
 #   router's responsibility.
 # - as_of: reference "today" - the last bucket is the month containing it.
 #   The caller (the router) passes the server date.
+# - base_currency: optional, already-resolved base currency; when omitted it
+#   is read (and bootstrapped on first use) from the user's settings.
 # Returns:
 # - IncomeExpenseTrendResponse with `count` buckets, oldest first.
 def get_income_expense_trend(
@@ -1226,11 +1228,15 @@ def get_income_expense_trend(
     user_id: UUID,
     count: int,
     as_of: date,
+    base_currency: Optional[str] = None,
 ) -> IncomeExpenseTrendResponse:
-    base_currency = financial_settings_service.get_base_currency(
-        db_session=db_session,
-        user_id=user_id,
-    )
+    # A caller that must stay read-only (the Goal history comparison) passes
+    # the base currency it resolved without the first-use bootstrap write.
+    if base_currency is None:
+        base_currency = financial_settings_service.get_base_currency(
+            db_session=db_session,
+            user_id=user_id,
+        )
 
     calendar_periods = calendar_period.resolve_recent_periods(
         period=calendar_period.MONTH,

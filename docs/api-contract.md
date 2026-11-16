@@ -1338,6 +1338,98 @@ on_or_before_target_date (null without a usable target date or estimate). It
 is an estimate, never a guarantee
 
 
+Goal history comparison (VF-GOALS-PLANNING-002A)
+
+GET /api/v1/goals/{goal_id}/plan/history-comparison
+
+Read-only and advisory: sets the Goal plan's required installment next to the
+user's RECORDED income and expenses of the last three COMPLETED calendar
+months. It performs NO write (the base currency is read without the
+first-use settings bootstrap), takes no lock and creates nothing. It is
+recorded past activity, not a forecast and not a guarantee that a
+contribution is affordable. Authenticated and ownership-scoped: another
+user's Goal is 404 "Goal not found.". No request body. 200 on success.
+
+Sources (nothing is recalculated independently): the required installment is
+the Goal plan's own (POST /goals/{goal_id}/plan, unchanged); the monthly
+figures are the income-expense trend's (GET /analytics/income-expense-trend):
+canonical Income and Expense records only, base-currency amounts only.
+Account balances, opening balances, adjustments, Account Transfers and Goal
+transactions are never read, so none of them is income or an expense and a
+linked record is never counted twice. Budget limits are not spending.
+
+Rules:
+
+- The months are the three calendar months before the month containing the
+  server date; the current, incomplete month is never included.
+- A month "has activity" when it has at least one resolved Income AND one
+  resolved Expense. A month without activity is left out of the averages and
+  is not counted as zero (missing records are not proof of zero obligations).
+- Any unresolved Income/Expense (no base-currency amount) in ANY of the three
+  months makes the history unusable: no average is shown.
+- The history is usable with at least two active months and no unresolved
+  records. average = exact Decimal sum of the included months / months_used,
+  rounded half-even to the cent. Income, expenses and net flow are each
+  averaged once, so income minus expenses may differ from the net average by
+  one cent.
+- historical_difference = average_monthly_net_flow - required_per_installment;
+  it may be negative, and it is set only when status is "comparable".
+
+Response:
+
+Field
+
+Notes
+
+goal_id, as_of, goal_currency, base_currency
+
+as_of is the server date; base_currency is the currency the history is in
+
+status
+
+"comparable" (average and installment in the same currency);
+"insufficient_data" (too little or unresolved history); "currency_mismatch"
+(goal_currency is not base_currency; nothing is converted);
+"no_required_installment" (the Goal plan has none: no target date, target
+date passed, already funded, or archived). Precedence: no_required_installment,
+then currency_mismatch, then insufficient_data
+
+limitations
+
+always "budgets_not_modelled" and "goal_commitments_not_modelled" (existing
+Goal reservations and active allocation rules are not subtracted); plus, as
+they apply, "unresolved_currency_data", "fewer_than_two_active_months",
+"months_without_activity_excluded"
+
+analysis_period_start, analysis_period_end
+
+first day of the oldest and last day of the newest analysed month
+
+months
+
+exactly three completed months, oldest first: period_start, period_end,
+income_total, expense_total, net_flow, income_count, expense_count,
+unresolved_income_count, unresolved_expense_count, has_activity,
+included_in_average
+
+months_used
+
+months that contribute to the averages; 0 when none are shown
+
+average_monthly_income, average_monthly_expenses, average_monthly_net_flow
+
+null unless the history is usable (also shown for no_required_installment and
+currency_mismatch, in base_currency, never converted)
+
+required_per_installment
+
+the Goal plan's installment in goal_currency, or null
+
+historical_difference, difference_direction
+
+null unless "comparable"; direction is "surplus", "equal" or "shortfall"
+
+
 9. Receipts
 
 Base path:
