@@ -4,6 +4,7 @@ import { buildGoalPrioritiesRequest } from "./goal-priorities";
 import type {
   Goal,
   GoalCreateInput,
+  GoalHistoryComparison,
   GoalPlan,
   GoalTransaction,
   GoalTransactionCreated,
@@ -145,4 +146,23 @@ export async function getGoalPlan(
     ),
     signal,
   });
+}
+
+/**
+ * Returns the read-only comparison of a Goal's required installment with the
+ * user's recorded income and expenses of the last three completed months
+ * (VF-GOALS-PLANNING-002A).
+ *
+ * A plain GET: the backend performs no write, and the whole answer -- the
+ * averages, the difference, the status and the limitations -- is the
+ * backend's. The app does no money arithmetic for it.
+ */
+export async function getGoalHistoryComparison(
+  goalId: string,
+  signal?: AbortSignal,
+): Promise<GoalHistoryComparison> {
+  return apiRequest<GoalHistoryComparison>(
+    `/api/v1/goals/${goalId}/plan/history-comparison`,
+    { signal },
+  );
 }

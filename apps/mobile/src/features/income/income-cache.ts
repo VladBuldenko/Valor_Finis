@@ -41,6 +41,12 @@ export function invalidateIncomeQueries(
     queryClient.invalidateQueries({
       queryKey: ["analytics", "income-expense-trend", userId],
     }),
+    // VF-GOALS-PLANNING-002A: every Goal's comparison with recorded history
+    // averages Income and Expenses, so it is re-read too. A prefix match on the
+    // comparison key only: the Goal plan and the Goal lists are unaffected.
+    queryClient.invalidateQueries({
+      queryKey: ["goals", userId, "history-comparison"],
+    }),
   ];
 
   if (touchedAccount) {

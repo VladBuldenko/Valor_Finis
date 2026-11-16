@@ -20,7 +20,8 @@ import {
   planStatusMessage,
   whatIfMessage,
 } from "./goal-plan-view";
-import { getGoalPlan } from "./goal.service";
+import { GoalHistorySection } from "./goal-history-section";
+import { getGoalHistoryComparison, getGoalPlan } from "./goal.service";
 import { styles } from "./goals.styles";
 
 // VF-GOALS-PLANNING-001: the "Goal plan" section of the Goal detail screen.
@@ -52,13 +53,26 @@ export function useGoalPlan(goalId: string) {
     enabled: Boolean(userId) && estimate !== null,
   });
 
-  return { planQuery, estimateQuery, input, setInput, estimate, setEstimate };
+  // VF-GOALS-PLANNING-002A: the comparison with recorded history only makes
+  // sense for a plan that has a required installment, so it is skipped once the
+  // plan is known not to be "ready" (until the plan loads it runs alongside it).
+  // Under ["goals", userId, ...] so every Goal transaction refreshes it, and
+  // invalidated by Income/Expense changes too (it averages them).
+  const planStatus = planQuery.data?.plan_status;
+  const historyWanted = planStatus === undefined || planStatus === "ready";
+  const historyQuery = useQuery({
+    queryKey: ["goals", userId, "history-comparison", goalId],
+    queryFn: ({ signal }) => getGoalHistoryComparison(goalId, signal),
+    enabled: Boolean(userId) && historyWanted,
+  });
+
+  return { planQuery, estimateQuery, historyQuery, historyWanted, input, setInput, estimate, setEstimate };
 }
 
 export type GoalPlanModel = ReturnType<typeof useGoalPlan>;
 
 export function GoalPlanSection({ model }: { model: GoalPlanModel }) {
-  const { planQuery, estimateQuery, input, setInput, estimate, setEstimate } = model;
+  const { planQuery, estimateQuery, historyQuery, input, setInput, estimate, setEstimate } = model;
 
   // Shape only (the same rule as the contribution form); whether an amount
   // makes sense for the Goal is the backend's answer.
@@ -100,6 +114,8 @@ export function GoalPlanSection({ model }: { model: GoalPlanModel }) {
               {statusMessage ? <Text style={styles.secondaryText}>{statusMessage}</Text> : null}
 
               <Text style={styles.helperText}>{PLAN_ASSUMPTION}</Text>
+
+              {plan.plan_status === "ready" ? <GoalHistorySection query={historyQuery} /> : null}
 
               {plan.plan_status === "archived" ? null : (
                 <View style={styles.formGroup}>

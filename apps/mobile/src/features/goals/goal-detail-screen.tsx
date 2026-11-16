@@ -169,6 +169,7 @@ export function GoalDetailScreen() {
     refetcherOf(accountsQuery),
     refetcherOf(goalPlan.planQuery),
     ...(goalPlan.estimate !== null ? [refetcherOf(goalPlan.estimateQuery)] : []),
+    ...(goalPlan.historyWanted ? [refetcherOf(goalPlan.historyQuery)] : []),
   ]);
 
   const [transactionType, setTransactionType] = useState<

@@ -218,3 +218,58 @@ export type GoalPlan = {
   horizon_months: number;
   what_if: GoalPlanWhatIf | null;
 };
+
+// VF-GOALS-PLANNING-002A: mirrors backend GoalHistoryComparisonResponse
+// (services/api/app/modules/goals/goal_history_schemas.py), the read-only,
+// advisory comparison of a Goal's required installment with the RECORDED
+// income and expenses of the last three completed months, from
+// GET /api/v1/goals/{id}/plan/history-comparison. Amounts are the backend's
+// decimal strings, never parsed or compared as numbers on the device; the
+// status, direction and limitation codes decide every sentence shown.
+export type GoalHistoryComparisonStatus =
+  | "comparable"
+  | "insufficient_data"
+  | "currency_mismatch"
+  | "no_required_installment";
+
+export type GoalHistoryLimitation =
+  | "unresolved_currency_data"
+  | "fewer_than_two_active_months"
+  | "months_without_activity_excluded"
+  | "budgets_not_modelled"
+  | "goal_commitments_not_modelled";
+
+export type GoalHistoryDifferenceDirection = "surplus" | "equal" | "shortfall";
+
+export type GoalHistoryMonth = {
+  period_start: string;
+  period_end: string;
+  income_total: string;
+  expense_total: string;
+  net_flow: string;
+  income_count: number;
+  expense_count: number;
+  unresolved_income_count: number;
+  unresolved_expense_count: number;
+  has_activity: boolean;
+  included_in_average: boolean;
+};
+
+export type GoalHistoryComparison = {
+  goal_id: string;
+  as_of: string;
+  goal_currency: string;
+  base_currency: string;
+  status: GoalHistoryComparisonStatus;
+  limitations: GoalHistoryLimitation[];
+  analysis_period_start: string;
+  analysis_period_end: string;
+  months: GoalHistoryMonth[];
+  months_used: number;
+  average_monthly_income: string | null;
+  average_monthly_expenses: string | null;
+  average_monthly_net_flow: string | null;
+  required_per_installment: string | null;
+  historical_difference: string | null;
+  difference_direction: GoalHistoryDifferenceDirection | null;
+};
