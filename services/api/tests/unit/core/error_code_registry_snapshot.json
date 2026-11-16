@@ -137,6 +137,22 @@
       "code": "financial_rule_subject_archived",
       "status": 409
     },
+    "FutureObligationIdempotencyConflictError": {
+      "code": "future_obligation_idempotency_conflict",
+      "status": 409
+    },
+    "FutureObligationLimitReachedError": {
+      "code": "future_obligation_limit_reached",
+      "status": 409
+    },
+    "FutureObligationNotFoundError": {
+      "code": "future_obligation_not_found",
+      "status": 404
+    },
+    "FutureObligationScheduleInvalidError": {
+      "code": "future_obligation_schedule_invalid",
+      "status": 422
+    },
     "FxFutureDatedNotSupportedError": {
       "code": "fx_future_dated_not_supported",
       "status": 422

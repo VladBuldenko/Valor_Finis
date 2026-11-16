@@ -15,6 +15,7 @@ from app.modules.financial_rules.rule_alert_router import router as rule_alerts_
 from app.modules.financial_rules.rule_execution_router import router as rule_executions_router
 from app.modules.financial_rules.rule_proposal_router import router as rule_proposals_router
 from app.modules.goals.goal_router import router as goals_router
+from app.modules.future_obligations.future_obligation_router import router as future_obligations_router
 from app.modules.income.income_router import router as income_router
 from app.modules.receipts.receipt_router import router as receipts_router
 
@@ -105,6 +106,10 @@ app.include_router(
 )
 app.include_router(
     income_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    future_obligations_router,
     prefix="/api/v1",
 )
 app.include_router(

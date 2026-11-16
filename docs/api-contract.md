@@ -3142,6 +3142,146 @@ was created with, or null.
 
 Account create is not idempotent in this stage.
 
+12A. Future Obligations (VF-GOALS-PLANNING-002C1)
+
+Base path:
+
+/api/v1/future-obligations
+
+Endpoints
+
+Method
+
+Path
+
+Success
+
+POST
+
+/api/v1/future-obligations
+
+201 (200 on an idempotent replay)
+
+GET
+
+/api/v1/future-obligations
+
+200
+
+GET
+
+/api/v1/future-obligations/upcoming
+
+200
+
+GET
+
+/api/v1/future-obligations/{obligation_id}
+
+200
+
+PATCH
+
+/api/v1/future-obligations/{obligation_id}
+
+200
+
+A future obligation is a bill the user EXPECTS to owe and has entered by hand:
+a one-time one (an insurance renewal, a planned tax payment) or a monthly one
+(rent, a subscription, a loan installment). It is a forecast input, NOT a
+transaction. Recording, editing or archiving one never pays it, reserves money,
+or creates an Expense, an Account transaction, a Goal transaction or a financial
+event, and it never changes an Account balance or a Goal reservation. It is
+never inferred from past Expenses or Budget limits, and no Expense is ever
+marked as paying it. It is a separate domain with no foreign key to Expenses,
+Accounts, Goals or Budgets. All routes are authenticated and scoped to the
+caller: another user's obligation is 404 "Future obligation not found." exactly
+like a missing one. There is no DELETE: archive instead (an archived obligation
+stays stored but contributes no occurrences).
+
+Create (POST) body (unknown fields, including status, user_id and ids, are 422):
+
+- name: 1-100 characters after trimming.
+- schedule: "one_time" or "monthly". Fixed for the life of the obligation.
+- amount: positive, at most 12 digits with 2 decimal places (sent and returned as
+  a string).
+- currency: optional 3-letter code. When omitted it is the user's BASE currency,
+  read without creating a settings row. It is stored explicitly and never
+  converted.
+- first_due_date: the due date (one-time) or the first due date (monthly), between
+  2000-01-01 and 2100-12-31. A past date is accepted.
+- final_due_date: optional last due date of a MONTHLY obligation (inclusive); a
+  one-time obligation must not have one, and it cannot be before first_due_date.
+- description: optional, up to 500 characters (blank is stored as none).
+- client_request_id: optional UUID. Same key and same request: 200 with the
+  existing record, nothing created. Same key, different request: 409
+  future_obligation_idempotency_conflict. No key: every request creates a record.
+  "Same request" compares name, description, schedule, amount (to the cent), the
+  resolved currency and the dates.
+
+Limits: a user may have at most 200 ACTIVE obligations (archived ones do not
+count); beyond that a create, or restoring an archived one, is 409
+future_obligation_limit_reached. The limit is applied under a per-user advisory
+lock, so concurrent requests cannot exceed it.
+
+Update (PATCH) takes any of name, description (null clears), amount, currency,
+first_due_date, final_due_date (null clears) and status ("archived" archives,
+"active" restores). The schedule kind is not editable. The schedule fields are
+validated as the RESULTING state: a one-time obligation with a final due date, or
+a final date before the first, is 422 future_obligation_schedule_invalid. An
+archived obligation may still be edited. The change affects the very next
+projection.
+
+Response (create, detail, list, update): id, user_id, name, description,
+schedule, amount, currency, first_due_date, final_due_date, status,
+next_due_date, client_request_id, created_at, updated_at. next_due_date is derived
+at read time from the server date: the first due date on or after today, or null
+when the obligation is archived or has none left. The list orders active
+obligations by next_due_date (those with none left after), then archived ones.
+
+Recurrence (deterministic, calendar based):
+
+- A monthly obligation is due once in every calendar month from the month of
+  first_due_date, on the ANCHOR DAY: the day of the month of first_due_date.
+- In a month shorter than the anchor day the due date is clamped to that month's
+  last day (the 31st becomes the 30th, the 28th, or the 29th in a leap year). The
+  anchor is never changed, so the next long month is due on the anchor day again:
+  there is no accumulated drift. A due date is always computed directly from the
+  anchor, never stepped from the previous one.
+- A monthly obligation stops after final_due_date (inclusive).
+- A monthly obligation that began earlier produces only the due dates that are
+  still upcoming as of the server date.
+
+Upcoming projection (GET /future-obligations/upcoming) is read-only (SELECT only,
+the base currency read without the first-use settings write) and bounded: 12
+calendar months starting with the current one, from one query over the user's
+ACTIVE obligations that can still fall due in the window. In the current month
+only due dates on or after today count; later months include every due date in
+the month. Archived obligations contribute nothing.
+
+Response: as_of, base_currency, horizon_months (12), window_start, window_end,
+is_base_total_complete, excluded_currencies, base_currency_window_total,
+totals_by_currency, and months (exactly 12, current month first): period_start,
+period_end, occurrence_count, base_currency_total, totals_by_currency, and
+occurrences (obligation_id, name, schedule, due_date, amount, currency), ordered by
+due_date, then name, then id. Money is exact Decimal with 2 places.
+
+Currencies are NEVER added together or converted. Each month and the whole
+window carry a per-currency breakdown; base_currency_total adds the
+base-currency occurrences only. When another currency has an occurrence in the
+window, excluded_currencies lists it and is_base_total_complete is false, so a
+base total is never mistaken for the whole.
+
+Double counting (important): recorded Expenses may already contain earlier
+payments of the same bills, so the obligation schedule is an INDEPENDENT forecast
+input. It is not subtracted from historical net cash flow, no "free cash" or
+affordability figure is derived from it, no historical Expense is matched to an
+obligation, Budget limits are not treated as payments, Goal reservations and
+Smart Rule allocations are not Expenses, and recording an Expense never marks an
+obligation as paid. Any reconciliation or incremental-adjustment model needs its
+own explicit contract (a later task). The Goal plan, the Goal history comparison
+and the Goal savings overview are unchanged by this domain.
+
 13. Error Contract
 
 Every JSON error response has the same shape:
@@ -3360,6 +3500,10 @@ Domain error codes (status, code, current detail)
 409  goal_reservation_capacity_exceeded  -  Reservation exceeds the Account's reservable capacity.
 422  goal_transaction_effective_date_in_future  -  Goal transaction effective date cannot be in the future.
 409  goal_transaction_idempotency_conflict  -  client_request_id has already been used for a different goal transaction.
+409  future_obligation_idempotency_conflict  -  client_request_id has already been used for a different future obligation.
+409  future_obligation_limit_reached  -  You have reached the maximum number of active future obligations. Archive one to add another.
+404  future_obligation_not_found  -  Future obligation not found.
+422  future_obligation_schedule_invalid  -  A one-time obligation cannot have a final due date, and a final due date cannot be before the first due date.
 422  income_account_currency_mismatch  -  Income currency must match the account's currency to link them.
 422  income_future_dated_not_supported  -  A foreign-currency income cannot be dated in the future.
 409  income_idempotency_conflict  -  client_request_id has already been used for a different income.

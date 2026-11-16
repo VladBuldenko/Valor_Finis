@@ -45,6 +45,9 @@ LATER_STAGES = (
         "uq_income_user_id_client_request_id", "uq_expenses_user_id_client_request_id",
         "ck_income_client_request_all_or_none", "ck_expenses_client_request_all_or_none",
     )),
+    # VF-GOALS-PLANNING-002C1: the future_obligations table (its constraints and index
+    # carry the table name, so they are matched by name).
+    ("e4a8c2d91b36", ("future_obligations",)),
 )
 
 REVISION_ORDER = (
@@ -57,6 +60,7 @@ REVISION_ORDER = (
     "a7c3e91d5b24",
     "c4d8a2f6e193",
     "b8e2c5d1f739",
+    "e4a8c2d91b36",
 )
 
 

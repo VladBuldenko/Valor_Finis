@@ -3201,3 +3201,35 @@ dispatcher; no HTTP API exposes it; it stores no amounts and no personal data; t
 that no longer has an enabled alert rule (bounded housekeeping), and losing all rows only resets the dispatcher to "every
 user never attempted". It touches no existing table, takes no lock on one, needs no backfill and does not change
 rule_alerts uniqueness. Downgrade drops the index, table and sequence (no history guard: the rows are scheduling state).
+
+VF-GOALS-PLANNING-002C1 future obligations (migration e4a8c2d91b36, down_revision b8e2c5d1f739; schema stage, local
+feature branch, NOT applied to production) adds ONE table:
+
+future_obligations (a bill the user expects to owe, entered by hand; a forecast input, never a transaction):
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| id | UUID | NOT NULL | primary key |
+| user_id | UUID | NOT NULL | owner; no foreign key (there is no users table) |
+| name | VARCHAR(100) | NOT NULL | CHECK not blank |
+| description | VARCHAR(500) | NULL | |
+| schedule | VARCHAR(10) | NOT NULL | 'one_time' or 'monthly'; immutable after creation |
+| amount | NUMERIC(12,2) | NOT NULL | CHECK > 0 |
+| currency | VARCHAR(3) | NOT NULL | CHECK ~ '^[A-Z]{3}$'; stored explicitly, never converted |
+| first_due_date | DATE | NOT NULL | the due date (one-time) or first due date (monthly); its day is the monthly anchor; CHECK 2000-01-01..2100-12-31 |
+| final_due_date | DATE | NULL | monthly only; CHECK in range, >= first_due_date, and NULL when schedule is 'one_time' |
+| status | VARCHAR(10) | NOT NULL | default 'active'; 'active' or 'archived' |
+| client_request_id | UUID | NULL | create idempotency key; UNIQUE (user_id, client_request_id) |
+| client_request_fingerprint | VARCHAR(64) | NULL | set together with the key or not at all (CHECK) |
+| created_at / updated_at | TIMESTAMPTZ | NOT NULL | default now() |
+
+Constraints and indexes: future_obligations_pkey; uq_future_obligations_user_id_client_request_id;
+ck_future_obligations_amount_positive, _schedule_valid, _status_valid, _currency_format, _name_not_blank,
+_first_due_date_range, _final_due_date_range, _final_not_before_first, _one_time_has_no_final and
+_client_request_all_or_none; ix_future_obligations_user_id_status (the list and the bounded projection). There is NO
+foreign key to expenses, accounts, goals or budgets: nothing is inferred from or posted to them, so a recorded Expense
+can never be mistaken for, or double count against, an obligation. Data API: REVOKE ALL on the table from anon,
+authenticated and service_role (guarded by pg_roles checks). Ownership: every query filters by user_id; an
+archived obligation stays stored and contributes nothing; there is no delete path. Upgrade is additive (no existing
+table or row is touched, no backfill). Downgrade refuses to run when any row exists (the data is hand-entered and cannot
+be recreated) and otherwise drops the index and the table.

@@ -137,7 +137,10 @@ def _rejected(database_engine: Engine, table: str, user_id: Any, **keys: Any) ->
 def test_revision_chain_has_one_head_on_top_of_the_previous_revision() -> None:
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
 
-    assert script.get_heads() == [REVISION]
+    # Since VF-GOALS-PLANNING-002C1 (e4a8c2d91b36) this revision is no longer the head, but it is
+    # still in the single chain, directly on top of its previous revision.
+    assert len(script.get_heads()) == 1
+    assert REVISION in {revision.revision for revision in script.walk_revisions()}
     assert script.get_revision(REVISION).down_revision == PREVIOUS_REVISION
 
 
@@ -219,7 +222,10 @@ def test_orm_metadata_matches_the_migrated_schema_exactly(migrated_database: Eng
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    assert differences == []
+    # The only remaining differences belong to the LATER future_obligations stage
+    # (VF-GOALS-PLANNING-002C1): its table, constraints and index.
+    assert exclude_stages_after(differences, REVISION) == []
+    assert all("future_obligations" in repr(difference) for difference in differences)
 
 
 def test_previous_revision_differs_only_by_the_new_objects(previous_database: Engine) -> None:

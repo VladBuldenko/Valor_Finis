@@ -853,6 +853,7 @@ def test_orm_metadata_matches_the_e6_schema_exactly(e6_database: Engine) -> None
         "rule_alerts" in repr(difference)
         or "alert_dispatch_progress" in repr(difference)
         or "client_request" in repr(difference)
+        or "future_obligations" in repr(difference)
         for difference in differences
     )
 

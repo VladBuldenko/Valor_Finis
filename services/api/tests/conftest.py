@@ -31,6 +31,7 @@ from app.modules.financial_settings.financial_settings_models import (
 )
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
+from app.modules.future_obligations.future_obligation_models import FutureObligationModel
 from app.modules.income.income_models import IncomeModel
 from app.modules.receipts.receipt_models import ReceiptModel
 from tests.database_safety import UnsafeTestDatabaseError, validate_test_database_url
@@ -124,6 +125,7 @@ _CLEANUP_MODELS = (
     FinancialRuleGoalTargetModel,
     FinancialRuleModel,
     IncomeModel,
+    FutureObligationModel,
     BudgetModel,
     GoalModel,
     AccountTransactionModel,
