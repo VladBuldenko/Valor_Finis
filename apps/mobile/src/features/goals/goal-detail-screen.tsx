@@ -30,6 +30,7 @@ import {
   validateGoalAmountInput,
 } from "./goal-amount-validation";
 import { invalidateGoalTransactionQueries } from "./goal-cache";
+import { GoalPlanSection, useGoalPlan } from "./goal-plan-section";
 import {
   GoalPartitionPicker,
   type GoalPartitionPickerOption,
@@ -159,10 +160,15 @@ export function GoalDetailScreen() {
   });
   const accounts = accountsQuery.data ?? [];
   const isAccountsLoading = accountsQuery.data === undefined && !accountsQuery.isError;
+  // Read-only Goal plan (VF-GOALS-PLANNING-001): re-read from the backend with
+  // the rest of the Goal, and never part of any financial write.
+  const goalPlan = useGoalPlan(id);
   const refresh = useScreenRefresh(() => [
     refetcherOf(goalQuery),
     refetcherOf(transactionsQuery),
     refetcherOf(accountsQuery),
+    refetcherOf(goalPlan.planQuery),
+    ...(goalPlan.estimate !== null ? [refetcherOf(goalPlan.estimateQuery)] : []),
   ]);
 
   const [transactionType, setTransactionType] = useState<
@@ -490,6 +496,8 @@ export function GoalDetailScreen() {
               ? `Target date: ${goal.target_date}`
               : "No target date"}
           </Text>
+
+          <GoalPlanSection model={goalPlan} />
 
           {goal.status === "archived" ? (
             <>

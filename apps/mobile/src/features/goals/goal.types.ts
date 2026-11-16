@@ -169,3 +169,52 @@ export type GoalTransactionCreateInput = {
   effective_date?: string;
   account_id?: string;
 };
+
+// VF-GOALS-PLANNING-001: mirrors backend GoalPlanResponse
+// (services/api/app/modules/goals/goal_plan_schemas.py), the read-only,
+// advisory Goal planning preview from POST /api/v1/goals/{id}/plan. Every
+// amount is the backend's decimal string and every date its ISO date: the app
+// never calculates, rounds or compares money for the plan, it only shows what
+// the backend returned. Nothing here is stored, scheduled or reserved.
+export type GoalPlanStatus =
+  | "archived"
+  | "already_funded"
+  | "no_target_date"
+  | "target_date_passed"
+  | "ready";
+
+export type GoalPlanWhatIfOutcome =
+  | "reaches_target"
+  | "no_contribution"
+  | "not_reachable_within_horizon"
+  | "already_funded"
+  | "not_applicable";
+
+export type GoalPlanWhatIf = {
+  monthly_contribution: string;
+  outcome: GoalPlanWhatIfOutcome;
+  installments_needed: number | null;
+  estimated_completion_date: string | null;
+  on_or_before_target_date: boolean | null;
+};
+
+export type GoalPlan = {
+  goal_id: string;
+  currency: string;
+  goal_status: GoalStatus;
+  as_of: string;
+  target_amount: string;
+  current_amount: string;
+  tracked_amount: string;
+  linked_amount: string;
+  remaining_amount: string;
+  overfunded_amount: string;
+  target_date: string | null;
+  plan_status: GoalPlanStatus;
+  installment_count: number | null;
+  required_per_installment: string | null;
+  first_installment_date: string | null;
+  last_installment_date: string | null;
+  horizon_months: number;
+  what_if: GoalPlanWhatIf | null;
+};

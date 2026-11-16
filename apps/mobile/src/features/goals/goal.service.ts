@@ -4,6 +4,7 @@ import { buildGoalPrioritiesRequest } from "./goal-priorities";
 import type {
   Goal,
   GoalCreateInput,
+  GoalPlan,
   GoalTransaction,
   GoalTransactionCreated,
   GoalTransactionCreateInput,
@@ -117,4 +118,31 @@ export async function createGoalTransaction(
       body: JSON.stringify(transactionData),
     },
   );
+}
+
+/**
+ * Returns the read-only planning preview of a Goal (VF-GOALS-PLANNING-001).
+ *
+ * POST only because an optional hypothetical monthly amount travels in the
+ * body; the backend performs no write and nothing is stored or scheduled.
+ * monthlyContribution is sent exactly as the user typed it after validation
+ * (a decimal string), and the whole answer -- remaining amount, required
+ * installment, dates, estimate -- is the backend's: the app does no money
+ * arithmetic for the plan. Like every request that is not a GET, it is sent
+ * once and never retried automatically.
+ */
+export async function getGoalPlan(
+  goalId: string,
+  monthlyContribution?: string,
+  signal?: AbortSignal,
+): Promise<GoalPlan> {
+  return apiRequest<GoalPlan>(`/api/v1/goals/${goalId}/plan`, {
+    method: "POST",
+    body: JSON.stringify(
+      monthlyContribution === undefined
+        ? {}
+        : { monthly_contribution: monthlyContribution },
+    ),
+    signal,
+  });
 }
