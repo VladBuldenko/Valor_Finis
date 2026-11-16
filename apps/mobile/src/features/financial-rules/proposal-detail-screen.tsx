@@ -21,9 +21,9 @@ import { financialRulesService } from "./financial-rule.service";
 import type { ProposalDecision } from "./financial-rule-presentation";
 import {
   CONFIRM_DIALOG,
-  HOLD_EXPLANATION,
   REJECT_DIALOG,
   decideProposal,
+  proposalExplanation,
   type DecisionResult,
 } from "./inbox-proposal-actions";
 import { styles } from "./rules.styles";
@@ -135,6 +135,7 @@ export function ProposalDetailScreen() {
   const busy = decision.isPending;
   const actionable = isProposalActionable(proposal.status);
   const showApplied = proposal.status === "executed" || proposal.status === "executed_partial";
+  const explanation = proposalExplanation(proposal.status);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -144,7 +145,7 @@ export function ProposalDetailScreen() {
       >
         <Text style={styles.title} accessibilityRole="header">{proposal.rule_name}</Text>
         <Text style={styles.statusText}>{status.label}</Text>
-        <Text style={styles.helperText}>{HOLD_EXPLANATION}</Text>
+        {explanation ? <Text style={styles.helperText}>{explanation}</Text> : null}
 
         <Text style={styles.sectionTitle} accessibilityRole="header">Income</Text>
         <Text style={styles.secondaryText}>

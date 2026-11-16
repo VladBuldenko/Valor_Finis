@@ -6,9 +6,14 @@ import { isApiError } from "../../api/api-error.ts";
 import { COPY } from "./financial-rule-copy.ts";
 import { describeRuleError, type RuleErrorInfo } from "./financial-rule-errors.ts";
 import { planRuleInvalidation, type RuleInvalidationEvent } from "./financial-rule-invalidation.ts";
-import { proposalOutcome, type ProposalDecision, type ProposalOutcome } from "./financial-rule-presentation.ts";
+import {
+  isProposalActionable,
+  proposalOutcome,
+  type ProposalDecision,
+  type ProposalOutcome,
+} from "./financial-rule-presentation.ts";
 import type { QueryKeyTuple } from "./financial-rule-query-keys.ts";
-import type { RuleProposal } from "./financial-rule.types.ts";
+import type { ProposalStatus, RuleProposal } from "./financial-rule.types.ts";
 
 export type DecisionResult =
   // The server answered with a proposal; its status is the outcome.
@@ -118,3 +123,11 @@ export const REJECT_DIALOG = {
 
 export const HOLD_EXPLANATION =
   "A suggestion holds part of your Account's capacity for rules. Nothing is reserved until you confirm.";
+
+// VF-MVP-MOBILE-UX-001: the hold explanation describes a suggestion that is STILL WAITING, so it is shown only then
+// (the same predicate that decides whether Confirm / Decline exist). Every other status is terminal: the status label
+// already says what happened and the planned / applied amounts are shown as returned, so no pending-confirmation
+// text may appear next to, for example, an executed allocation.
+export function proposalExplanation(status: ProposalStatus): string | null {
+  return isProposalActionable(status) ? HOLD_EXPLANATION : null;
+}

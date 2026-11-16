@@ -144,6 +144,17 @@ describe("accessibility, copy and boundaries", () => {
     assert.match(detail, /isProposalActionable\(proposal\.status\)/);
   });
 
+  it("the pending-confirmation explanation comes from the status-aware helper, never unconditionally (UX-001)", () => {
+    const detail = stripComments(read(HERE, "proposal-detail-screen.tsx"));
+
+    assert.match(detail, /const explanation = proposalExplanation\(proposal\.status\);/);
+    assert.match(detail, /\{explanation \? <Text style=\{styles\.helperText\}>\{explanation\}<\/Text> : null\}/);
+    assert.doesNotMatch(detail, /HOLD_EXPLANATION/);
+    // the authoritative status and the planned / applied amounts are still rendered for every status
+    assert.match(detail, /\{status\.label\}/);
+    assert.match(detail, /showApplied && item\.applied_amount !== null/);
+  });
+
   it("no financial arithmetic or number parsing in the Inbox code", () => {
     for (const name of [...screens, "inbox-data.ts", "inbox-proposal-actions.ts", "inbox-alerts.ts", "use-inbox-data.ts"]) {
       const code = read(HERE, name).replace(/\/\/.*$/gm, "");
