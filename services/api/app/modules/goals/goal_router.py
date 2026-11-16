@@ -9,6 +9,7 @@ from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.goals import goal_service
 from app.modules.goals.goal_history_schemas import GoalHistoryComparisonResponse
 from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
+from app.modules.goals.goal_savings_overview_schemas import GoalSavingsOverviewResponse
 from app.modules.goals.goal_schemas import (
     GoalCreate,
     GoalPriorityReorderRequest,
@@ -54,6 +55,30 @@ def reorder_goal_priorities(
     return goal_service.reorder_goal_priorities(
         db_session=db_session,
         goal_ids=reorder_data.goal_ids,
+        user_id=current_user.id,
+    )
+
+
+# Returns the combined Goal savings overview (VF-GOALS-PLANNING-002B).
+# Read-only and advisory: hypothetical required installments month by month,
+# compared with recorded history. Declared before every dynamic "/{goal_id}"
+# route so the static path can never be captured as a Goal id.
+# Parameters:
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - GoalSavingsOverviewResponse for the authenticated user's Goals only.
+@router.get(
+    "/savings-overview",
+    response_model=GoalSavingsOverviewResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_goal_savings_overview(
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> GoalSavingsOverviewResponse:
+    return goal_service.get_goal_savings_overview(
+        db_session=db_session,
         user_id=current_user.id,
     )
 

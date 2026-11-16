@@ -41,6 +41,8 @@ from app.modules.goals.goal_history_calculator import build_goal_history_compari
 from app.modules.goals.goal_history_schemas import GoalHistoryComparisonResponse
 from app.modules.goals.goal_plan_calculator import build_goal_plan
 from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
+from app.modules.goals.goal_savings_overview_calculator import build_goal_savings_overview
+from app.modules.goals.goal_savings_overview_schemas import GoalSavingsOverviewResponse
 from app.modules.goals.goal_schemas import (
     GoalAllocationResponse,
     GoalCreate,
@@ -1153,5 +1155,55 @@ def get_goal_history_comparison(
         base_currency=base_currency,
         required_per_installment=plan.required_per_installment,
         buckets=completed_months,
+        as_of=today,
+    )
+
+
+# Adds up the user's planned Goal installments month by month and compares them
+# with recorded history (VF-GOALS-PLANNING-002B).
+# This function exists because every Goal may look reasonable on its own while
+# their combined required installments exceed what the user's recorded history
+# supports. It reuses, and does not reimplement, every part: the Goals and their
+# ledger-derived tracked/linked amounts (get_goals: one grouped read for all
+# Goals, never one per Goal), the Goal plan calculation for each Goal, and the
+# income/expense trend of the last three COMPLETED months (the same analysis
+# and data-quality rules as get_goal_history_comparison). It only reads: the
+# base currency is resolved without the first-use bootstrap write, and no row is
+# inserted, updated, locked or committed. The result is advisory: hypothetical
+# required installments, not scheduled payments, and never a statement that
+# they are affordable.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier; every read is scoped to it.
+# - as_of: optional reference "today"; defaults to date.today() (resolved once).
+# Returns:
+# - GoalSavingsOverviewResponse.
+def get_goal_savings_overview(
+    db_session: Session,
+    user_id: UUID,
+    as_of: Optional[date] = None,
+) -> GoalSavingsOverviewResponse:
+    today = as_of if as_of is not None else date.today()
+
+    goals = get_goals(db_session=db_session, user_id=user_id)
+
+    base_currency = financial_settings_service.get_base_currency_read_only(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    trend = analytics_service.get_income_expense_trend(
+        db_session=db_session,
+        user_id=user_id,
+        count=HISTORY_COMPARISON_MONTHS + 1,
+        as_of=today,
+        base_currency=base_currency,
+    )
+    completed_months = [bucket for bucket in trend.buckets if bucket.is_complete]
+
+    return build_goal_savings_overview(
+        goals=goals,
+        base_currency=base_currency,
+        history_buckets=completed_months,
         as_of=today,
     )
