@@ -35,6 +35,19 @@ export function validateGoalDecimalAmount(
   return null;
 }
 
+// Inline feedback for an amount field while the user types (VF-MVP-MOBILE-UX-001).
+// An EMPTY field gives no message (the submit button simply stays disabled until
+// something is entered); any other input gets exactly the message
+// validateGoalDecimalAmount produces, so what is shown here is what a submit
+// would have said. Shape only: whether the amount fits a balance or a capacity
+// is decided by the backend, never here.
+export function validateGoalAmountInput(
+  rawValue: string,
+  fieldLabel: string,
+): string | null {
+  return rawValue ? validateGoalDecimalAmount(rawValue, fieldLabel) : null;
+}
+
 // Normalizes a decimal money-amount string for submission: trims
 // whitespace and converts a comma decimal separator to a point. Callers
 // must validate with validateGoalDecimalAmount before treating the result

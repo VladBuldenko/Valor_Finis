@@ -3,8 +3,14 @@ import { describe, it } from "node:test";
 
 import { ApiError } from "../../api/api-error.ts";
 import { COPY } from "./financial-rule-copy.ts";
-import type { ProposalDecision } from "./financial-rule-presentation.ts";
-import { CONFIRM_DIALOG, HOLD_EXPLANATION, REJECT_DIALOG, decideProposal } from "./inbox-proposal-actions.ts";
+import { isProposalActionable, type ProposalDecision } from "./financial-rule-presentation.ts";
+import {
+  CONFIRM_DIALOG,
+  HOLD_EXPLANATION,
+  REJECT_DIALOG,
+  decideProposal,
+  proposalExplanation,
+} from "./inbox-proposal-actions.ts";
 import { PROPOSAL_STATUSES, type ProposalStatus, type RuleProposal } from "./financial-rule.types.ts";
 import { findForbiddenCopy } from "./financial-rule-forbidden-copy.ts";
 
@@ -210,5 +216,29 @@ describe("terminology", () => {
 
     assert.match(CONFIRM_DIALOG.message, /does not move any money in your bank/);
     assert.match(HOLD_EXPLANATION, /Nothing is reserved until you confirm/);
+  });
+});
+
+describe("the pending-confirmation explanation belongs only to a waiting suggestion (UX-001)", () => {
+  it("is shown for awaiting_confirmation and for no other status", () => {
+    for (const status of PROPOSAL_STATUSES) {
+      assert.equal(
+        proposalExplanation(status),
+        status === "awaiting_confirmation" ? HOLD_EXPLANATION : null,
+        status,
+      );
+    }
+  });
+
+  it("an executed or partly executed allocation never reads as still waiting for confirmation", () => {
+    for (const status of ["executed", "executed_partial", "rejected", "expired", "cancelled"] as const) {
+      assert.equal(proposalExplanation(status), null, status);
+    }
+  });
+
+  it("is exactly the set that can still be confirmed or declined", () => {
+    for (const status of PROPOSAL_STATUSES) {
+      assert.equal(proposalExplanation(status) !== null, isProposalActionable(status), status);
+    }
   });
 });
