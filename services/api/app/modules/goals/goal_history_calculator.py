@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Optional, Sequence
@@ -41,7 +42,7 @@ def _average(total: Decimal, months_used: int) -> Decimal:
     return (total / Decimal(months_used)).quantize(_CENT, rounding=ROUND_HALF_EVEN)
 
 
-def _direction(difference: Decimal) -> GoalHistoryDifferenceDirection:
+def difference_direction_of(difference: Decimal) -> GoalHistoryDifferenceDirection:
     if difference > 0:
         return "surplus"
 
@@ -51,25 +52,26 @@ def _direction(difference: Decimal) -> GoalHistoryDifferenceDirection:
     return "equal"
 
 
-# Builds the comparison of the Goal plan's required installment with the
-# recorded history of the completed months.
-# Parameters:
-# - goal_id / goal_currency: the Goal.
-# - base_currency: the currency the buckets are expressed in.
-# - required_per_installment: the Goal plan's installment, or None when the
-#   plan has none (any status other than ready).
-# - buckets: the completed months, oldest first (at least one).
-# - as_of: the server date, echoed back.
-# Returns:
-# - GoalHistoryComparisonResponse.
-def build_goal_history_comparison(
-    goal_id: UUID,
-    goal_currency: str,
-    base_currency: str,
-    required_per_installment: Optional[Decimal],
-    buckets: Sequence[IncomeExpenseTrendBucket],
-    as_of: date,
-) -> GoalHistoryComparisonResponse:
+# The recorded history of the completed months, summarised once for every
+# feature that compares it with a planned contribution (the single Goal
+# comparison and, since VF-GOALS-PLANNING-002B, the combined savings overview).
+# Only the data-quality limitations are listed here; the two "not modelled"
+# codes belong to the callers' responses.
+@dataclass(frozen=True)
+class HistorySummary:
+    months: list[GoalHistoryMonth]
+    usable: bool
+    months_used: int
+    average_income: Optional[Decimal]
+    average_expenses: Optional[Decimal]
+    average_net: Optional[Decimal]
+    data_limitations: list[GoalHistoryLimitation]
+    analysis_period_start: date
+    analysis_period_end: date
+
+
+# Applies the rules above to the completed months (oldest first, at least one).
+def summarize_history(buckets: Sequence[IncomeExpenseTrendBucket]) -> HistorySummary:
     has_unresolved = any(
         bucket.unresolved_income_count > 0 or bucket.unresolved_expense_count > 0
         for bucket in buckets
@@ -116,7 +118,44 @@ def build_goal_history_comparison(
     if usable and active_count < len(buckets):
         limitations.append("months_without_activity_excluded")
 
-    limitations.extend(["budgets_not_modelled", "goal_commitments_not_modelled"])
+    return HistorySummary(
+        months=months,
+        usable=usable,
+        months_used=len(included),
+        average_income=average_income,
+        average_expenses=average_expenses,
+        average_net=average_net,
+        data_limitations=limitations,
+        analysis_period_start=buckets[0].period_start,
+        analysis_period_end=buckets[-1].period_end,
+    )
+
+
+# Builds the comparison of the Goal plan's required installment with the
+# recorded history of the completed months.
+# Parameters:
+# - goal_id / goal_currency: the Goal.
+# - base_currency: the currency the buckets are expressed in.
+# - required_per_installment: the Goal plan's installment, or None when the
+#   plan has none (any status other than ready).
+# - buckets: the completed months, oldest first (at least one).
+# - as_of: the server date, echoed back.
+# Returns:
+# - GoalHistoryComparisonResponse.
+def build_goal_history_comparison(
+    goal_id: UUID,
+    goal_currency: str,
+    base_currency: str,
+    required_per_installment: Optional[Decimal],
+    buckets: Sequence[IncomeExpenseTrendBucket],
+    as_of: date,
+) -> GoalHistoryComparisonResponse:
+    summary = summarize_history(buckets)
+    limitations: list[GoalHistoryLimitation] = [
+        *summary.data_limitations,
+        "budgets_not_modelled",
+        "goal_commitments_not_modelled",
+    ]
 
     status: GoalHistoryComparisonStatus
     difference: Optional[Decimal] = None
@@ -125,11 +164,11 @@ def build_goal_history_comparison(
         status = "no_required_installment"
     elif goal_currency != base_currency:
         status = "currency_mismatch"
-    elif not usable or average_net is None:
+    elif not summary.usable or summary.average_net is None:
         status = "insufficient_data"
     else:
         status = "comparable"
-        difference = average_net - required_per_installment
+        difference = summary.average_net - required_per_installment
 
     return GoalHistoryComparisonResponse(
         goal_id=goal_id,
@@ -138,14 +177,14 @@ def build_goal_history_comparison(
         base_currency=base_currency,
         status=status,
         limitations=limitations,
-        analysis_period_start=buckets[0].period_start,
-        analysis_period_end=buckets[-1].period_end,
-        months=months,
-        months_used=len(included),
-        average_monthly_income=average_income,
-        average_monthly_expenses=average_expenses,
-        average_monthly_net_flow=average_net,
+        analysis_period_start=summary.analysis_period_start,
+        analysis_period_end=summary.analysis_period_end,
+        months=summary.months,
+        months_used=summary.months_used,
+        average_monthly_income=summary.average_income,
+        average_monthly_expenses=summary.average_expenses,
+        average_monthly_net_flow=summary.average_net,
         required_per_installment=required_per_installment,
         historical_difference=difference,
-        difference_direction=None if difference is None else _direction(difference),
+        difference_direction=None if difference is None else difference_direction_of(difference),
     )

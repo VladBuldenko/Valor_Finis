@@ -23,7 +23,8 @@ import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getGoalErrorMessage } from "./goal-error-message";
 import { isZeroMoney } from "./goal-partitions";
-import { deleteGoal, getGoals } from "./goal.service";
+import { GoalSavingsOverviewSection } from "./goal-savings-overview-section";
+import { deleteGoal, getGoalSavingsOverview, getGoals } from "./goal.service";
 import { styles } from "./goals.styles";
 import type { Goal, GoalStatus } from "./goal.types";
 
@@ -86,7 +87,22 @@ export function GoalsScreen() {
     enabled: Boolean(session),
   });
   const goalProgress = goalProgressQuery.data ?? [];
-  const refresh = useScreenRefresh(() => [refetcherOf(goalsQuery), refetcherOf(goalProgressQuery)]);
+
+  // VF-GOALS-PLANNING-002B: the combined savings overview. Under the
+  // ["goals", userId] prefix, so every Goal change (create, edit, delete,
+  // priorities, contributions) refreshes it; Income and Expense changes do too
+  // (goal-cache.invalidateGoalHistoryQueries). Independent of the list: if it
+  // fails, only its own section shows the error and Retry.
+  const savingsOverviewQuery = useQuery({
+    queryKey: ["goals", session?.user.id, "savings-overview"],
+    queryFn: ({ signal }) => getGoalSavingsOverview(signal),
+    enabled: Boolean(session),
+  });
+  const refresh = useScreenRefresh(() => [
+    refetcherOf(goalsQuery),
+    refetcherOf(goalProgressQuery),
+    refetcherOf(savingsOverviewQuery),
+  ]);
 
   // goal_id on GoalProgressItem is the verified, reliable join key back to
   // a goal's own id -- the analytics service computes exactly one progress
@@ -172,6 +188,8 @@ export function GoalsScreen() {
             <Text style={styles.editButtonText}>Priorities</Text>
           </Pressable>
         </Link>
+
+        {listView === "current" ? <GoalSavingsOverviewSection query={savingsOverviewQuery} /> : null}
 
         <View style={styles.typeToggleRow}>
           <Pressable

@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { invalidateGoalHistoryQueries } from "../goals/goal-cache.ts";
 
 /**
  * Invalidates the server-state caches affected by a successful Expense
@@ -61,12 +62,10 @@ export function invalidateExpenseQueries(
     queryClient.invalidateQueries({
       queryKey: ["analytics", "income-expense-trend", userId],
     }),
-    // VF-GOALS-PLANNING-002A: every Goal's comparison with recorded history
-    // averages Income and Expenses, so it is re-read too. A prefix match on the
-    // comparison key only: the Goal plan and the Goal lists are unaffected.
-    queryClient.invalidateQueries({
-      queryKey: ["goals", userId, "history-comparison"],
-    }),
+    // VF-GOALS-PLANNING-002A/002B: every Goal's comparison with recorded history
+    // and the combined savings overview average Income and Expenses, so both
+    // are re-read. The Goal plan and the Goal lists are unaffected.
+    invalidateGoalHistoryQueries(queryClient, userId),
   ];
 
   if (touchedAccount) {

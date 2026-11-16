@@ -106,6 +106,28 @@ export const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 8,
   },
+  // VF-GOALS-PLANNING-002B: the Savings plans card shows long, data-driven
+  // sentences. On the iOS Simulator (iOS 26, Expo Go) paragraphs without an
+  // explicit line height were measured and drawn with different line counts, so
+  // the last line was clipped at the card's right edge ("...Update its d").
+  // An explicit lineHeight makes measuring and drawing agree and still scales
+  // with the user's text size (unlike allowFontScaling={false}).
+  overviewText: {
+    fontSize: 16,
+    lineHeight: 22,
+    marginTop: 8,
+  },
+  overviewHelperText: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 8,
+  },
+  overviewLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 20,
+    marginBottom: 2,
+  },
   input: {
     borderWidth: 1,
     borderRadius: 8,

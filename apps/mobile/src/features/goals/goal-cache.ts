@@ -46,3 +46,30 @@ export function invalidateGoalTransactionQueries(
 
   return Promise.all(invalidations);
 }
+
+/**
+ * Invalidates every Goal view that averages the user's recorded Income and
+ * Expenses (VF-GOALS-PLANNING-002A/002B): each Goal's comparison with its
+ * financial history and the combined savings overview. Called by the Income and
+ * Expense caches, because a change to either changes the recorded history.
+ *
+ * Prefix matches on these two keys only: the Goal lists, plans and transaction
+ * histories do not depend on Income or Expenses and are not re-read.
+ *
+ * Parameters:
+ * - queryClient: the app's TanStack QueryClient.
+ * - userId: the authenticated user's id (part of every query key).
+ */
+export function invalidateGoalHistoryQueries(
+  queryClient: QueryClient,
+  userId: string | undefined,
+): Promise<unknown> {
+  return Promise.all([
+    queryClient.invalidateQueries({
+      queryKey: ["goals", userId, "history-comparison"],
+    }),
+    queryClient.invalidateQueries({
+      queryKey: ["goals", userId, "savings-overview"],
+    }),
+  ]);
+}

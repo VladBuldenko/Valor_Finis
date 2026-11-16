@@ -1430,6 +1430,120 @@ historical_difference, difference_direction
 null unless "comparable"; direction is "surplus", "equal" or "shortfall"
 
 
+Goal savings overview (VF-GOALS-PLANNING-002B)
+
+GET /api/v1/goals/savings-overview
+
+Read-only and advisory: adds up the HYPOTHETICAL required installments of every
+planned Goal, month by month for 12 calendar months starting with the current
+one, and sets each month next to the user's RECORDED average monthly net flow
+of the last three COMPLETED months. It performs NO write (the base currency is
+read without the first-use settings bootstrap), takes no lock and creates,
+schedules, reserves and transfers nothing. These are required installments the
+Goal plan calculates, not scheduled payments, and the overview never says they
+are affordable. Authenticated and scoped to the caller's own Goals and records.
+No request body or parameters. 200 on success; an empty overview for a user
+with no Goals.
+
+Sources (nothing is recalculated independently): each Goal's installment is
+its own Goal plan (POST /goals/{goal_id}/plan, unchanged: one installment
+today, one on the 1st of each following month, none after the target date,
+rounded UP to the cent); the Goals and their tracked/linked amounts are one
+grouped read for all Goals (no per-Goal query); the history is the same
+analysis as the Goal history comparison (GET /goals/{goal_id}/plan/history-comparison)
+and the income-expense trend: Income and Expense records only, base-currency
+amounts only.
+
+Rules:
+
+- A Goal is planned only when it is active, expressed in the base currency, has
+  something left to fund (remaining_amount > 0) and a target date that is today
+  or later. Every other Goal is excluded, with exactly one reason, checked in
+  this order: archived, completed, already_funded (reached or overfunded),
+  no_target_date, target_date_passed, other_currency. A Goal without a future
+  target date is UNPLANNED; it is never counted as "zero savings needed".
+- A planned Goal contributes its required_per_installment in window month k
+  (0 = the current month) when k < installment_count, so it stops contributing
+  after its target date. The same installment is used in every month it
+  contributes. Each month's total_required is the exact sum of its
+  contributions; nothing is rounded again. The installment is rounded up per
+  Goal, so a Goal's installments may add up to a few cents more than its
+  remaining_amount.
+- Target amounts, tracked progress and linked reservations are never summed
+  into monthly totals: tracked_amount and linked_amount only reduce what
+  remains, and each is counted once. Existing reservations are not recurring
+  expenses.
+- Goals in another currency than the user's base currency are NEVER added or
+  converted. They are counted in exclusions.other_currency, their currencies are
+  listed, and is_total_complete is false (the totals are incomplete).
+- Budget limits are not subtracted from income or net flow. Enabled
+  income-allocation rules are not counted as future contributions. Future
+  recurring bills, Budget commitments and other obligations are not modelled.
+- The history uses the Goal history comparison's rules: a month "has activity"
+  with at least one resolved Income AND one resolved Expense; a month without
+  activity is left out of the averages (never counted as zero); any unresolved
+  Income/Expense in any of the three months makes the history unusable; at
+  least two active months are needed; averages are the exact Decimal sum /
+  months_used, rounded half-even to the cent.
+- A month's historical_difference = average_monthly_net_flow - THAT month's
+  total_required, set only when history.status is "comparable" and at least one
+  Goal has an installment in that month. It may be negative.
+- planned_goals (and each month's contributions) are in display order: the
+  Goal's priority_rank, 1 first.
+
+Response:
+
+Field
+
+Notes
+
+as_of, base_currency, horizon_months
+
+as_of is the server date; every figure is in base_currency; horizon_months is 12
+
+is_total_complete
+
+false when Goals in another currency were left out of the totals
+
+planned_goals
+
+goal_id, name, priority_rank, target_date, remaining_amount,
+installment_count, required_per_installment, first_installment_date,
+last_installment_date, continues_after_window (installments go on after the
+12-month window)
+
+months
+
+exactly 12, current month first: period_start, period_end, installment_date
+(as_of for the current month, else the 1st), total_required,
+planned_goal_count, contributions (goal_id, amount), historical_difference,
+difference_direction ("surplus", "equal" or "shortfall"; null with the
+difference)
+
+exclusions
+
+counts: archived, completed, already_funded, no_target_date,
+target_date_passed, other_currency; other_currencies (sorted currency codes)
+
+history
+
+status: "comparable", "insufficient_data" (planned Goals exist but the history
+is too thin or unresolved) or "no_planned_goals" (nothing to compare);
+analysis_period_start, analysis_period_end, months (three completed months,
+oldest first, shaped as in the Goal history comparison), months_used,
+average_monthly_income, average_monthly_expenses, average_monthly_net_flow
+(null unless usable)
+
+limitations
+
+always, last: "budgets_not_modelled", "goal_commitments_not_modelled",
+"future_obligations_not_modelled"; before them, as they apply (in this order):
+"unresolved_currency_data", "fewer_than_two_active_months",
+"months_without_activity_excluded" (history data quality; only when a Goal is
+planned), "other_currency_goals_excluded", "goals_without_target_date",
+"goals_with_passed_target_date"
+
+
 9. Receipts
 
 Base path:

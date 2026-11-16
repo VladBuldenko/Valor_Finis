@@ -273,3 +273,85 @@ export type GoalHistoryComparison = {
   historical_difference: string | null;
   difference_direction: GoalHistoryDifferenceDirection | null;
 };
+
+// VF-GOALS-PLANNING-002B: mirrors backend GoalSavingsOverviewResponse
+// (services/api/app/modules/goals/goal_savings_overview_schemas.py), the
+// read-only, advisory sum of every planned Goal's HYPOTHETICAL required
+// installment, month by month for 12 calendar months, set next to RECORDED
+// history, from GET /api/v1/goals/savings-overview. Amounts are the backend's
+// decimal strings, never parsed, added or compared as numbers on the device;
+// the status, direction, limitation codes and counts decide every sentence.
+export type GoalSavingsComparisonStatus = "comparable" | "insufficient_data" | "no_planned_goals";
+
+export type GoalSavingsLimitation =
+  | "unresolved_currency_data"
+  | "fewer_than_two_active_months"
+  | "months_without_activity_excluded"
+  | "other_currency_goals_excluded"
+  | "goals_without_target_date"
+  | "goals_with_passed_target_date"
+  | "budgets_not_modelled"
+  | "goal_commitments_not_modelled"
+  | "future_obligations_not_modelled";
+
+export type GoalSavingsPlannedGoal = {
+  goal_id: string;
+  name: string;
+  priority_rank: number | null;
+  target_date: string;
+  remaining_amount: string;
+  installment_count: number;
+  required_per_installment: string;
+  first_installment_date: string;
+  last_installment_date: string;
+  continues_after_window: boolean;
+};
+
+export type GoalSavingsContribution = {
+  goal_id: string;
+  amount: string;
+};
+
+export type GoalSavingsMonth = {
+  period_start: string;
+  period_end: string;
+  installment_date: string;
+  total_required: string;
+  planned_goal_count: number;
+  contributions: GoalSavingsContribution[];
+  historical_difference: string | null;
+  difference_direction: GoalHistoryDifferenceDirection | null;
+};
+
+export type GoalSavingsExclusions = {
+  archived: number;
+  completed: number;
+  already_funded: number;
+  no_target_date: number;
+  target_date_passed: number;
+  other_currency: number;
+  other_currencies: string[];
+};
+
+export type GoalSavingsHistory = {
+  status: GoalSavingsComparisonStatus;
+  analysis_period_start: string;
+  analysis_period_end: string;
+  months: GoalHistoryMonth[];
+  months_used: number;
+  average_monthly_income: string | null;
+  average_monthly_expenses: string | null;
+  average_monthly_net_flow: string | null;
+};
+
+export type GoalSavingsOverview = {
+  as_of: string;
+  base_currency: string;
+  horizon_months: number;
+  is_total_complete: boolean;
+  planned_goals: GoalSavingsPlannedGoal[];
+  months: GoalSavingsMonth[];
+  exclusions: GoalSavingsExclusions;
+  history: GoalSavingsHistory;
+  limitations: GoalSavingsLimitation[];
+};
