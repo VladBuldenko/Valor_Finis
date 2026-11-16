@@ -19,9 +19,17 @@ export type CreateFailure = {
   discardAttempt: boolean;
 };
 
+// The backend's idempotency-conflict code for each kind of record.
+const IDEMPOTENCY_CONFLICT_CODES = {
+  income: "income_idempotency_conflict",
+  expense: "expense_idempotency_conflict",
+  // Upcoming bills (VF-GOALS-PLANNING-002C1) are future obligations on the backend.
+  bill: "future_obligation_idempotency_conflict",
+} as const;
+
 export function describeCreateFailure(
   error: unknown,
-  noun: "income" | "expense",
+  noun: "income" | "expense" | "bill",
   fallbackMessage: string,
 ): CreateFailure {
   if (isApiError(error)) {
@@ -52,7 +60,7 @@ export function describeCreateFailure(
       };
     }
 
-    if (error.kind === "http" && error.status === 409 && error.code === `${noun}_idempotency_conflict`) {
+    if (error.kind === "http" && error.status === 409 && error.code === IDEMPOTENCY_CONFLICT_CODES[noun]) {
       return {
         title: `Create ${noun} failed`,
         message: `This entry clashes with an earlier submission. Check your ${noun} list, then try again.`,

@@ -32,10 +32,13 @@ this table and fails when a route is missing, when a "yes" is not backed by the 
 | `(app)/expenses/[id].tsx` | `features/expenses/expense-detail-screen.tsx` | form | expenses, categories, accounts | text-only errors | yes | not found | all three, Retry | n/a (form) | accounts | done |
 | `(app)/transfers/index.tsx` | `features/transfers/transfers-screen.tsx` | list | transfers, accounts | text-only error | yes | yes | yes | yes | accounts (names) | done |
 | `(app)/transfers/new.tsx` | `features/transfers/transfer-create-screen.tsx` | form | accounts | text-only error | yes | fewer than two | yes, stale-list notice has Retry | n/a (form) | — | done |
-| `(app)/goals/index.tsx` | `features/goals/goals-screen.tsx` | list | goals, goal progress | text-only error | yes | filter-aware | yes | yes | goal progress | done |
+| `(app)/goals/index.tsx` | `features/goals/goals-screen.tsx` | list | goals, goal progress, savings overview, upcoming bills | text-only error | yes | filter-aware | yes | yes (all 4) | goal progress, savings overview, upcoming bills (each with its own Retry) | done |
 | `(app)/goals/new.tsx` | `features/goals/goal-create-screen.tsx` | form | none | no reads | n/a | n/a | n/a | n/a | — | done |
 | `(app)/goals/[id]/index.tsx` | `features/goals/goal-detail-screen.tsx` | detail | goals, goal transactions, accounts | text-only errors | yes | transactions | goal, accounts, history | yes (form input untouched) | accounts | done |
 | `(app)/goals/[id]/edit.tsx` | `features/goals/goal-edit-screen.tsx` | form | goals | text-only error | yes | not found | yes | n/a (form) | — | done |
+| `(app)/goals/bills/index.tsx` | `features/future-obligations/future-obligations-screen.tsx` | list | upcoming bills projection, bills | new screen (VF-GOALS-PLANNING-002C1) | yes | filter-aware | yes (projection and list, each with its own Retry) | yes (both) | — | done |
+| `(app)/goals/bills/new.tsx` | `features/future-obligations/future-obligation-create-screen.tsx` | form | upcoming bills projection (base-currency hint only) | new screen | n/a | n/a | n/a (the hint is optional; the form works without it) | n/a (form) | base-currency hint | done |
+| `(app)/goals/bills/[id]/edit.tsx` | `features/future-obligations/future-obligation-edit-screen.tsx` | form | bills | new screen | yes | not found | yes; only when nothing is loaded | n/a (form) | — | done |
 | `(app)/goals/priorities.tsx` | `features/goals/goal-priorities-screen.tsx` | form | goals | text-only error that replaced an order being edited | yes | — | yes; only when nothing is loaded | n/a (draft order) | — | done |
 | `(app)/budgets/index.tsx` | `features/budgets/budgets-screen.tsx` | list | budgets, budget status | text-only errors | yes | yes | yes | yes | budget status | done |
 | `(app)/budgets/new.tsx` | `features/budgets/budget-create-screen.tsx` | form | categories | text-only error | yes | n/a | categories Retry | n/a (form) | — | done |
