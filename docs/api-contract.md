@@ -1257,6 +1257,87 @@ client_request_id
 the create request's idempotency key, or null when none was sent (and for
 all earlier history)
 
+Goal plan preview (VF-GOALS-PLANNING-001)
+
+POST /api/v1/goals/{goal_id}/plan
+
+Read-only and advisory: a preview of how much to set aside and, for a
+hypothetical monthly amount, roughly when the Goal could be reached. It
+performs NO write, takes no row lock, creates no transaction, reservation or
+schedule, and does not judge whether the plan is affordable (free cash flow
+is not modelled). POST only because the optional hypothetical amount travels
+in the body. Authenticated and ownership-scoped: another user's Goal is
+404 "Goal not found.", the same as every other Goal endpoint. 200 on success.
+
+Request (the body may be omitted or {}):
+
+{ "monthly_contribution": "150.00" }
+
+monthly_contribution is optional: >= 0, at most 2 decimal places, at most
+12 digits, finite. Anything else (negative, more precision, NaN/Infinity,
+not a number, unknown fields) is 422 before any calculation. Zero is valid
+and answered with outcome "no_contribution".
+
+Schedule (the one documented assumption): the first hypothetical installment
+is today (the server date); the following ones are the first day of each next
+calendar month; only installments on or before target_date count. All
+amounts have 2 decimal places; the required installment is rounded UP to the
+cent (exact integer-cent arithmetic).
+
+Response:
+
+Field
+
+Notes
+
+goal_id, currency, goal_status, as_of
+
+as_of is the server date the plan was worked out for
+
+target_amount, current_amount, tracked_amount, linked_amount
+
+current_amount is the Goal's ledger-derived amount (tracked + linked), the
+same value every Goal response returns; no second balance source. tracked is
+progress with no claim on any Account; linked is money reserved against
+Accounts (an earmark, never a bank transfer)
+
+remaining_amount
+
+max(target_amount - current_amount, 0); never negative
+
+overfunded_amount
+
+max(current_amount - target_amount, 0)
+
+target_date
+
+the Goal's target date or null
+
+plan_status
+
+"archived", "already_funded" (remaining is zero, reached or overfunded),
+"no_target_date", "target_date_passed", or "ready"
+
+installment_count, required_per_installment, first_installment_date,
+last_installment_date
+
+set only when plan_status is "ready"; otherwise null. A target date today or
+later this month is one installment (today)
+
+horizon_months
+
+600: the longest what-if projection
+
+what_if
+
+null unless monthly_contribution was sent. Otherwise: monthly_contribution;
+outcome "reaches_target", "no_contribution", "not_reachable_within_horizon",
+"already_funded" or "not_applicable" (archived Goal); installments_needed and
+estimated_completion_date (set only for "reaches_target"); and
+on_or_before_target_date (null without a usable target date or estimate). It
+is an estimate, never a guarantee
+
+
 9. Receipts
 
 Base path:

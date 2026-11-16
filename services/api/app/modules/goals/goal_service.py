@@ -35,6 +35,8 @@ from app.modules.goals.goal_errors import (
     GoalTransactionIdempotencyConflictError,
 )
 from app.modules.goals.goal_models import GoalModel
+from app.modules.goals.goal_plan_calculator import build_goal_plan
+from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
 from app.modules.goals.goal_schemas import (
     GoalAllocationResponse,
     GoalCreate,
@@ -1034,3 +1036,51 @@ def get_goal_transactions(
         GoalTransactionResponse.model_validate(transaction_model)
         for transaction_model in transaction_models
     ]
+
+
+# Returns a read-only planning preview of one Goal (VF-GOALS-PLANNING-001).
+# This function exists to put progress, the remaining amount, the required
+# installment up to the target date and an optional what-if estimate in front
+# of the user, all worked out on the backend from the Goal's EXISTING
+# ledger-derived partitions (the single balance source). It only reads: no
+# row is inserted, updated, locked or committed, and nothing is reserved or
+# scheduled. It is advisory and does not judge whether a plan is affordable.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: financial goal identifier.
+# - user_id: authenticated user identifier that owns the goal.
+# - plan_request: optional hypothetical monthly_contribution.
+# - as_of: optional reference "today"; defaults to date.today() (resolved once).
+# Returns:
+# - GoalPlanResponse.
+# Raises:
+# - GoalNotFoundError: when goal does not exist or does not belong to the user.
+def get_goal_plan(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+    plan_request: GoalPlanRequest,
+    as_of: Optional[date] = None,
+) -> GoalPlanResponse:
+    goal_model = goal_repository.get_goal_by_id(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=user_id,
+    )
+
+    goal = _build_goal_response(
+        goal_model,
+        _get_goal_partitions(db_session, goal_id, user_id),
+    )
+
+    return build_goal_plan(
+        goal_id=goal.id,
+        currency=goal.currency,
+        goal_status=goal.status,
+        target_amount=goal.target_amount,
+        tracked_amount=goal.tracked_amount,
+        linked_amount=goal.linked_amount,
+        target_date=goal.target_date,
+        monthly_contribution=plan_request.monthly_contribution,
+        as_of=as_of if as_of is not None else date.today(),
+    )
