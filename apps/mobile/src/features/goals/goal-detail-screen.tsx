@@ -27,7 +27,7 @@ import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import {
   normalizeGoalDecimalAmount,
-  validateGoalDecimalAmount,
+  validateGoalAmountInput,
 } from "./goal-amount-validation";
 import { invalidateGoalTransactionQueries } from "./goal-cache";
 import {
@@ -394,9 +394,7 @@ export function GoalDetailScreen() {
     );
   }
 
-  const amountValidationError = amount
-    ? validateGoalDecimalAmount(amount, "Amount")
-    : null;
+  const amountValidationError = validateGoalAmountInput(amount, "Amount");
   const availableTransactionTypes = getSubmittableTransactionTypes(goal.status);
   const selectedTransactionType = resolveSelectedTransactionType(
     goal.status,
@@ -646,6 +644,16 @@ export function GoalDetailScreen() {
               onChangeText={setAmount}
               keyboardType="decimal-pad"
             />
+
+            {amountValidationError ? (
+              <Text
+                style={styles.errorText}
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+              >
+                {amountValidationError}
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.formGroup}>

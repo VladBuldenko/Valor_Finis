@@ -1,4 +1,4 @@
-import { validateGoalDecimalAmount } from "./goal-amount-validation";
+import { validateGoalDecimalAmount } from "./goal-amount-validation.ts";
 
 export type GoalFormValues = {
   name: string;
