@@ -5,6 +5,7 @@ import type {
   Goal,
   GoalCreateInput,
   GoalHistoryComparison,
+  GoalSavingsOverview,
   GoalPlan,
   GoalTransaction,
   GoalTransactionCreated,
@@ -165,4 +166,20 @@ export async function getGoalHistoryComparison(
     `/api/v1/goals/${goalId}/plan/history-comparison`,
     { signal },
   );
+}
+
+/**
+ * Reads the combined Goal savings overview (VF-GOALS-PLANNING-002B): a plain,
+ * abortable GET with no parameters. It is read-only and advisory -- every Goal's
+ * hypothetical required installment, added up month by month and compared with
+ * recorded history -- and it schedules, reserves and moves nothing. Every
+ * figure, count and status is the backend's; the app does no money arithmetic
+ * for it.
+ */
+export async function getGoalSavingsOverview(
+  signal?: AbortSignal,
+): Promise<GoalSavingsOverview> {
+  return apiRequest<GoalSavingsOverview>("/api/v1/goals/savings-overview", {
+    signal,
+  });
 }
