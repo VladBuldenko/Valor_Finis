@@ -1,12 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Body, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.database_session import get_db_session
 from app.modules.auth.auth_dependencies import get_current_user
 from app.modules.auth.auth_schemas import CurrentUser
 from app.modules.goals import goal_service
+from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
 from app.modules.goals.goal_schemas import (
     GoalCreate,
     GoalPriorityReorderRequest,
@@ -244,4 +245,35 @@ def get_goal_transactions(
         db_session=db_session,
         goal_id=goal_id,
         user_id=current_user.id,
+    )
+
+
+# Returns a read-only planning preview of one Goal (VF-GOALS-PLANNING-001).
+# POST only because a hypothetical monthly_contribution may be supplied in the
+# body; the handler performs no persistent write. Advisory, not a guarantee.
+# Parameters:
+# - goal_id: financial goal identifier from the URL path.
+# - plan_request: optional body with a hypothetical monthly_contribution.
+# - current_user: authenticated user resolved from request authentication data.
+# - db_session: active SQLAlchemy session injected by FastAPI.
+# Returns:
+# - GoalPlanResponse.
+# Raises:
+# - GoalNotFoundError (404) for a missing or foreign Goal.
+@router.post(
+    "/{goal_id}/plan",
+    response_model=GoalPlanResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_goal_plan(
+    goal_id: UUID,
+    plan_request: GoalPlanRequest = Body(default_factory=GoalPlanRequest),
+    current_user: CurrentUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db_session),
+) -> GoalPlanResponse:
+    return goal_service.get_goal_plan(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=current_user.id,
+        plan_request=plan_request,
     )
