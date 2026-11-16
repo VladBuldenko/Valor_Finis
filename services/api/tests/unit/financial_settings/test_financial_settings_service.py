@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from app.db.database_session import SessionLocal
-from app.modules.financial_settings import financial_settings_service
+from app.modules.financial_settings import financial_settings_repository, financial_settings_service
 from app.modules.financial_settings.financial_settings_schemas import (
     UserFinancialSettingsResponse,
 )
@@ -128,5 +128,47 @@ def test_get_or_create_financial_settings_users_are_independent(
         assert settings_a.user_id != settings_b.user_id
         assert settings_a.base_currency == "EUR"
         assert settings_b.base_currency == "EUR"
+    finally:
+        db_session.close()
+
+
+# Tests that the read-only base currency never creates the settings row
+# (VF-GOALS-PLANNING-002A): a user with no row has the default, and nothing is
+# inserted - unlike get_base_currency, which bootstraps the row on first use.
+def test_get_base_currency_read_only_does_not_create_a_settings_row(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        currency = financial_settings_service.get_base_currency_read_only(
+            db_session=db_session,
+            user_id=user_id,
+        )
+        db_session.commit()
+
+        assert currency == "EUR"
+        assert financial_settings_repository.get_financial_settings(db_session, user_id) is None
+    finally:
+        db_session.close()
+
+
+# Tests that the read-only base currency returns a stored value, and is the
+# same value get_base_currency returns for that user.
+def test_get_base_currency_read_only_returns_the_stored_currency(
+    clean_database: None,
+) -> None:
+    db_session = SessionLocal()
+    user_id = uuid4()
+
+    try:
+        financial_settings_service.get_or_create_financial_settings(db_session=db_session, user_id=user_id)
+        row = financial_settings_repository.get_financial_settings(db_session, user_id)
+        row.base_currency = "USD"
+        db_session.commit()
+
+        assert financial_settings_service.get_base_currency_read_only(db_session=db_session, user_id=user_id) == "USD"
+        assert financial_settings_service.get_base_currency(db_session=db_session, user_id=user_id) == "USD"
     finally:
         db_session.close()

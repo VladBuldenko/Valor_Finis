@@ -1,3 +1,4 @@
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -55,6 +56,26 @@ def get_or_create_financial_settings(
     else:
         db_session.flush()
 
+    return (
+        db_session.query(UserFinancialSettingsModel)
+        .filter(UserFinancialSettingsModel.user_id == user_id)
+        .first()
+    )
+
+
+# Returns a user's financial settings without creating them.
+# This function exists for strictly read-only callers (VF-GOALS-PLANNING-002A):
+# get_or_create_financial_settings INSERTs and commits on a user's first
+# access, which a read-only endpoint must never do.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier that owns the settings row.
+# Returns:
+# - UserFinancialSettingsModel, or None when the user has no settings row yet.
+def get_financial_settings(
+    db_session: Session,
+    user_id: UUID,
+) -> Optional[UserFinancialSettingsModel]:
     return (
         db_session.query(UserFinancialSettingsModel)
         .filter(UserFinancialSettingsModel.user_id == user_id)

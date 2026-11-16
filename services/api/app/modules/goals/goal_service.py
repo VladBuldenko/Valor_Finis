@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.accounts import account_repository, account_service
+from app.modules.analytics import analytics_service
 from app.modules.financial_rules import financial_rule_repository, rule_execution_repository
 from app.modules.accounts.account_models import AccountModel
 from app.modules.accounts.account_errors import AccountArchivedError, AccountNotFoundError
@@ -35,6 +36,9 @@ from app.modules.goals.goal_errors import (
     GoalTransactionIdempotencyConflictError,
 )
 from app.modules.goals.goal_models import GoalModel
+from app.modules.financial_settings import financial_settings_service
+from app.modules.goals.goal_history_calculator import build_goal_history_comparison
+from app.modules.goals.goal_history_schemas import GoalHistoryComparisonResponse
 from app.modules.goals.goal_plan_calculator import build_goal_plan
 from app.modules.goals.goal_plan_schemas import GoalPlanRequest, GoalPlanResponse
 from app.modules.goals.goal_schemas import (
@@ -1083,4 +1087,71 @@ def get_goal_plan(
         target_date=goal.target_date,
         monthly_contribution=plan_request.monthly_contribution,
         as_of=as_of if as_of is not None else date.today(),
+    )
+
+
+# Number of completed calendar months the history comparison analyses.
+HISTORY_COMPARISON_MONTHS = 3
+
+
+# Compares a Goal's required installment with the user's recorded history
+# (VF-GOALS-PLANNING-002A).
+# This function exists to put the Goal plan's required installment next to
+# what the user's own recorded Income and Expenses averaged over the last
+# three COMPLETED months. It reuses, and does not reimplement, both sides:
+# the Goal plan (get_goal_plan, the one installment calculation) and the
+# income/expense trend (the one definition of Income, Expenses, "resolved" and
+# month boundaries). It only reads: the base currency is resolved without the
+# first-use bootstrap write, and no row is inserted, updated or committed.
+# The result is advisory and never a statement that a contribution is
+# affordable.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - goal_id: financial goal identifier.
+# - user_id: authenticated user identifier that owns the goal.
+# - as_of: optional reference "today"; defaults to date.today() (resolved once).
+# Returns:
+# - GoalHistoryComparisonResponse.
+# Raises:
+# - GoalNotFoundError: when goal does not exist or does not belong to the user.
+def get_goal_history_comparison(
+    db_session: Session,
+    goal_id: UUID,
+    user_id: UUID,
+    as_of: Optional[date] = None,
+) -> GoalHistoryComparisonResponse:
+    today = as_of if as_of is not None else date.today()
+
+    # Raises GoalNotFoundError first, so a foreign Goal never reaches analytics.
+    plan = get_goal_plan(
+        db_session=db_session,
+        goal_id=goal_id,
+        user_id=user_id,
+        plan_request=GoalPlanRequest(),
+        as_of=today,
+    )
+
+    base_currency = financial_settings_service.get_base_currency_read_only(
+        db_session=db_session,
+        user_id=user_id,
+    )
+
+    # One extra month: the last bucket is always the in-progress month, which
+    # is dropped - only completed months describe a whole month of activity.
+    trend = analytics_service.get_income_expense_trend(
+        db_session=db_session,
+        user_id=user_id,
+        count=HISTORY_COMPARISON_MONTHS + 1,
+        as_of=today,
+        base_currency=base_currency,
+    )
+    completed_months = [bucket for bucket in trend.buckets if bucket.is_complete]
+
+    return build_goal_history_comparison(
+        goal_id=plan.goal_id,
+        goal_currency=plan.currency,
+        base_currency=base_currency,
+        required_per_installment=plan.required_per_installment,
+        buckets=completed_months,
+        as_of=today,
     )
