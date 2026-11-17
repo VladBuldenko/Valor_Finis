@@ -168,6 +168,30 @@ def _respond(db_session: Session, rule_model: FinancialRuleModel):
     return _build_response(rule_model, targets)
 
 
+# Finishes a rule write: flushes it, reads the complete response and only THEN commits.
+# This function exists because every rule write holds the user lock L0 and the rule row
+# lock only until COMMIT. Reading the response after the commit (refresh, then _respond)
+# starts a new transaction with no lock, so another write could commit in between and the
+# caller would receive THAT write's state (a duplicated version, another status) although
+# the database itself is right (VF-RULE-VERSION-RESPONSE-RACE-001). Here the response is
+# an immutable Pydantic object built from the very state this transaction commits: the
+# locks guarantee that no other rule write can change the row or its targets before the
+# commit, so the response is exactly what was committed.
+# - flush first, so the database's own values (updated_at, active_since, ids) exist;
+# - refresh inside the transaction to load them, still holding the locks;
+# - commit last. Any failure, including the commit, reaches the caller's rollback, so a
+#   response is returned only for a write that committed.
+# No extra write, no second transaction and no extra version increment is involved, and
+# no lock is held across anything but these database calls.
+def _flush_respond_and_commit(db_session: Session, rule_model: FinancialRuleModel):
+    db_session.flush()
+    db_session.refresh(rule_model)
+    response = _respond(db_session, rule_model)
+    db_session.commit()
+
+    return response
+
+
 # ------------------------------------------------------------------
 # Reference validation (before relying on a foreign key failure)
 # ------------------------------------------------------------------
@@ -303,8 +327,7 @@ def create_rule(db_session: Session, rule_data: FinancialRuleCreate, user_id: UU
         for target_model in _target_models_from_inputs(rule_model.id, user_id, target_inputs):
             financial_rule_repository.add_target(db_session, target_model)
 
-        db_session.flush()
-        db_session.commit()
+        response = _flush_respond_and_commit(db_session, rule_model)
     except IntegrityError as error:
         db_session.rollback()
         raise _translate_integrity_error(error) from error
@@ -312,7 +335,7 @@ def create_rule(db_session: Session, rule_data: FinancialRuleCreate, user_id: UU
         db_session.rollback()
         raise
 
-    return _respond(db_session, rule_model)
+    return response
 
 
 # ------------------------------------------------------------------
@@ -497,9 +520,7 @@ def update_rule(db_session: Session, rule_id: UUID, update_data: FinancialRuleUp
                     rule_id=rule_model.id,
                 )
 
-        db_session.flush()
-        db_session.commit()
-        db_session.refresh(rule_model)
+        response = _flush_respond_and_commit(db_session, rule_model)
     except IntegrityError as error:
         db_session.rollback()
         raise _translate_integrity_error(error) from error
@@ -507,7 +528,7 @@ def update_rule(db_session: Session, rule_id: UUID, update_data: FinancialRuleUp
         db_session.rollback()
         raise
 
-    return _respond(db_session, rule_model)
+    return response
 
 
 # Replaces the target set in place: existing rows for a kept Goal are updated
@@ -620,14 +641,12 @@ def _transition(db_session: Session, rule_id: UUID, user_id: UUID, action: str):
             if rule_model.rule_type == RULE_TYPE_INCOME_ALLOCATION and rule_model.effective_from is None:
                 rule_model.effective_from = date.today()
 
-        db_session.flush()
-        db_session.commit()
-        db_session.refresh(rule_model)
+        response = _flush_respond_and_commit(db_session, rule_model)
     except Exception:
         db_session.rollback()
         raise
 
-    return _respond(db_session, rule_model)
+    return response
 
 
 def enable_rule(db_session: Session, rule_id: UUID, user_id: UUID):
