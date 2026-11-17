@@ -23,6 +23,13 @@ from tests.helpers import auth_headers, create_account, create_account_transacti
 
 TODAY = date(2026, 11, 16)
 
+# The date an Account's opening balance is as of. The backend defaults it to the REAL
+# current date, but these tests evaluate everything as of the frozen TODAY: an Account
+# opened "after" that date would have no balance to reserve from, and its opening
+# balance would even post after the 2026 ledger events below. A fixed date before every
+# other fixture keeps the test independent of the wall clock.
+OPENING_BALANCE_DATE = "2026-01-01"
+
 
 def _freeze(monkeypatch: pytest.MonkeyPatch, day: date) -> None:
     class FrozenDate(date):
@@ -339,7 +346,7 @@ class TestHistoricalData:
 class TestNoDoubleCounting:
     def test_progress_reservations_and_balances_are_never_income_expenses_or_monthly_obligations(self, client: TestClient, clean_database: None) -> None:
         user_id = str(uuid4())
-        account = create_account(client, user_id, opening_balance="5000.00")
+        account = create_account(client, user_id, opening_balance="5000.00", opening_balance_date=OPENING_BALANCE_DATE)
         goal = _goal(client, user_id, target="1000.00", target_date="2027-03-31")
         create_goal_transaction(client, user_id, goal["id"], amount=300)  # tracked progress
         reserved = client.post(

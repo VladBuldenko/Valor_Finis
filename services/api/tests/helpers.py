@@ -243,6 +243,7 @@ def create_account(
     type: str = "checking",
     currency: str = "EUR",
     opening_balance: Optional[str] = None,
+    opening_balance_date: Optional[str] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -252,6 +253,11 @@ def create_account(
 
     if opening_balance is not None:
         payload["opening_balance"] = opening_balance
+
+    # Without it the backend dates a non-zero opening balance with the REAL
+    # current date, which a test that freezes "today" must not depend on.
+    if opening_balance_date is not None:
+        payload["opening_balance_date"] = opening_balance_date
 
     response = client.post(
         "/api/v1/accounts",

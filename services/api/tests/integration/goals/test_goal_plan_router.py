@@ -16,6 +16,13 @@ from tests.helpers import auth_headers, create_account, create_goal, create_goal
 
 TODAY = date(2026, 11, 16)
 
+# The date an Account's opening balance is as of. The backend defaults it to the REAL
+# current date, but these tests evaluate everything as of the frozen TODAY: an Account
+# opened "after" that date would have no balance to reserve from, and its opening
+# balance would even post after the 2026 ledger events below. A fixed date before every
+# other fixture keeps the test independent of the wall clock.
+OPENING_BALANCE_DATE = "2026-01-01"
+
 
 class FrozenDate(date):
     @classmethod
@@ -99,7 +106,7 @@ class TestPlanResponse:
     def test_progress_is_the_ledger_derived_amount_with_tracked_and_linked_apart(self, client: TestClient, clean_database: None) -> None:
         user_id = str(uuid4())
         goal = _goal(client, user_id, target="1000.00")
-        account = create_account(client, user_id, opening_balance="800.00")
+        account = create_account(client, user_id, opening_balance="800.00", opening_balance_date=OPENING_BALANCE_DATE)
         create_goal_transaction(client, user_id, goal["id"], amount=300)  # tracked
         linked = client.post(
             f"/api/v1/goals/{goal['id']}/transactions",

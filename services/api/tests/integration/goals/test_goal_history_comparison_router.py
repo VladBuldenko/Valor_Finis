@@ -21,6 +21,13 @@ from tests.helpers import auth_headers, create_account, create_account_transacti
 
 TODAY = date(2026, 11, 16)
 
+# The date an Account's opening balance is as of. The backend defaults it to the REAL
+# current date, but these tests evaluate everything as of the frozen TODAY: an Account
+# opened "after" that date would have no balance to reserve from, and its opening
+# balance would even post after the 2026 ledger events below. A fixed date before every
+# other fixture keeps the test independent of the wall clock.
+OPENING_BALANCE_DATE = "2026-01-01"
+
 
 class FrozenDate(date):
     @classmethod
@@ -289,7 +296,7 @@ class TestNoDoubleCounting:
         _three_months(client, busy_user)
 
         # Everything that moves money but is NOT income or an expense:
-        main = create_account(client, busy_user, name="Main", opening_balance="5000.00")
+        main = create_account(client, busy_user, name="Main", opening_balance="5000.00", opening_balance_date=OPENING_BALANCE_DATE)
         savings = create_account(client, busy_user, name="Savings")
         create_account_transaction(client, busy_user, main["id"], amount="700.00", direction="credit", transaction_date="2026-09-10")
         create_account_transaction(client, busy_user, main["id"], amount="200.00", direction="debit", transaction_date="2026-10-10")
@@ -311,7 +318,7 @@ class TestNoDoubleCounting:
     def test_an_account_linked_income_and_expense_is_counted_once(self, client: TestClient, clean_database: None) -> None:
         user_id = str(uuid4())
         goal = _goal(client, user_id)
-        account = create_account(client, user_id, name="Main", opening_balance="1000.00")
+        account = create_account(client, user_id, name="Main", opening_balance="1000.00", opening_balance_date=OPENING_BALANCE_DATE)
         for month in ("2026-08-15", "2026-09-15", "2026-10-15"):
             _income(client, user_id, "3000.00", month, account_id=account["id"])
             _expense(client, user_id, "2400.00", month, account_id=account["id"])

@@ -4,7 +4,7 @@ from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from app.db.database_session import SessionLocal, engine
 from app.modules.accounts import account_service
@@ -206,3 +206,191 @@ def test_budget_delete_versus_budget_alert_create_is_consistent(client: TestClie
         else:
             assert isinstance(deleted, BudgetReferencedByRuleError), deleted
             assert budget_exists and rules == 1
+
+
+# ------------------------------------------------------------------
+# The response of a write is the state that write COMMITTED
+# (VF-RULE-VERSION-RESPONSE-RACE-001)
+# ------------------------------------------------------------------
+#
+# A write takes the user lock L0 and the rule row lock, but both end at COMMIT. If the
+# response were read AFTER the commit, a concurrent write could commit in between and the
+# first caller would receive the SECOND write's state (a duplicated version, "paused" for
+# an enable, ...), although the database itself is correct. The threaded test above can
+# only hit that window by luck, so these tests force it: a listener on the first
+# request's own session runs a second request to completion right after the first one's
+# commit has released its locks and before it builds its response.
+
+
+def _after_first_commit(session, action: Callable[[], Any]) -> None:
+    fired: list[bool] = []
+
+    def listener(_session) -> None:  # noqa: ANN001
+        if not fired:
+            fired.append(True)
+            action()
+
+    event.listen(session, "after_commit", listener)
+
+
+def _stored(rule_id: str) -> dict[str, Any]:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT version, status, floor_amount::text AS floor_amount FROM financial_rules WHERE id = :i"),
+            {"i": UUID(rule_id)},
+        ).one()
+
+    return {"version": row.version, "status": row.status, "floor_amount": row.floor_amount}
+
+
+def test_a_patch_returns_its_own_committed_version_even_if_another_patch_commits_right_after(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    rule = create_rule(client, user_id, floor_payload(account["id"], "1.00"))
+    second: list[Any] = []
+
+    def second_patch() -> None:
+        with SessionLocal() as other:
+            second.append(financial_rule_service.update_rule(
+                other, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal("20.00")), UUID(user_id),
+            ))
+
+    with SessionLocal() as session:
+        _after_first_commit(session, second_patch)
+        first = financial_rule_service.update_rule(
+            session, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal("10.00")), UUID(user_id),
+        )
+
+    # Each response is the state its own write committed ...
+    assert (first.version, first.floor_amount) == (2, Decimal("10.00"))
+    assert (second[0].version, second[0].floor_amount) == (3, Decimal("20.00"))
+    # ... and nothing was lost or incremented twice: two material edits, version 3.
+    assert _stored(rule["id"]) == {"version": 3, "status": "draft", "floor_amount": "20.00"}
+
+
+def test_a_status_transition_returns_the_status_it_committed_even_if_another_transition_follows(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    rule = create_rule(client, user_id, floor_payload(account["id"], "1.00"))
+    second: list[Any] = []
+
+    def pause() -> None:
+        with SessionLocal() as other:
+            second.append(financial_rule_service.pause_rule(other, UUID(rule["id"]), UUID(user_id)))
+
+    with SessionLocal() as session:
+        _after_first_commit(session, pause)
+        first = financial_rule_service.enable_rule(session, UUID(rule["id"]), UUID(user_id))
+
+    assert first.status == "enabled"
+    assert second[0].status == "paused"
+    assert _stored(rule["id"])["status"] == "paused"
+
+
+def test_a_create_returns_the_rule_it_committed_even_if_it_is_edited_right_after(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    second: list[Any] = []
+
+    def edit_the_new_rule() -> None:
+        with SessionLocal() as other:
+            rule_id = other.execute(text("SELECT id FROM financial_rules WHERE user_id = :u"), {"u": UUID(user_id)}).scalar_one()
+            second.append(financial_rule_service.update_rule(
+                other, rule_id, FinancialRuleUpdate(floor_amount=Decimal("20.00")), UUID(user_id),
+            ))
+
+    with SessionLocal() as session:
+        _after_first_commit(session, edit_the_new_rule)
+        created = financial_rule_service.create_rule(
+            session, financial_rule_create_adapter.validate_python(floor_payload(account["id"], "1.00")), UUID(user_id),
+        )
+
+    assert (created.version, created.floor_amount) == (1, Decimal("1.00"))
+    assert (second[0].version, second[0].floor_amount) == (2, Decimal("20.00"))
+    assert _stored(str(created.id))["version"] == 2
+
+
+def test_concurrent_material_patches_each_return_their_own_committed_state(client: TestClient, clean_database: None) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    rule = create_rule(client, user_id, floor_payload(account["id"], "1.00"))
+    values = [f"{10 + i}.00" for i in range(8)]
+
+    def patch(value: str):
+        def job():
+            with SessionLocal() as session:
+                return value, financial_rule_service.update_rule(
+                    session, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal(value)), UUID(user_id),
+                )
+        return job
+
+    results = _run_in_threads([patch(value) for value in values])
+
+    assert not [r for r in results if isinstance(r, Exception)], results
+    # Every caller gets the amount IT wrote, at a version no other caller got ...
+    assert all(response.floor_amount == Decimal(value) for value, response in results)
+    assert sorted(response.version for _, response in results) == list(range(2, 10))
+    # ... and the stored rule is the last of the eight serialized edits: nothing lost, nothing doubled.
+    stored = _stored(rule["id"])
+    assert stored["version"] == 9
+    assert stored["floor_amount"] == max(results, key=lambda item: item[1].version)[0]
+
+
+def test_a_non_material_patch_keeps_its_version_even_if_a_material_patch_commits_right_after(
+    client: TestClient, clean_database: None,
+) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    rule = create_rule(client, user_id, floor_payload(account["id"], "1.00", name="Before"))
+    second: list[Any] = []
+
+    def material_patch() -> None:
+        with SessionLocal() as other:
+            second.append(financial_rule_service.update_rule(
+                other, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal("20.00")), UUID(user_id),
+            ))
+
+    with SessionLocal() as session:
+        _after_first_commit(session, material_patch)
+        first = financial_rule_service.update_rule(session, UUID(rule["id"]), FinancialRuleUpdate(name="After"), UUID(user_id))
+
+    # A rename is not a material edit: version unchanged, and it reports its own state.
+    assert (first.name, first.version, first.floor_amount) == ("After", 1, Decimal("1.00"))
+    assert (second[0].version, second[0].floor_amount, second[0].name) == (2, Decimal("20.00"), "After")
+    assert _stored(rule["id"]) == {"version": 2, "status": "draft", "floor_amount": "20.00"}
+
+
+def test_a_failing_commit_rolls_back_and_returns_no_response(client: TestClient, clean_database: None) -> None:
+    user_id = str(uuid4())
+    account = create_account(client, user_id)
+    rule = create_rule(client, user_id, floor_payload(account["id"], "1.00"))
+
+    def failing_commit(_session) -> None:  # noqa: ANN001
+        raise RuntimeError("commit refused")
+
+    with SessionLocal() as session:
+        event.listen(session, "before_commit", failing_commit)
+        try:
+            financial_rule_service.update_rule(
+                session, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal("10.00")), UUID(user_id),
+            )
+        except RuntimeError as error:
+            assert str(error) == "commit refused"
+        else:
+            raise AssertionError("a response was returned for a write that did not commit")
+
+    assert _stored(rule["id"]) == {"version": 1, "status": "draft", "floor_amount": "1.00"}
+
+    # The locks were released by the rollback: the next write goes straight through.
+    with SessionLocal() as session:
+        again = financial_rule_service.update_rule(
+            session, UUID(rule["id"]), FinancialRuleUpdate(floor_amount=Decimal("11.00")), UUID(user_id),
+        )
+
+    assert (again.version, again.floor_amount) == (2, Decimal("11.00"))
