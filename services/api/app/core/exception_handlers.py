@@ -84,6 +84,12 @@ from app.modules.goals.goal_errors import (
     GoalTransactionEffectiveDateInFutureError,
     GoalTransactionIdempotencyConflictError,
 )
+from app.modules.future_obligations.future_obligation_errors import (
+    FutureObligationIdempotencyConflictError,
+    FutureObligationLimitReachedError,
+    FutureObligationNotFoundError,
+    FutureObligationScheduleInvalidError,
+)
 from app.modules.income.income_errors import (
     IncomeAccountCurrencyMismatchError,
     IncomeFutureDatedNotSupportedError,
@@ -351,6 +357,22 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_409_CONFLICT,
         "client_request_id has already been used for a different income.",
     ),
+    FutureObligationNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Future obligation not found.",
+    ),
+    FutureObligationScheduleInvalidError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "A one-time obligation cannot have a final due date, and a final due date cannot be before the first due date.",
+    ),
+    FutureObligationLimitReachedError: (
+        status.HTTP_409_CONFLICT,
+        "You have reached the maximum number of active future obligations. Archive one to add another.",
+    ),
+    FutureObligationIdempotencyConflictError: (
+        status.HTTP_409_CONFLICT,
+        "client_request_id has already been used for a different future obligation.",
+    ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Receipt not found.",
@@ -466,6 +488,10 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     IncomeFutureDatedNotSupportedError: "income_future_dated_not_supported",
     IncomeAccountCurrencyMismatchError: "income_account_currency_mismatch",
     IncomeIdempotencyConflictError: "income_idempotency_conflict",
+    FutureObligationNotFoundError: "future_obligation_not_found",
+    FutureObligationScheduleInvalidError: "future_obligation_schedule_invalid",
+    FutureObligationLimitReachedError: "future_obligation_limit_reached",
+    FutureObligationIdempotencyConflictError: "future_obligation_idempotency_conflict",
     ReceiptNotFoundError: "receipt_not_found",
     ReceiptExpenseNotFoundError: "receipt_expense_not_found",
     ReceiptFileEmptyError: "receipt_file_empty",

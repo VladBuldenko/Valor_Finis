@@ -23,6 +23,8 @@ import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
 import { useAuth } from "../auth/auth-context";
 import { getGoalErrorMessage } from "./goal-error-message";
 import { isZeroMoney } from "./goal-partitions";
+import { getUpcomingObligations } from "../future-obligations/future-obligation.service";
+import { UpcomingBillsCard } from "../future-obligations/upcoming-bills-card";
 import { GoalSavingsOverviewSection } from "./goal-savings-overview-section";
 import { deleteGoal, getGoalSavingsOverview, getGoals } from "./goal.service";
 import { styles } from "./goals.styles";
@@ -98,10 +100,20 @@ export function GoalsScreen() {
     queryFn: ({ signal }) => getGoalSavingsOverview(signal),
     enabled: Boolean(session),
   });
+
+  // VF-GOALS-PLANNING-002C1: the upcoming-bills summary. A separate planning category
+  // with its own cache family (["future-obligations", userId, ...]), refreshed only
+  // by bill changes and pull-to-refresh: Goal changes do not touch it.
+  const upcomingBillsQuery = useQuery({
+    queryKey: ["future-obligations", session?.user.id, "upcoming"],
+    queryFn: ({ signal }) => getUpcomingObligations(signal),
+    enabled: Boolean(session),
+  });
   const refresh = useScreenRefresh(() => [
     refetcherOf(goalsQuery),
     refetcherOf(goalProgressQuery),
     refetcherOf(savingsOverviewQuery),
+    refetcherOf(upcomingBillsQuery),
   ]);
 
   // goal_id on GoalProgressItem is the verified, reliable join key back to
@@ -190,6 +202,8 @@ export function GoalsScreen() {
         </Link>
 
         {listView === "current" ? <GoalSavingsOverviewSection query={savingsOverviewQuery} /> : null}
+
+        {listView === "current" ? <UpcomingBillsCard query={upcomingBillsQuery} /> : null}
 
         <View style={styles.typeToggleRow}>
           <Pressable

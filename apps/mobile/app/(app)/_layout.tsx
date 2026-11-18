@@ -136,6 +136,24 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="goals/bills/index"
+        options={{
+          title: "Upcoming Bills",
+        }}
+      />
+      <Stack.Screen
+        name="goals/bills/new"
+        options={{
+          title: "Add Bill",
+        }}
+      />
+      <Stack.Screen
+        name="goals/bills/[id]/edit"
+        options={{
+          title: "Edit Bill",
+        }}
+      />
+      <Stack.Screen
         name="goals/[id]/index"
         options={{
           title: "Goal",

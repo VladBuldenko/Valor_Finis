@@ -28,6 +28,9 @@ from app.modules.financial_rules.financial_rule_errors import (
 )
 from app.modules.expenses.expenses_errors import ExpenseClientRequestIdTakenError
 from app.modules.goals.goal_errors import GoalTransactionClientRequestIdTakenError
+from app.modules.future_obligations.future_obligation_errors import (
+    FutureObligationClientRequestIdTakenError,
+)
 from app.modules.income.income_errors import IncomeClientRequestIdTakenError
 
 API_ROOT = Path(__file__).resolve().parents[3]
@@ -115,6 +118,7 @@ def test_internal_only_signals_have_no_public_code() -> None:
         GoalTransactionClientRequestIdTakenError,
         IncomeClientRequestIdTakenError,
         ExpenseClientRequestIdTakenError,
+        FutureObligationClientRequestIdTakenError,
     ):
         assert internal_error not in DOMAIN_ERROR_CODES
         assert internal_error not in DOMAIN_ERROR_RESPONSES

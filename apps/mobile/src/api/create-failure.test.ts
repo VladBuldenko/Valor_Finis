@@ -76,4 +76,27 @@ describe("create failure wording", () => {
     assert.equal(failure.message, "Unable to create income.");
     assert.equal(failure.outcomeUnknown, false);
   });
+
+  // VF-GOALS-PLANNING-002C1: an upcoming bill is a future obligation on the backend.
+  it("handles a bill create: an unknown outcome is never reported as not saved", () => {
+    const failure = describeCreateFailure(new ApiError({ kind: "network", message: "Network request failed" }), "bill", "Unable to save the bill.");
+
+    assert.equal(failure.outcomeUnknown, true);
+    assert.equal(failure.discardAttempt, false);
+    assert.match(failure.message, /could not confirm whether the bill was saved/i);
+    assert.doesNotMatch(failure.message, /not saved|did not save/i);
+  });
+
+  it("drops a bill's key only for the future obligation's own idempotency conflict", () => {
+    const conflict = new ApiError({ kind: "http", message: "x", status: 409, code: "future_obligation_idempotency_conflict" });
+    const incomeConflict = new ApiError({ kind: "http", message: "x", status: 409, code: "income_idempotency_conflict" });
+    const limit = httpApiError("http", 409, '{"detail":"You have reached the maximum number of active future obligations. Archive one to add another.","code":"future_obligation_limit_reached"}');
+
+    assert.equal(describeCreateFailure(conflict, "bill", "x").discardAttempt, true);
+    assert.equal(describeCreateFailure(incomeConflict, "bill", "x").discardAttempt, false);
+    assert.equal(describeCreateFailure(conflict, "income", "x").discardAttempt, false);
+    assert.equal(describeCreateFailure(limit, "bill", "x").discardAttempt, false);
+    assert.match(describeCreateFailure(limit, "bill", "x").message, /maximum number of active/);
+    assert.doesNotMatch(describeCreateFailure(conflict, "bill", "x").message, /client_request_id|uuid/i);
+  });
 });

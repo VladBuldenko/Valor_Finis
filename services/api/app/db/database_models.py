@@ -48,6 +48,9 @@ def import_database_models() -> None:
     from app.modules.financial_settings.financial_settings_models import (
         UserFinancialSettingsModel,
     )
+    from app.modules.future_obligations.future_obligation_models import (
+        FutureObligationModel,
+    )
     from app.modules.goals.goal_models import GoalModel
     from app.modules.goals.goal_transaction_models import GoalTransactionModel
     from app.modules.income.income_models import IncomeModel
@@ -70,6 +73,7 @@ def import_database_models() -> None:
         RuleExecutionItemModel,
         RuleExecutionModel,
         UserFinancialSettingsModel,
+        FutureObligationModel,
         GoalModel,
         GoalTransactionModel,
         IncomeModel,
