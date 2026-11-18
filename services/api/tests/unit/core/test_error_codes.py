@@ -30,6 +30,7 @@ from app.modules.expenses.expenses_errors import ExpenseClientRequestIdTakenErro
 from app.modules.goals.goal_errors import GoalTransactionClientRequestIdTakenError
 from app.modules.future_obligations.future_obligation_errors import (
     FutureObligationClientRequestIdTakenError,
+    FutureObligationLinkUniqueViolationError,
 )
 from app.modules.income.income_errors import IncomeClientRequestIdTakenError
 
@@ -119,6 +120,7 @@ def test_internal_only_signals_have_no_public_code() -> None:
         IncomeClientRequestIdTakenError,
         ExpenseClientRequestIdTakenError,
         FutureObligationClientRequestIdTakenError,
+        FutureObligationLinkUniqueViolationError,
     ):
         assert internal_error not in DOMAIN_ERROR_CODES
         assert internal_error not in DOMAIN_ERROR_RESPONSES

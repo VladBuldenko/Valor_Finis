@@ -222,10 +222,12 @@ def test_orm_metadata_matches_the_migrated_schema_exactly(migrated_database: Eng
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         differences = compare_metadata(context, Base.metadata)
 
-    # The only remaining differences belong to the LATER future_obligations stage
-    # (VF-GOALS-PLANNING-002C1): its table, constraints and index.
+    # The only remaining differences belong to the LATER future_obligations stages
+    # (VF-GOALS-PLANNING-002C1) and the reconciliation link table (002C2): their tables,
+    # constraints and indexes.
+    later_stage_names = ("future_obligations", "future_obligation_expense_links", "future_obligation_links")
     assert exclude_stages_after(differences, REVISION) == []
-    assert all("future_obligations" in repr(difference) for difference in differences)
+    assert all(any(name in repr(difference) for name in later_stage_names) for difference in differences)
 
 
 def test_previous_revision_differs_only_by_the_new_objects(previous_database: Engine) -> None:

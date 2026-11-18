@@ -101,6 +101,10 @@
       "code": "expense_idempotency_conflict",
       "status": 409
     },
+    "ExpenseLinkedToFutureObligationError": {
+      "code": "expense_linked_to_future_obligation",
+      "status": 409
+    },
     "ExpenseNotFoundError": {
       "code": "expense_not_found",
       "status": 404
@@ -137,6 +141,10 @@
       "code": "financial_rule_subject_archived",
       "status": 409
     },
+    "FutureObligationHasLinkedOccurrencesError": {
+      "code": "future_obligation_has_linked_occurrences",
+      "status": 409
+    },
     "FutureObligationIdempotencyConflictError": {
       "code": "future_obligation_idempotency_conflict",
       "status": 409
@@ -145,9 +153,37 @@
       "code": "future_obligation_limit_reached",
       "status": 409
     },
+    "FutureObligationLinkAmountMismatchError": {
+      "code": "future_obligation_link_amount_mismatch",
+      "status": 422
+    },
+    "FutureObligationLinkCurrencyMismatchError": {
+      "code": "future_obligation_link_currency_mismatch",
+      "status": 422
+    },
+    "FutureObligationLinkExpenseAlreadyLinkedError": {
+      "code": "future_obligation_link_expense_already_linked",
+      "status": 409
+    },
+    "FutureObligationLinkExpenseDateError": {
+      "code": "future_obligation_link_expense_date_invalid",
+      "status": 422
+    },
+    "FutureObligationLinkNotFoundError": {
+      "code": "future_obligation_link_not_found",
+      "status": 404
+    },
+    "FutureObligationLinkOccurrenceAlreadyLinkedError": {
+      "code": "future_obligation_link_occurrence_already_linked",
+      "status": 409
+    },
     "FutureObligationNotFoundError": {
       "code": "future_obligation_not_found",
       "status": 404
+    },
+    "FutureObligationOccurrenceInvalidError": {
+      "code": "future_obligation_occurrence_invalid",
+      "status": 422
     },
     "FutureObligationScheduleInvalidError": {
       "code": "future_obligation_schedule_invalid",

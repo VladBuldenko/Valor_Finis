@@ -85,9 +85,18 @@ from app.modules.goals.goal_errors import (
     GoalTransactionIdempotencyConflictError,
 )
 from app.modules.future_obligations.future_obligation_errors import (
+    ExpenseLinkedToFutureObligationError,
+    FutureObligationHasLinkedOccurrencesError,
     FutureObligationIdempotencyConflictError,
     FutureObligationLimitReachedError,
+    FutureObligationLinkAmountMismatchError,
+    FutureObligationLinkCurrencyMismatchError,
+    FutureObligationLinkExpenseAlreadyLinkedError,
+    FutureObligationLinkExpenseDateError,
+    FutureObligationLinkNotFoundError,
+    FutureObligationLinkOccurrenceAlreadyLinkedError,
     FutureObligationNotFoundError,
+    FutureObligationOccurrenceInvalidError,
     FutureObligationScheduleInvalidError,
 )
 from app.modules.income.income_errors import (
@@ -373,6 +382,43 @@ DOMAIN_ERROR_RESPONSES: Dict[
         status.HTTP_409_CONFLICT,
         "client_request_id has already been used for a different future obligation.",
     ),
+    # VF-GOALS-PLANNING-002C2: manual reconciliation of a bill occurrence with an Expense.
+    FutureObligationOccurrenceInvalidError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "That date is not an occurrence of this bill, or the bill is archived.",
+    ),
+    FutureObligationLinkCurrencyMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "The expense must be in the same currency as the bill to be linked.",
+    ),
+    FutureObligationLinkAmountMismatchError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "The expense amount must be exactly the bill amount to be linked.",
+    ),
+    FutureObligationLinkExpenseDateError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "An expense recorded after today cannot be linked to a bill.",
+    ),
+    FutureObligationLinkExpenseAlreadyLinkedError: (
+        status.HTTP_409_CONFLICT,
+        "This expense is already linked to a bill occurrence. Remove that link first.",
+    ),
+    FutureObligationLinkOccurrenceAlreadyLinkedError: (
+        status.HTTP_409_CONFLICT,
+        "This bill occurrence already has a linked expense. Remove that link first.",
+    ),
+    FutureObligationLinkNotFoundError: (
+        status.HTTP_404_NOT_FOUND,
+        "Link not found.",
+    ),
+    ExpenseLinkedToFutureObligationError: (
+        status.HTTP_409_CONFLICT,
+        "This expense is linked to a bill. Remove the link before deleting it or changing its amount, currency or date.",
+    ),
+    FutureObligationHasLinkedOccurrencesError: (
+        status.HTTP_409_CONFLICT,
+        "This bill has linked expenses. Remove the affected links before changing its amount, currency or dates.",
+    ),
     ReceiptNotFoundError: (
         status.HTTP_404_NOT_FOUND,
         "Receipt not found.",
@@ -492,6 +538,15 @@ DOMAIN_ERROR_CODES: Dict[Type[Exception], str] = {
     FutureObligationScheduleInvalidError: "future_obligation_schedule_invalid",
     FutureObligationLimitReachedError: "future_obligation_limit_reached",
     FutureObligationIdempotencyConflictError: "future_obligation_idempotency_conflict",
+    FutureObligationOccurrenceInvalidError: "future_obligation_occurrence_invalid",
+    FutureObligationLinkCurrencyMismatchError: "future_obligation_link_currency_mismatch",
+    FutureObligationLinkAmountMismatchError: "future_obligation_link_amount_mismatch",
+    FutureObligationLinkExpenseDateError: "future_obligation_link_expense_date_invalid",
+    FutureObligationLinkExpenseAlreadyLinkedError: "future_obligation_link_expense_already_linked",
+    FutureObligationLinkOccurrenceAlreadyLinkedError: "future_obligation_link_occurrence_already_linked",
+    FutureObligationLinkNotFoundError: "future_obligation_link_not_found",
+    ExpenseLinkedToFutureObligationError: "expense_linked_to_future_obligation",
+    FutureObligationHasLinkedOccurrencesError: "future_obligation_has_linked_occurrences",
     ReceiptNotFoundError: "receipt_not_found",
     ReceiptExpenseNotFoundError: "receipt_expense_not_found",
     ReceiptFileEmptyError: "receipt_file_empty",
