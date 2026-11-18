@@ -31,6 +31,7 @@ from app.modules.financial_settings.financial_settings_models import (
 )
 from app.modules.goals.goal_models import GoalModel
 from app.modules.goals.goal_transaction_models import GoalTransactionModel
+from app.modules.future_obligations.future_obligation_link_models import FutureObligationExpenseLinkModel
 from app.modules.future_obligations.future_obligation_models import FutureObligationModel
 from app.modules.income.income_models import IncomeModel
 from app.modules.receipts.receipt_models import ReceiptModel
@@ -113,6 +114,7 @@ OPTIONAL_E6_TABLES = frozenset({
 
 # Deletion order that satisfies every foreign key (children first).
 _CLEANUP_MODELS = (
+    FutureObligationExpenseLinkModel,
     ReceiptModel,
     ExpenseModel,
     FinancialEventModel,

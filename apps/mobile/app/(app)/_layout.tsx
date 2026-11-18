@@ -154,6 +154,18 @@ export default function AppLayout() {
         }}
       />
       <Stack.Screen
+        name="goals/bills/links"
+        options={{
+          title: "Linked Expenses",
+        }}
+      />
+      <Stack.Screen
+        name="goals/bills/occurrence"
+        options={{
+          title: "Bill Date",
+        }}
+      />
+      <Stack.Screen
         name="goals/[id]/index"
         options={{
           title: "Goal",

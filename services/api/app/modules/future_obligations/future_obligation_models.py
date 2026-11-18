@@ -107,6 +107,10 @@ class FutureObligationModel(Base):
             "(client_request_id IS NULL) = (client_request_fingerprint IS NULL)",
             name="ck_future_obligations_client_request_all_or_none",
         ),
+        # Composite-unique FK target (VF-GOALS-PLANNING-002C2): lets a reconciliation
+        # link carry an (obligation_id, user_id) -> future_obligations(id, user_id)
+        # foreign key, so a link to another user's obligation cannot be stored.
+        UniqueConstraint("id", "user_id", name="uq_future_obligations_id_user_id"),
         # The two reads: the list and the bounded projection both filter by user
         # and, for the projection, by status.
         Index("ix_future_obligations_user_id_status", "user_id", "status"),

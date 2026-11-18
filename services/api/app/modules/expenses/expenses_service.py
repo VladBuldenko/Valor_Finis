@@ -25,6 +25,7 @@ from app.modules.expenses.expenses_schemas import (
 )
 from app.modules.financial_settings import financial_settings_service
 from app.modules.fx import fx_service
+from app.modules.future_obligations import future_obligation_link_service
 
 BASE_AMOUNT_DECIMAL_PLACES = Decimal("0.01")
 
@@ -570,6 +571,21 @@ def update_expense(
         expense_data.amount if "amount" in fields_set else expense_model.amount
     )
 
+    # VF-GOALS-PLANNING-002C2: an Expense linked to a bill occurrence keeps the
+    # amount, currency and (past or present) date the link was made with. The
+    # check runs under the Expense row lock taken above, and a link can only be
+    # created under that same lock, so it cannot go stale. Any other edit passes.
+    # It runs before FX resolution, so a refused change never calls the provider.
+    future_obligation_link_service.ensure_expense_change_allowed(
+        db_session=db_session,
+        user_id=user_id,
+        expense=expense_model,
+        final_amount=final_amount,
+        final_currency=final_currency,
+        final_expense_date=final_expense_date,
+        today=date.today(),
+    )
+
     # FX resolution (if needed) happens before any Account lock is taken.
     if not monetary_fields_changed:
         # Metadata-only update: the snapshot (resolved or unresolved) is
@@ -758,6 +774,15 @@ def delete_expense(
         db_session=db_session,
         expense_id=expense_id,
         user_id=user_id,
+    )
+
+    # VF-GOALS-PLANNING-002C2: a linked Expense must be unlinked before it is
+    # deleted (the link table's foreign key would refuse it anyway). Checked under
+    # the Expense row lock.
+    future_obligation_link_service.ensure_expense_can_be_deleted(
+        db_session=db_session,
+        user_id=user_id,
+        expense_id=expense_id,
     )
 
     current_projection = account_transaction_repository.get_expense_projection(

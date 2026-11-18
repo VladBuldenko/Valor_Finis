@@ -16,6 +16,7 @@ from app.modules.expenses.expenses_schemas import (
 )
 from app.modules.fx.fx_errors import FxRateUnavailableError
 from app.modules.fx.fx_schemas import FxRateResult
+from app.modules.future_obligations import future_obligation_link_repository
 
 
 # A minimal fake Session used across this file: real DB calls are always
@@ -25,6 +26,17 @@ from app.modules.fx.fx_schemas import FxRateResult
 # enough - it needs those two no-op methods.
 def _fake_db_session() -> SimpleNamespace:
     return SimpleNamespace(commit=lambda: None, refresh=lambda obj: None)
+
+
+# VF-GOALS-PLANNING-002C2: update and delete now ask whether the Expense is linked to a bill
+# occurrence. These unit tests fake the repositories and pass a session stand-in, so
+# the answer is faked too: an unlinked Expense, which leaves every flow below as it was.
+# The linked case is covered by tests/unit/future_obligations/test_future_obligation_link_guards.py
+# and by the integration tests.
+@pytest.fixture(autouse=True)
+def expense_is_not_linked(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(future_obligation_link_repository, "get_by_expense", lambda *args, **kwargs: None)
+
 
 
 def _make_existing_expense(

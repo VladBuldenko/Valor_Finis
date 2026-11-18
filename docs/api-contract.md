@@ -3278,9 +3278,106 @@ input. It is not subtracted from historical net cash flow, no "free cash" or
 affordability figure is derived from it, no historical Expense is matched to an
 obligation, Budget limits are not treated as payments, Goal reservations and
 Smart Rule allocations are not Expenses, and recording an Expense never marks an
-obligation as paid. Any reconciliation or incremental-adjustment model needs its
-own explicit contract (a later task). The Goal plan, the Goal history comparison
+obligation as paid. An Expense can be linked to one occurrence BY HAND (section
+12B); a link is metadata and changes none of these figures. The Goal plan, the Goal history comparison
 and the Goal savings overview are unchanged by this domain.
+
+12B. Future Obligation Reconciliation (VF-GOALS-PLANNING-002C2)
+
+A link says: "this recorded Expense corresponds to this scheduled bill
+occurrence." It is relationship metadata the user chooses. It does NOT mean the
+bank payment was verified, that money was transferred, that an Account balance
+changed, that the bill was paid by this feature, or that the Expense should be
+counted again. Linking creates no Expense and no Account transaction, changes no
+balance, Goal progress, reservation, Smart Rule, income/expense analytics or
+historical net flow, and never changes the Upcoming Bills schedule or totals
+(a linked occurrence still counts in them: nothing is subtracted). Nothing is
+matched automatically: no names, amounts, dates or AI suggestions are used to
+link records.
+
+Occurrence identity. An occurrence is (obligation_id, due_date). Different months
+of a monthly bill are different occurrences, and the dates come from the same
+anchored recurrence as the projection (section 12A), so a month-end bill's due
+date is its clamped one (anchor 31: 2027-02-28, and 2028-02-29 in a leap year; the
+27th is not an occurrence). Occurrences are not stored: only a link is.
+
+All routes are authenticated and scoped to the caller; another user's obligation,
+Expense or link is reported exactly like a missing one.
+
+POST /future-obligations/{obligation_id}/occurrence-links
+  Body (unknown fields are 422): due_date (an occurrence of the obligation),
+  expense_id (the caller's own Expense).
+  201 with the new link, or 200 with the existing identical link (idempotent: the
+  same occurrence and the same Expense again creates nothing).
+  Response: id, obligation_id, due_date, expense_id, created_at.
+
+DELETE /future-obligations/{obligation_id}/occurrence-links/{link_id}
+  204. The Expense and the obligation are not changed. A missing or already
+  removed link, or a link of another obligation, is 404 future_obligation_link_not_found.
+
+GET /future-obligations/reconciliation
+  Read-only, bounded overview of the three completed months before the current
+  month, the current month, and the 12-month planning horizon (so window_start is
+  the first day of the month three months back and window_end the last day of the
+  12th month of the projection window). Response: as_of, window_start, window_end,
+  occurrences (ordered by due_date, then name, then obligation id): obligation_id,
+  name, schedule, obligation_status ("active" or "archived"), due_date, amount,
+  currency, is_past (due_date before as_of) and linked_expense (null, or link_id,
+  expense_id, title, expense_date, amount, currency, linked_at). Active
+  obligations contribute their scheduled occurrences; an archived obligation
+  contributes only occurrences that already have a link. A null linked_expense only
+  means no Expense is linked: it is not a statement that the bill is unpaid, due
+  or overdue.
+
+GET /future-obligations/{obligation_id}/occurrence-candidates?due_date=YYYY-MM-DD
+  Read-only list for the picker. candidates: the caller's Expenses with the same
+  currency and exactly the same amount that are not linked and are dated on or
+  before today, newest first, at most candidate_limit (50). excluded: counts of
+  the caller's other Expenses by the FIRST reason that applies (different_currency,
+  different_amount, already_linked, dated_in_future). The list is ordered by date
+  only: nothing is ranked, scored or matched by name. An amount match is a
+  precondition, never proof that the records correspond.
+
+Link rules (checked under row locks; the first failing rule answers):
+
+- The Expense and the obligation belong to the caller: 404 expense_not_found /
+  future_obligation_not_found.
+- The occurrence already has a link: the same Expense is the idempotent 200; another
+  Expense is 409 future_obligation_link_occurrence_already_linked.
+- The Expense is already linked to another occurrence: 409
+  future_obligation_link_expense_already_linked. A link is never replaced or
+  reassigned: remove it first.
+- The obligation is active and due_date is an occurrence of its schedule: else 422
+  future_obligation_occurrence_invalid (an archived obligation contributes no
+  occurrences, so nothing new is linked to it).
+- Identical currency (nothing is converted): else 422
+  future_obligation_link_currency_mismatch.
+- The Expense amount equals the occurrence amount as an exact Decimal: else 422
+  future_obligation_link_amount_mismatch.
+- The Expense date is not after the server date: else 422
+  future_obligation_link_expense_date_invalid. The Expense date need not equal the
+  due date: a bill may be recorded early or late.
+
+Keeping links true (a controlled conflict, never a silent change or deletion):
+
+- A linked Expense: DELETE /expenses/{id}, or a PATCH that changes its amount or
+  currency, or sets expense_date after the server date, is 409
+  expense_linked_to_future_obligation. Title, description, category, source, an
+  earlier or later (not future) date, Account linkage, and a PATCH that repeats the
+  current values stay possible. Remove the link first to change the rest.
+- A linked obligation: a PATCH that changes its amount or currency, or whose
+  resulting dates no longer put every linked due date on the schedule (a different
+  anchor day, a final_due_date before a linked date), is 409
+  future_obligation_has_linked_occurrences. Name, description, archiving, restoring,
+  and dates that keep every linked occurrence valid stay possible. Archiving never
+  removes a link.
+
+Concurrency. Every write locks the Expense row FIRST and the obligation row SECOND
+(the Expense-before-related-rows order the Expense update and delete already use),
+so reconciliation cannot deadlock with them, and the guards above run under those
+same locks: a link and a conflicting edit are serialized, and the loser gets 409 or
+a 422 mismatch. The unique keys are the final backstop and are answered with the
+same 409 codes, never a 500.
 
 13. Error Contract
 
@@ -3504,6 +3601,15 @@ Domain error codes (status, code, current detail)
 409  future_obligation_limit_reached  -  You have reached the maximum number of active future obligations. Archive one to add another.
 404  future_obligation_not_found  -  Future obligation not found.
 422  future_obligation_schedule_invalid  -  A one-time obligation cannot have a final due date, and a final due date cannot be before the first due date.
+422  future_obligation_occurrence_invalid  -  That date is not an occurrence of this bill, or the bill is archived.
+422  future_obligation_link_currency_mismatch  -  The expense must be in the same currency as the bill to be linked.
+422  future_obligation_link_amount_mismatch  -  The expense amount must be exactly the bill amount to be linked.
+422  future_obligation_link_expense_date_invalid  -  An expense recorded after today cannot be linked to a bill.
+409  future_obligation_link_expense_already_linked  -  This expense is already linked to a bill occurrence. Remove that link first.
+409  future_obligation_link_occurrence_already_linked  -  This bill occurrence already has a linked expense. Remove that link first.
+404  future_obligation_link_not_found  -  Link not found.
+409  expense_linked_to_future_obligation  -  This expense is linked to a bill. Remove the link before deleting it or changing its amount, currency or date.
+409  future_obligation_has_linked_occurrences  -  This bill has linked expenses. Remove the affected links before changing its amount, currency or dates.
 422  income_account_currency_mismatch  -  Income currency must match the account's currency to link them.
 422  income_future_dated_not_supported  -  A foreign-currency income cannot be dated in the future.
 409  income_idempotency_conflict  -  client_request_id has already been used for a different income.

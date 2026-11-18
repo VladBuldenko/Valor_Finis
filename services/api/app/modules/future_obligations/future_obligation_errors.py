@@ -72,3 +72,137 @@ class FutureObligationClientRequestIdTakenError(Exception):
     """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# VF-GOALS-PLANNING-002C2: manual reconciliation of a bill occurrence with an
+# existing recorded Expense. A link is relationship metadata: it never creates
+# an Expense, posts to an Account, or says a bank payment was verified.
+# ---------------------------------------------------------------------------
+
+
+class FutureObligationOccurrenceInvalidError(Exception):
+    """
+    Raised when the requested due date is not an occurrence of the obligation.
+
+    What:
+        Represents a rejected link request: the date is not on the obligation's
+        schedule (including a month-end date that is not the clamped one), or the
+        obligation is archived, which contributes no occurrences.
+    """
+
+    pass
+
+
+class FutureObligationLinkCurrencyMismatchError(Exception):
+    """
+    Raised when the Expense and the obligation are in different currencies.
+
+    What:
+        Represents a rejected link: only an exact currency match can be linked.
+        Nothing is converted.
+    """
+
+    pass
+
+
+class FutureObligationLinkAmountMismatchError(Exception):
+    """
+    Raised when the Expense amount is not exactly the occurrence amount.
+
+    What:
+        Represents a rejected link: amounts are compared as exact Decimals. A
+        matching amount is a precondition, never proof that the records
+        correspond; the user makes the choice.
+    """
+
+    pass
+
+
+class FutureObligationLinkExpenseDateError(Exception):
+    """
+    Raised when the Expense is recorded after the evaluation date.
+
+    What:
+        Represents a rejected link: an Expense dated in the future has not
+        happened yet, so it cannot correspond to an occurrence.
+    """
+
+    pass
+
+
+class FutureObligationLinkExpenseAlreadyLinkedError(Exception):
+    """
+    Raised when the Expense is already linked to a different occurrence.
+
+    What:
+        One Expense can correspond to only one occurrence. The existing link is
+        never silently replaced: it must be removed first.
+    """
+
+    pass
+
+
+class FutureObligationLinkOccurrenceAlreadyLinkedError(Exception):
+    """
+    Raised when the occurrence is already linked to a different Expense.
+
+    What:
+        One occurrence can have only one Expense. The existing link is never
+        silently reassigned: it must be removed first.
+    """
+
+    pass
+
+
+class FutureObligationLinkNotFoundError(Exception):
+    """
+    Raised when a link does not exist or does not belong to the user.
+
+    What:
+        Another user's link is reported exactly like a missing one.
+    """
+
+    pass
+
+
+class ExpenseLinkedToFutureObligationError(Exception):
+    """
+    Raised when a change to an Expense would invalidate its occurrence link.
+
+    What:
+        Represents a controlled conflict: deleting a linked Expense, or changing
+        its amount or currency, or dating it in the future. Non-financial edits
+        are never blocked. The user must remove the link first.
+    """
+
+    pass
+
+
+class FutureObligationHasLinkedOccurrencesError(Exception):
+    """
+    Raised when an obligation edit would invalidate a linked occurrence.
+
+    What:
+        Represents a controlled conflict: changing the amount or currency of an
+        obligation that has linked occurrences, or moving its dates so a linked
+        due date is no longer on the schedule. Renaming, describing, archiving and
+        restoring are never blocked. The user must remove the affected links first.
+    """
+
+    pass
+
+
+class FutureObligationLinkUniqueViolationError(Exception):
+    """
+    Raised by the repository when an insert violates a link unique constraint.
+
+    What:
+        Internal signal (never mapped to HTTP): a concurrent request committed a
+        conflicting link first. `constraint_name` says which rule was violated, so
+        the service can answer with the matching domain error and never a 500.
+    """
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__(constraint_name)
+        self.constraint_name = constraint_name

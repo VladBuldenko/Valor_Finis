@@ -13,6 +13,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from app.db.database_base import Base
 from app.db.database_models import import_database_models
+from tests.schema_drift import exclude_stages_after
 from tests.integration.financial_rules.test_financial_rules_schema_migration import (
     DATA_API_ROLES,
     _admin_engine,
@@ -267,7 +268,11 @@ def test_the_orm_matches_the_migrated_schema(migrated_database: Engine) -> None:
     with migrated_database.connect() as connection:
         differences = compare_metadata(MigrationContext.configure(connection), Base.metadata)
 
-    assert [difference for difference in differences if TABLE in repr(difference)] == []
+    # Later stages (002C2: the link table and the owner unique key) are in the ORM but
+    # not at this revision; they are excluded by name, nothing else is.
+    remaining = exclude_stages_after(differences, REVISION)
+
+    assert [difference for difference in remaining if TABLE in repr(difference)] == []
 
 
 def test_the_data_api_roles_have_no_privilege_on_the_new_table(previous_database: Engine) -> None:

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core import create_idempotency
 from app.modules.financial_settings import financial_settings_service
-from app.modules.future_obligations import future_obligation_repository
+from app.modules.future_obligations import future_obligation_link_service, future_obligation_repository
 from app.modules.future_obligations.future_obligation_errors import (
     FutureObligationClientRequestIdTakenError,
     FutureObligationIdempotencyConflictError,
@@ -299,6 +299,20 @@ def update_future_obligation(
 
         if schedule_shape_error(obligation.schedule, first_due_date, final_due_date) is not None:
             raise FutureObligationScheduleInvalidError()
+
+        # VF-GOALS-PLANNING-002C2: a linked occurrence must stay valid. The amount,
+        # the currency and the dates are checked against its links under the row
+        # lock (a link is created under that same lock); other edits, archiving
+        # and restoring are never blocked and no link is ever deleted here.
+        future_obligation_link_service.ensure_obligation_change_allowed(
+            db_session=db_session,
+            user_id=user_id,
+            obligation=obligation,
+            final_amount=data.amount if "amount" in fields and data.amount is not None else obligation.amount,
+            final_currency=data.currency if "currency" in fields and data.currency is not None else obligation.currency,
+            final_first_due_date=first_due_date,
+            final_final_due_date=final_due_date,
+        )
 
         if "status" in fields and data.status == "active" and obligation.status != "active":
             _lock_active_limit(db_session, user_id)

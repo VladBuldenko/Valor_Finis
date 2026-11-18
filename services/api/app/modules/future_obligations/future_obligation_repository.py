@@ -168,6 +168,55 @@ def list_active_for_projection(
     )
 
 
+# Returns the user's ACTIVE obligations that can have a due date in the window
+# [window_start, window_end] (one query), past dates included: the reconciliation
+# overview shows recent months as well as upcoming ones.
+def list_active_for_window(
+    db_session: Session,
+    user_id: UUID,
+    window_start: date,
+    window_end: date,
+) -> list[FutureObligationModel]:
+    return (
+        db_session.query(FutureObligationModel)
+        .filter(
+            FutureObligationModel.user_id == user_id,
+            FutureObligationModel.status == "active",
+            FutureObligationModel.first_due_date <= window_end,
+            or_(
+                and_(
+                    FutureObligationModel.schedule == "one_time",
+                    FutureObligationModel.first_due_date >= window_start,
+                ),
+                and_(
+                    FutureObligationModel.schedule == "monthly",
+                    or_(
+                        FutureObligationModel.final_due_date.is_(None),
+                        FutureObligationModel.final_due_date >= window_start,
+                    ),
+                ),
+            ),
+        )
+        .order_by(FutureObligationModel.first_due_date.asc(), FutureObligationModel.id.asc())
+        .all()
+    )
+
+
+# Returns the user's obligations with the given ids (any status), one query.
+def list_by_ids(db_session: Session, user_id: UUID, obligation_ids: list[UUID]) -> list[FutureObligationModel]:
+    if not obligation_ids:
+        return []
+
+    return (
+        db_session.query(FutureObligationModel)
+        .filter(
+            FutureObligationModel.user_id == user_id,
+            FutureObligationModel.id.in_(obligation_ids),
+        )
+        .all()
+    )
+
+
 # Counts the user's ACTIVE obligations.
 def count_active_for_user(db_session: Session, user_id: UUID) -> int:
     return (

@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { invalidateReconciliationQueries } from "../future-obligations/future-obligation-link-cache.ts";
 import { invalidateGoalHistoryQueries } from "../goals/goal-cache.ts";
 
 /**
@@ -66,6 +67,11 @@ export function invalidateExpenseQueries(
     // and the combined savings overview average Income and Expenses, so both
     // are re-read. The Goal plan and the Goal lists are unaffected.
     invalidateGoalHistoryQueries(queryClient, userId),
+    // VF-GOALS-PLANNING-002C2: a linked expense's title and date are shown on its bill date
+    // and a new or changed expense may now be one that can be linked, so only the link
+    // views are re-read. The bills list and the upcoming projection are untouched:
+    // an Expense never changes a bill.
+    invalidateReconciliationQueries(queryClient, userId),
   ];
 
   if (touchedAccount) {

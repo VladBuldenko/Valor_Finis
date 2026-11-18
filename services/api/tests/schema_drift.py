@@ -48,6 +48,9 @@ LATER_STAGES = (
     # VF-GOALS-PLANNING-002C1: the future_obligations table (its constraints and index
     # carry the table name, so they are matched by name).
     ("e4a8c2d91b36", ("future_obligations",)),
+    # VF-GOALS-PLANNING-002C2: the future_obligation_expense_links table (its constraints
+    # and index carry the table name) and the future_obligations ownership unique key.
+    ("a3f9d7c25e84", ("future_obligation_expense_links", "uq_future_obligations_id_user_id")),
 )
 
 REVISION_ORDER = (
@@ -61,6 +64,7 @@ REVISION_ORDER = (
     "c4d8a2f6e193",
     "b8e2c5d1f739",
     "e4a8c2d91b36",
+    "a3f9d7c25e84",
 )
 
 

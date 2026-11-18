@@ -105,6 +105,12 @@ export function FutureObligationsScreen() {
 
         <Text style={styles.overviewHelperText}>{BILLS_NOT_PAID}</Text>
 
+        <Link href="/goals/bills/links" asChild>
+          <Pressable accessibilityRole="button" accessibilityLabel="Link expenses to bills" style={styles.editButton}>
+            <Text style={styles.editButtonText}>Link expenses to bills</Text>
+          </Pressable>
+        </Link>
+
         <View style={styles.card}>
           <Text style={styles.name} accessibilityRole="header">
             Next 12 months

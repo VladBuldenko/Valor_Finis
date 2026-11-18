@@ -3227,9 +3227,42 @@ Constraints and indexes: future_obligations_pkey; uq_future_obligations_user_id_
 ck_future_obligations_amount_positive, _schedule_valid, _status_valid, _currency_format, _name_not_blank,
 _first_due_date_range, _final_due_date_range, _final_not_before_first, _one_time_has_no_final and
 _client_request_all_or_none; ix_future_obligations_user_id_status (the list and the bounded projection). There is NO
-foreign key to expenses, accounts, goals or budgets: nothing is inferred from or posted to them, so a recorded Expense
-can never be mistaken for, or double count against, an obligation. Data API: REVOKE ALL on the table from anon,
+foreign key from future_obligations to expenses, accounts, goals or budgets: nothing is inferred from or posted to them,
+so a recorded Expense can never be mistaken for, or double count against, an obligation. (VF-GOALS-PLANNING-002C2 adds a
+separate, explicit link table below; the obligation row itself is never changed by it.) Data API: REVOKE ALL on the table from anon,
 authenticated and service_role (guarded by pg_roles checks). Ownership: every query filters by user_id; an
 archived obligation stays stored and contributes nothing; there is no delete path. Upgrade is additive (no existing
 table or row is touched, no backfill). Downgrade refuses to run when any row exists (the data is hand-entered and cannot
 be recreated) and otherwise drops the index and the table.
+
+VF-GOALS-PLANNING-002C2 manual reconciliation (migration a3f9d7c25e84, down_revision e4a8c2d91b36; schema stage, local
+feature branch, NOT applied to production) adds ONE table and ONE constraint on an existing table:
+
+future_obligation_expense_links ("this recorded Expense corresponds to this scheduled bill occurrence"; relationship
+metadata chosen by the user, never a transaction):
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| id | UUID | NOT NULL | primary key |
+| user_id | UUID | NOT NULL | owner; part of BOTH foreign keys |
+| obligation_id | UUID | NOT NULL | the obligation |
+| due_date | DATE | NOT NULL | the occurrence's due date; CHECK 2000-01-01..2100-12-31. An occurrence is (obligation_id, due_date); no row exists for an occurrence without an Expense |
+| expense_id | UUID | NOT NULL | the linked Expense |
+| created_at | TIMESTAMPTZ | NOT NULL | default now() |
+
+Constraints and indexes: future_obligation_expense_links_pkey; fk_future_obligation_links_obligation_owner
+(obligation_id, user_id) -> future_obligations(id, user_id) ON DELETE RESTRICT; fk_future_obligation_links_expense_owner
+(expense_id, user_id) -> expenses(id, user_id) ON DELETE RESTRICT; uq_future_obligation_links_expense_id (one Expense, one
+link: it is never counted for two occurrences); uq_future_obligation_links_obligation_id_due_date (one occurrence, one
+Expense: nothing is silently reassigned); ck_future_obligation_links_due_date_range; ix_future_obligation_links_user_id_due_date
+(the overview's date window). The composite foreign keys make a link between two users' records impossible at the
+database level; RESTRICT means a linked Expense cannot be deleted and a linked obligation cannot disappear, so link history
+is never erased silently. The one change to an existing table is uq_future_obligations_id_user_id UNIQUE (id, user_id) on
+future_obligations, the target of the obligation foreign key (expenses already has uq_expenses_id_user_id).
+
+The amount, currency and date rules of a link (same currency, exactly equal amount, Expense date not after the evaluation
+date) are enforced by the service under row locks, not by the database, because they compare two tables; the Expense and
+obligation edit guards keep them true afterwards (api-contract.md section 12B). Data API: REVOKE ALL on the table from
+anon, authenticated and service_role (guarded by pg_roles checks). Upgrade is additive: no existing row is read, changed or
+backfilled. Downgrade refuses to run when any link exists (links are chosen by hand and cannot be recreated), and otherwise
+drops the index, the table and uq_future_obligations_id_user_id.
