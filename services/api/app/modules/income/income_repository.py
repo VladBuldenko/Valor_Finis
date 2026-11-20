@@ -123,6 +123,16 @@ def get_income_by_client_request_id(
     )
 
 
+# The one list ordering for income records (received_at DESC, created_at
+# DESC, id DESC): a total order, shared by the unpaginated and the
+# paginated read so pages neither repeat nor skip a row.
+_INCOME_LIST_ORDER = (
+    IncomeModel.received_at.desc(),
+    IncomeModel.created_at.desc(),
+    IncomeModel.id.desc(),
+)
+
+
 # Returns income database records for one user, newest received_at first.
 # This function exists to isolate PostgreSQL read logic from business
 # logic. Ordering is deterministic (received_at DESC, created_at DESC,
@@ -146,13 +156,38 @@ def get_income(
     return (
         db_session.query(IncomeModel)
         .filter(IncomeModel.user_id == user_id)
-        .order_by(
-            IncomeModel.received_at.desc(),
-            IncomeModel.created_at.desc(),
-            IncomeModel.id.desc(),
-        )
+        .order_by(*_INCOME_LIST_ORDER)
         .all()
     )
+
+
+# Returns one page of income records for one user, together with the number
+# of income records the user owns in total.
+# This function exists so the paginated list endpoint (VF-MVP-BETA-001,
+# BE-3 / M16) never loads and slices a user's whole history in Python: the
+# page is cut by the database (LIMIT/OFFSET) and the total comes from a
+# COUNT over the same owner-scoped filter. The ordering is the very one
+# get_income uses, so concatenating consecutive pages reproduces the
+# unpaginated list exactly.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier; mandatory, every row is owner-scoped.
+# - limit: maximum number of income records in the page (validated by the router).
+# - offset: number of income records to skip (validated by the router).
+# Returns:
+# - Tuple of (the page's IncomeModel instances, total income records of the user).
+def get_income_page(
+    db_session: Session,
+    user_id: UUID,
+    limit: int,
+    offset: int,
+) -> tuple[list[IncomeModel], int]:
+    query = db_session.query(IncomeModel).filter(IncomeModel.user_id == user_id)
+
+    total = query.count()
+    rows = query.order_by(*_INCOME_LIST_ORDER).limit(limit).offset(offset).all()
+
+    return rows, total
 
 
 # Returns income records for one user within an inclusive received_at

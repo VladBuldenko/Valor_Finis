@@ -353,3 +353,25 @@ class IncomeResponse(IncomeBase):
     )
     created_at: datetime
     updated_at: datetime
+
+
+class IncomePageResponse(BaseModel):
+    """
+    Schema for one page of income records (opt-in pagination, VF-MVP-BETA-001).
+
+    What:
+        The envelope GET /income returns only when the client asked
+        for pagination (a limit and/or offset query parameter). A request
+        with neither parameter keeps returning the bare list it always did.
+
+    Why:
+        total is the number of income records the authenticated user owns
+        across ALL pages, so a client can tell whether more exist without
+        guessing from the page length. limit and offset echo the values
+        applied (the default limit is filled in when only offset was sent).
+    """
+
+    items: list[IncomeResponse]
+    total: int = Field(description="All income records of the authenticated user, not only this page.")
+    limit: int
+    offset: int
