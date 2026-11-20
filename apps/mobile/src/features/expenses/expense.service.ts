@@ -1,5 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
+import { pagedPath, type Page } from "../../lib/paged-list";
 import type {
   Expense,
   ExpenseCreateInput,
@@ -7,10 +8,31 @@ import type {
 } from "./expense.types";
 
 /**
- * Returns expenses that belong to the authenticated user.
+ * Returns ONE page of the authenticated user's expenses, newest first, with
+ * the user's total number of expenses. The page is requested explicitly
+ * (limit/offset); a request without them would return the complete bare list.
  */
-export async function getExpenses(): Promise<Expense[]> {
-  return apiRequest<Expense[]>("/api/v1/expenses");
+export async function getExpensesPage(
+  limit: number,
+  offset: number,
+  signal?: AbortSignal,
+): Promise<Page<Expense>> {
+  return apiRequest<Page<Expense>>(
+    pagedPath("/api/v1/expenses", limit, offset),
+    { signal },
+  );
+}
+
+/**
+ * Returns one expense of the authenticated user. This is how the detail/edit
+ * screen opens an expense that is not on any loaded page; an id that does not
+ * exist and an id of another user are both a 404.
+ */
+export async function getExpense(
+  expenseId: string,
+  signal?: AbortSignal,
+): Promise<Expense> {
+  return apiRequest<Expense>(`/api/v1/expenses/${expenseId}`, { signal });
 }
 
 /**

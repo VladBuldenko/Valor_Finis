@@ -24,16 +24,20 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { describeCreateFailure } from "../../api/create-failure";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
+import { PagedListFooter } from "../../components/paged-list-footer";
 import { LoadError, LoadingState, QueryBoundary } from "../../components/query-states";
 import {
   createSubmitGuard,
   resolveCreateAttempt,
   type CreateAttempt,
 } from "../../lib/create-attempts";
+import { PAGED_COPY } from "../../lib/paged-list";
 import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
+import { usePagedList } from "../../lib/use-paged-list";
 import { useAuth } from "../auth/auth-context";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "./expense-cache";
+import { expenseKeys } from "./expense-query-keys";
 import {
   expensePayloadKey,
   toExpenseCreateInput,
@@ -45,8 +49,9 @@ import {
 } from "./expense-validation";
 import {
   createExpense,
-  getExpenses,
+  getExpensesPage,
 } from "./expense.service";
+import type { Expense } from "./expense.types";
 import { styles } from "./expenses.styles";
 
 function getCurrentLocalDate(): string {
@@ -81,11 +86,14 @@ export function ExpensesScreen() {
   const [isCategoryPickerVisible, setIsCategoryPickerVisible] =
     useState(false);
 
-  const expensesQuery = useQuery({
-    queryKey: ["expenses", session?.user.id],
-    queryFn: getExpenses,
-    enabled: Boolean(session),
+  // The list is read one page at a time (VF-MVP-BETA-001). The rows already
+  // loaded stay on screen while later pages load or fail; a refresh re-reads
+  // the pages already loaded.
+  const expensesList = usePagedList<Expense>({
+    queryKey: session ? expenseKeys.list(session.user.id) : null,
+    fetchPage: getExpensesPage,
   });
+  const expensesFeed = expensesList.feed;
 
   const categoriesQuery = useQuery({
     queryKey: ["categories", session?.user.id],
@@ -107,7 +115,7 @@ export function ExpensesScreen() {
   const isAccountsLoading = accountsQuery.data === undefined && !accountsQuery.isError;
   // Pull-to-refresh only re-reads the three lists; the form keeps its values.
   const refresh = useScreenRefresh(() => [
-    refetcherOf(expensesQuery),
+    refetcherOf(expensesFeed),
     refetcherOf(categoriesQuery),
     refetcherOf(accountsQuery),
   ]);
@@ -385,10 +393,23 @@ export function ExpensesScreen() {
 
           <Text style={styles.listSectionTitle}>Recent expenses</Text>
 
-          <QueryBoundary query={expensesQuery} what="expenses" empty="No expenses yet.">
-            {(expenses) => (
+          <QueryBoundary
+            query={{
+              data: expensesList.merged ?? undefined,
+              error: expensesFeed.error,
+              // A failed LATER page is reported by the footer, below the rows.
+              isError: expensesFeed.isError && !expensesFeed.isFetchNextPageError,
+              isFetching: expensesFeed.isFetching,
+              refetch: expensesFeed.refetch,
+            }}
+            what="expenses"
+            empty="No expenses yet."
+            isEmpty={(list) => list.items.length === 0}
+          >
+            {(list) => (
+            <>
             <View style={styles.list}>
-              {expenses.map((expense) => (
+              {list.items.map((expense) => (
                 <Link
                   key={expense.id}
                   href={{
@@ -411,6 +432,19 @@ export function ExpensesScreen() {
                 </Link>
               ))}
             </View>
+
+            <PagedListFooter
+              state={expensesList.state}
+              merged={expensesList.merged}
+              what="expenses"
+              error={expensesFeed.error}
+              onLoadMore={() => void expensesFeed.fetchNextPage()}
+              buttonStyle={styles.button}
+              buttonTextStyle={styles.buttonText}
+              noteStyle={styles.secondaryText}
+            />
+            <Text style={styles.helperText}>{PAGED_COPY.paging}</Text>
+            </>
             )}
           </QueryBoundary>
         </ScrollView>

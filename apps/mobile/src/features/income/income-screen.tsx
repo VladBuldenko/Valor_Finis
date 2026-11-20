@@ -9,12 +9,16 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { PagedListFooter } from "../../components/paged-list-footer";
 import { InlineError, QueryBoundary } from "../../components/query-states";
+import { PAGED_COPY } from "../../lib/paged-list";
 import { refetcherOf, useScreenRefresh } from "../../lib/screen-refresh";
+import { usePagedList } from "../../lib/use-paged-list";
 import { useAuth } from "../auth/auth-context";
 import { getAccounts } from "../accounts/account.service";
 import type { Account } from "../accounts/account.types";
-import { getIncome } from "./income.service";
+import { incomeKeys } from "./income-query-keys";
+import { getIncomePage } from "./income.service";
 import { styles } from "./income.styles";
 import { INCOME_SOURCE_LABELS, type Income } from "./income.types";
 
@@ -52,11 +56,14 @@ function getLinkedAccountLabel(
 export function IncomeScreen() {
   const { session } = useAuth();
 
-  const incomeQuery = useQuery({
-    queryKey: ["income", session?.user.id],
-    queryFn: getIncome,
-    enabled: Boolean(session),
+  // The list is read one page at a time (VF-MVP-BETA-001). The rows already
+  // loaded stay on screen while later pages load or fail; a refresh re-reads
+  // the pages already loaded.
+  const incomeList = usePagedList<Income>({
+    queryKey: session ? incomeKeys.list(session.user.id) : null,
+    fetchPage: getIncomePage,
   });
+  const incomeFeed = incomeList.feed;
 
   // Same query key/data as the Accounts screen, so an Account rename or
   // archive is reflected here without a separate fetch path.
@@ -68,7 +75,7 @@ export function IncomeScreen() {
   const accounts = accountsQuery.data ?? [];
   // A failed Accounts read must not turn into "Linked account unavailable".
   const accountNamesUnknown = accountsQuery.data === undefined;
-  const refresh = useScreenRefresh(() => [refetcherOf(incomeQuery), refetcherOf(accountsQuery)]);
+  const refresh = useScreenRefresh(() => [refetcherOf(incomeFeed), refetcherOf(accountsQuery)]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -94,10 +101,23 @@ export function IncomeScreen() {
           />
         ) : null}
 
-        <QueryBoundary query={incomeQuery} what="income" empty="No income yet.">
-          {(incomeRecords) => (
+        <QueryBoundary
+          query={{
+            data: incomeList.merged ?? undefined,
+            error: incomeFeed.error,
+            // A failed LATER page is reported by the footer, below the rows.
+            isError: incomeFeed.isError && !incomeFeed.isFetchNextPageError,
+            isFetching: incomeFeed.isFetching,
+            refetch: incomeFeed.refetch,
+          }}
+          what="income"
+          empty="No income yet."
+          isEmpty={(list) => list.items.length === 0}
+        >
+          {(list) => (
+          <>
           <View style={styles.list}>
-            {incomeRecords.map((income) => {
+            {list.items.map((income) => {
               const linkedAccountLabel = getLinkedAccountLabel(
                 income,
                 accounts,
@@ -143,6 +163,19 @@ export function IncomeScreen() {
               );
             })}
           </View>
+
+          <PagedListFooter
+            state={incomeList.state}
+            merged={incomeList.merged}
+            what="income"
+            error={incomeFeed.error}
+            onLoadMore={() => void incomeFeed.fetchNextPage()}
+            buttonStyle={styles.button}
+            buttonTextStyle={styles.buttonText}
+            noteStyle={styles.secondaryText}
+          />
+          <Text style={styles.secondaryText}>{PAGED_COPY.paging}</Text>
+          </>
           )}
         </QueryBoundary>
       </ScrollView>

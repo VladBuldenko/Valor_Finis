@@ -1,5 +1,6 @@
 import { apiRequest } from "../../api/api-client";
 
+import { pagedPath, type Page } from "../../lib/paged-list";
 import type {
   Income,
   IncomeCreateInput,
@@ -7,12 +8,32 @@ import type {
 } from "./income.types";
 
 /**
- * Returns Income records owned by the authenticated user, newest
- * received_at first. There is no GET /income/{id} endpoint -- the edit
- * screen resolves a single Income from this list.
+ * Returns ONE page of the authenticated user's Income records, newest
+ * received_at first, with the user's total number of Income records. The page
+ * is requested explicitly (limit/offset); a request without them would return
+ * the complete bare list.
  */
-export async function getIncome(): Promise<Income[]> {
-  return apiRequest<Income[]>("/api/v1/income");
+export async function getIncomePage(
+  limit: number,
+  offset: number,
+  signal?: AbortSignal,
+): Promise<Page<Income>> {
+  return apiRequest<Page<Income>>(
+    pagedPath("/api/v1/income", limit, offset),
+    { signal },
+  );
+}
+
+/**
+ * Returns one Income of the authenticated user. This is how the edit screen
+ * opens an Income that is not on any loaded page; an id that does not exist
+ * and an id of another user are both a 404.
+ */
+export async function getIncomeById(
+  incomeId: string,
+  signal?: AbortSignal,
+): Promise<Income> {
+  return apiRequest<Income>(`/api/v1/income/${incomeId}`, { signal });
 }
 
 /**

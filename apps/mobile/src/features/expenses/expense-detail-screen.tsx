@@ -21,15 +21,17 @@ import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
 import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
+import { isRecordNotFound } from "../../lib/record-not-found";
 import { getCategories } from "../categories/category.service";
 import { invalidateExpenseQueries } from "./expense-cache";
+import { expenseKeys } from "./expense-query-keys";
 import {
   normalizeExpenseAmount,
   validateExpenseForm,
 } from "./expense-validation";
 import {
   deleteExpense,
-  getExpenses,
+  getExpense,
   updateExpense,
 } from "./expense.service";
 import type { Expense, ExpenseUpdateInput } from "./expense.types";
@@ -115,19 +117,32 @@ export function ExpenseDetailScreen() {
   const queryClient = useQueryClient();
   const router = useRouter();
 
+  // Set once this expense was deleted: the detail query is then switched off
+  // so the cache refresh that follows never re-reads (a 404 for) the record.
+  const [isDeleted, setIsDeleted] = useState(false);
+
+  // The expense is read by id (GET /expenses/{id}), never searched for in a
+  // list: the list is paged, so an older expense is usually not on any loaded
+  // page. The key sits under ["expenses", userId], so every expense mutation
+  // refreshes it together with the list.
   const {
-    data: expense,
+    data: fetchedExpense,
     isLoading,
-    error,
+    error: queryError,
     refetch,
     isFetching,
   } = useQuery({
-    queryKey: ["expenses", session?.user.id],
-    queryFn: getExpenses,
-    enabled: Boolean(session),
-    select: (expenses) =>
-      expenses.find((candidate) => candidate.id === id),
+    queryKey: expenseKeys.detail(session?.user.id, id),
+    queryFn: ({ signal }) => getExpense(id, signal),
+    enabled: Boolean(session) && Boolean(id) && !isDeleted,
   });
+
+  // A 404 (deleted elsewhere, or not this user's) must never show an older
+  // cached copy of the record.
+  // That 404 is not a load failure: the screen says "not found" instead.
+  const isGone = isRecordNotFound(queryError);
+  const expense = isGone ? undefined : fetchedExpense;
+  const error = isGone ? null : queryError;
 
   const {
     data: categories = [],
@@ -223,6 +238,16 @@ export function ExpenseDetailScreen() {
       deleteExpense(id),
 
     onSuccess: async (_result, variables) => {
+      // Forget the deleted record BEFORE the cache refresh below: otherwise
+      // that refresh would re-read it (a pointless 404) while this screen is
+      // still mounted. isDeleted switches the detail query off before it can
+      // be rebuilt.
+      setIsDeleted(true);
+      queryClient.removeQueries({
+        queryKey: expenseKeys.detail(session?.user.id, id),
+        exact: true,
+      });
+
       // The backend removes the linked Account debit itself (cascade);
       // the client only refreshes the affected caches.
       await invalidateExpenseQueries(
@@ -308,7 +333,9 @@ export function ExpenseDetailScreen() {
     );
   }
 
-  if (isAuthLoading || isLoading) {
+  // After a delete the record is gone by design: show progress until the
+  // screen closes instead of a "not found" flash.
+  if (isAuthLoading || isLoading || isDeleted) {
     return (
       <SafeAreaView>
         <LoadingState what="expense" />
