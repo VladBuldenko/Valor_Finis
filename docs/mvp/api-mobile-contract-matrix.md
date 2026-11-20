@@ -359,7 +359,7 @@ Designers and mobile engineers must treat them as dependencies, not as available
 |---|---|---|---|
 | `code` on every error body | Planned additive field | BE-1 | `{"detail": "...", "code": "stable_snake_case"}`; validation errors also carry a code; registry in `docs/api-contract.md`; never renamed or reused; mobile maps by code with neutral fallback |
 | `POST /api/v1/financial-rules/{rule_id}/preview` | Planned endpoint (name per the approved contract; final sheet approved before coding) | BE-2 | Read-only; owner-scoped (foreign id 404); sample income in; planned items per target, partial/skip reasons, capacity figures out; parity with execution; no writes (no rows, no outbox event) |
-| Pagination on `GET /expenses` and `GET /income` | Planned parameters/envelope | BE-3 | Backward-compatible with the shipped client (strategy chosen in the task); stable ordering; `total` |
+| Pagination on `GET /expenses` and `GET /income` | **Delivered** (VF-MVP-BETA-001, BE-3) | BE-3 | Opt-in `limit` (1-100) / `offset`; envelope `{items,total,limit,offset}` only when requested, bare list otherwise (backward compatible); order `date DESC, created_at DESC, id DESC`; plus owner-scoped `GET /expenses/{id}` and `GET /income/{id}`. See `docs/api-contract.md`. |
 | Supabase Auth `signUp` | Client call (not FastAPI) | MF-4 | Public registration (Q5) |
 | Supabase Auth `resetPasswordForEmail`, session from link, `updateUser({password})` | Client calls (not FastAPI) | MF-4 | Password recovery (Q5) |
 | Inbox | **No endpoint, by decision** (Q9 A) | F-4 | Composed from `GET /rule-proposals`, `GET /rule-alerts`, `GET /rule-executions` |

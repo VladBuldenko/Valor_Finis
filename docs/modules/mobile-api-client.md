@@ -283,3 +283,15 @@ treats both as the same success.
 - Requests that send no key (older app versions, receipt confirmation) keep the legacy, non-idempotent behavior.
 - The rules-evaluation request after an Income create is a debounced, idempotent re-evaluation; the replay's 200 and
   the first 201 are indistinguishable to it, and it creates no financial effect by itself.
+
+## Paged lists: Expenses and Income (VF-MVP-BETA-001)
+
+The Expenses and Income lists read one page at a time with one infinite query each (`usePagedList`, `src/lib/use-paged-list.ts`; pure rules in `src/lib/paged-list.ts`).
+
+- The first request is `GET /api/v1/<list>?limit=25&offset=0`; the screens never request the complete bare list. "Load more" asks for the next offset, which is the number of rows already **received**.
+- Rows already loaded stay on screen while a later page loads or fails. A failed later page shows a notice with **Retry** (the same page again); nothing retries by itself. A failed pull-to-refresh keeps the rows and reports the refresh failure.
+- Pull-to-refresh and every cache invalidation re-read the pages already loaded, from the first one. A row repeated because a record was added meanwhile is shown once (de-duplicated by id); an offset list is not a snapshot.
+- "Showing N of M" uses the server's `total`, a record **count**. The app never sums or presents a money total from the loaded rows.
+- The detail and edit screens read the record with `GET /<list>/{id}` under `["expenses"|"income", userId, "detail", id]`, so an old record not on any loaded page opens and edits like any other. A 404 (deleted elsewhere, or not the user's) shows "not found" and never an older cached copy.
+- Both keys sit under `["expenses"|"income", userId]`, so the existing prefix invalidations (`expense-cache.ts`, `income-cache.ts`, category deletion) refresh the list and every cached detail together.
+- Known limits: refreshing re-reads every loaded page (cost grows with how far the user has scrolled); the list has no search or filters; Transfers and other lists are still unpaginated.
