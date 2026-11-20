@@ -304,3 +304,25 @@ class ExpenseResponse(ExpenseBase):
     )
     created_at: datetime
     updated_at: datetime
+
+
+class ExpensePageResponse(BaseModel):
+    """
+    Schema for one page of expense records (opt-in pagination, VF-MVP-BETA-001).
+
+    What:
+        The envelope GET /expenses returns only when the client asked
+        for pagination (a limit and/or offset query parameter). A request
+        with neither parameter keeps returning the bare list it always did.
+
+    Why:
+        total is the number of expense records the authenticated user owns
+        across ALL pages, so a client can tell whether more exist without
+        guessing from the page length. limit and offset echo the values
+        applied (the default limit is filled in when only offset was sent).
+    """
+
+    items: list[ExpenseResponse]
+    total: int = Field(description="All expense records of the authenticated user, not only this page.")
+    limit: int
+    offset: int

@@ -21,12 +21,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiErrorMessage } from "../../api/api-error-message";
 import { LoadError, LoadingState, RetryAction } from "../../components/query-states";
 import { useAuth } from "../auth/auth-context";
+import { isRecordNotFound } from "../../lib/record-not-found";
 import { AccountPicker } from "../accounts/account-picker";
 import { getAccounts } from "../accounts/account.service";
 import { invalidateIncomeQueries } from "./income-cache";
+import { incomeKeys } from "./income-query-keys";
 import { IncomeSourcePicker } from "./income-source-picker";
 import { normalizeIncomeAmount, validateIncomeForm } from "./income-validation";
-import { deleteIncome, getIncome, updateIncome } from "./income.service";
+import { deleteIncome, getIncomeById, updateIncome } from "./income.service";
 import { styles } from "./income.styles";
 import type { Income, IncomeSource, IncomeUpdateInput } from "./income.types";
 
@@ -101,21 +103,32 @@ export function IncomeEditScreen() {
   const queryClient = useQueryClient();
   const router = useRouter();
 
-  // There is no GET /income/{id} endpoint -- the Income is resolved from
-  // the ["income", userId] list, the same query the Income screen uses.
+  // Set once this Income was deleted: the detail query is then switched off
+  // so the cache refresh that follows never re-reads (a 404 for) the record.
+  const [isDeleted, setIsDeleted] = useState(false);
+
+  // The Income is read by id (GET /income/{id}), never searched for in a
+  // list: the list is paged, so an older Income is usually not on any loaded
+  // page. The key sits under ["income", userId], so every Income mutation
+  // refreshes it together with the list.
   const {
-    data: income,
+    data: fetchedIncome,
     isLoading,
-    error,
+    error: queryError,
     refetch,
     isFetching,
   } = useQuery({
-    queryKey: ["income", session?.user.id],
-    queryFn: getIncome,
-    enabled: Boolean(session),
-    select: (incomeRecords) =>
-      incomeRecords.find((candidate) => candidate.id === id),
+    queryKey: incomeKeys.detail(session?.user.id, id),
+    queryFn: ({ signal }) => getIncomeById(id, signal),
+    enabled: Boolean(session) && Boolean(id) && !isDeleted,
   });
+
+  // A 404 (deleted elsewhere, or not this user's) must never show an older
+  // cached copy of the record.
+  // That 404 is not a load failure: the screen says "not found" instead.
+  const isGone = isRecordNotFound(queryError);
+  const income = isGone ? undefined : fetchedIncome;
+  const error = isGone ? null : queryError;
 
   const {
     data: accounts = [],
@@ -190,6 +203,16 @@ export function IncomeEditScreen() {
       deleteIncome(id),
 
     onSuccess: async (_result, variables) => {
+      // Forget the deleted record BEFORE the cache refresh below: otherwise
+      // that refresh would re-read it (a pointless 404) while this screen is
+      // still mounted. isDeleted switches the detail query off before it can
+      // be rebuilt.
+      setIsDeleted(true);
+      queryClient.removeQueries({
+        queryKey: incomeKeys.detail(session?.user.id, id),
+        exact: true,
+      });
+
       // The backend removes the linked Account credit itself (cascade);
       // the client only refreshes the affected caches.
       await invalidateIncomeQueries(
@@ -197,7 +220,6 @@ export function IncomeEditScreen() {
         session?.user.id,
         variables.previousAccountId !== null,
       );
-
       router.back();
     },
 
@@ -212,7 +234,9 @@ export function IncomeEditScreen() {
   const isMutating =
     updateIncomeMutation.isPending || deleteIncomeMutation.isPending;
 
-  if (isAuthLoading || isLoading) {
+  // After a delete the record is gone by design: show progress until the
+  // screen closes instead of a "not found" flash.
+  if (isAuthLoading || isLoading || isDeleted) {
     return (
       <SafeAreaView style={styles.container}>
         <LoadingState what="income" />

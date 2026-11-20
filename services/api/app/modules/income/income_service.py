@@ -25,6 +25,7 @@ from app.modules.income.income_errors import (
 from app.modules.income.income_models import IncomeModel
 from app.modules.income.income_schemas import (
     IncomeCreate,
+    IncomePageResponse,
     IncomeResponse,
     IncomeUpdate,
 )
@@ -504,6 +505,88 @@ def get_income(
         _build_income_response(income_model, account_links.get(income_model.id))
         for income_model in income_models
     ]
+
+
+# Returns one page of the authenticated user's income records, each with
+# its currently-linked account_id (or None) resolved, plus the user's total.
+# This function exists for the opt-in paginated GET /income
+# (VF-MVP-BETA-001). The page is cut by the database and the Account links
+# are read only for the ids on the page, so cost follows the page size, not
+# the length of the user's history. Read-only: nothing is written, and the
+# records are exactly those get_income would return, in the same order.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter income records.
+# - limit: maximum page size (validated by the router).
+# - offset: number of income records to skip (validated by the router).
+# Returns:
+# - IncomePageResponse; items is empty when offset is past the end.
+def get_income_page(
+    db_session: Session,
+    user_id: UUID,
+    limit: int,
+    offset: int,
+) -> IncomePageResponse:
+    income_models, total = income_repository.get_income_page(
+        db_session=db_session,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
+
+    account_links = account_transaction_repository.get_income_account_links_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        income_ids=[income_model.id for income_model in income_models],
+    )
+
+    return IncomePageResponse(
+        items=[
+            _build_income_response(income_model, account_links.get(income_model.id))
+            for income_model in income_models
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# Returns one income record of the authenticated user with its
+# currently-linked account_id (or None) resolved.
+# This function exists for GET /income/{income_id} (VF-MVP-BETA-001): with a
+# paginated list, the edit screen can no longer find an older income record
+# by searching the list, so it asks for the record directly.
+# Ownership is enforced by the repository lookup: an id that does not exist
+# and an id owned by another user are indistinguishable (both 404), so
+# nothing about another user's data can be learned.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - income_id: income identifier from the path.
+# - user_id: authenticated user identifier that must own the record.
+# Returns:
+# - IncomeResponse.
+# Raises:
+# - IncomeNotFoundError: when the record does not exist or is not the user's.
+def get_income_by_id(
+    db_session: Session,
+    income_id: UUID,
+    user_id: UUID,
+) -> IncomeResponse:
+    income_model = income_repository.get_income_by_id(
+        db_session=db_session,
+        income_id=income_id,
+        user_id=user_id,
+    )
+    projection = account_transaction_repository.get_income_projection(
+        db_session=db_session,
+        income_id=income_model.id,
+        user_id=user_id,
+    )
+
+    return _build_income_response(
+        income_model,
+        projection.account_id if projection is not None else None,
+    )
 
 
 # Updates an existing income record owned by the authenticated user,

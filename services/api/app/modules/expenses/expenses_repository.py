@@ -123,6 +123,20 @@ def get_expense_by_client_request_id(
     )
 
 
+# The one list ordering for expenses: newest expense_date first, then the
+# newest created_at, then id. The two tie-breakers make the order total, so
+# two expenses on the same date never swap places between requests and
+# consecutive LIMIT/OFFSET pages neither repeat nor skip a row. Before
+# VF-MVP-BETA-001 only expense_date was ordered, so same-day expenses came
+# back in an arbitrary (but never lost) order; the dates themselves are not
+# reordered.
+_EXPENSE_LIST_ORDER = (
+    ExpenseModel.expense_date.desc(),
+    ExpenseModel.created_at.desc(),
+    ExpenseModel.id.desc(),
+)
+
+
 # Returns expense database records.
 # This function exists to isolate PostgreSQL read logic from business logic.
 # Parameters:
@@ -139,7 +153,36 @@ def get_expenses(
     if user_id is not None:
         query = query.filter(ExpenseModel.user_id == user_id)
 
-    return query.order_by(ExpenseModel.expense_date.desc()).all()
+    return query.order_by(*_EXPENSE_LIST_ORDER).all()
+
+
+# Returns one page of expense database records for one user, together with
+# the number of expenses the user owns in total.
+# This function exists so the paginated list endpoint (VF-MVP-BETA-001,
+# BE-3 / M16) never loads and slices a user's whole history in Python: the
+# page is cut by the database (LIMIT/OFFSET) and the total comes from a
+# COUNT over the same owner-scoped filter. The ordering is the very one
+# get_expenses uses, so concatenating consecutive pages reproduces the
+# unpaginated list exactly.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier; mandatory, every row is owner-scoped.
+# - limit: maximum number of expenses in the page (validated by the router).
+# - offset: number of expenses to skip (validated by the router).
+# Returns:
+# - Tuple of (the page's ExpenseModel instances, total expenses of the user).
+def get_expenses_page(
+    db_session: Session,
+    user_id: UUID,
+    limit: int,
+    offset: int,
+) -> tuple[list[ExpenseModel], int]:
+    query = db_session.query(ExpenseModel).filter(ExpenseModel.user_id == user_id)
+
+    total = query.count()
+    rows = query.order_by(*_EXPENSE_LIST_ORDER).limit(limit).offset(offset).all()
+
+    return rows, total
 
 
 # Returns expense database records for one user within an inclusive date

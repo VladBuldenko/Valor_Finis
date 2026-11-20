@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import and_, case, func
@@ -569,24 +569,33 @@ def delete_income_projection(
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier to scope the lookup to.
+# - income_ids: optional. When given, only links of these Income records
+#   are read (a paginated list passes the ids of its page, so a page never
+#   reads the links of the user's whole history). None keeps the original
+#   "every link of the user" behaviour; an empty sequence returns {}.
 # Returns:
 # - Dict mapping income_id to the account_id it is currently linked to,
-#   for every linked Income the user owns.
+#   for every linked Income the user owns (within income_ids when given).
 def get_income_account_links_for_user(
     db_session: Session,
     user_id: UUID,
+    income_ids: Optional[Sequence[UUID]] = None,
 ) -> dict[UUID, UUID]:
-    rows = (
-        db_session.query(
-            AccountTransactionModel.income_id,
-            AccountTransactionModel.account_id,
-        )
-        .filter(
-            AccountTransactionModel.user_id == user_id,
-            AccountTransactionModel.income_id.isnot(None),
-        )
-        .all()
+    if income_ids is not None and len(income_ids) == 0:
+        return {}
+
+    query = db_session.query(
+        AccountTransactionModel.income_id,
+        AccountTransactionModel.account_id,
+    ).filter(
+        AccountTransactionModel.user_id == user_id,
+        AccountTransactionModel.income_id.isnot(None),
     )
+
+    if income_ids is not None:
+        query = query.filter(AccountTransactionModel.income_id.in_(income_ids))
+
+    rows = query.all()
 
     return {income_id: account_id for income_id, account_id in rows}
 
@@ -820,24 +829,33 @@ def delete_expense_projection(
 # Parameters:
 # - db_session: active SQLAlchemy database session.
 # - user_id: authenticated user identifier to scope the lookup to.
+# - expense_ids: optional. When given, only links of these Expense records
+#   are read (a paginated list passes the ids of its page, so a page never
+#   reads the links of the user's whole history). None keeps the original
+#   "every link of the user" behaviour; an empty sequence returns {}.
 # Returns:
 # - Dict mapping expense_id to the account_id it is currently linked to,
-#   for every linked Expense the user owns.
+#   for every linked Expense the user owns (within expense_ids when given).
 def get_expense_account_links_for_user(
     db_session: Session,
     user_id: UUID,
+    expense_ids: Optional[Sequence[UUID]] = None,
 ) -> dict[UUID, UUID]:
-    rows = (
-        db_session.query(
-            AccountTransactionModel.expense_id,
-            AccountTransactionModel.account_id,
-        )
-        .filter(
-            AccountTransactionModel.user_id == user_id,
-            AccountTransactionModel.expense_id.isnot(None),
-        )
-        .all()
+    if expense_ids is not None and len(expense_ids) == 0:
+        return {}
+
+    query = db_session.query(
+        AccountTransactionModel.expense_id,
+        AccountTransactionModel.account_id,
+    ).filter(
+        AccountTransactionModel.user_id == user_id,
+        AccountTransactionModel.expense_id.isnot(None),
     )
+
+    if expense_ids is not None:
+        query = query.filter(AccountTransactionModel.expense_id.in_(expense_ids))
+
+    rows = query.all()
 
     return {expense_id: account_id for expense_id, account_id in rows}
 

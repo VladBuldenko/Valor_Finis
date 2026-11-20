@@ -1,11 +1,13 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { invalidateGoalHistoryQueries } from "../goals/goal-cache.ts";
+import { incomeKeys } from "./income-query-keys.ts";
 
 /**
  * Invalidates the server-state caches affected by a successful Income
  * mutation.
  *
- * ["income", userId] is always invalidated, and so are the two Financial
+ * ["income", userId] is always invalidated (the paged list AND every cached
+ * single-income read live under that prefix), and so are the two Financial
  * Overview analytics families (VF-019B/C) -- ["analytics",
  * "financial-overview", userId] and ["analytics", "income-expense-trend",
  * userId] -- because every Income counts toward them whether or not it is
@@ -35,7 +37,7 @@ export function invalidateIncomeQueries(
   touchedAccount: boolean,
 ): Promise<unknown> {
   const invalidations: Promise<unknown>[] = [
-    queryClient.invalidateQueries({ queryKey: ["income", userId] }),
+    queryClient.invalidateQueries({ queryKey: incomeKeys.all(userId) }),
     queryClient.invalidateQueries({
       queryKey: ["analytics", "financial-overview", userId],
     }),

@@ -130,8 +130,8 @@ export function CategoriesScreen() {
       //   deleted category must disappear from management and from every
       //   Expense/Budget/Receipt category picker.
       // - ["expenses", userId]: cached expenses may carry the now-stale
-      //   category_id (Expense detail resolves via `select` from this same
-      //   list query -- no separate detail key exists to invalidate).
+      //   category_id. The paged list and every cached single-expense read
+      //   live under this prefix, so one prefix invalidation covers both.
       // - ["budgets", userId]: same reasoning for Budget.category_id
       //   (Budget edit also resolves via `select` from this same list
       //   query).

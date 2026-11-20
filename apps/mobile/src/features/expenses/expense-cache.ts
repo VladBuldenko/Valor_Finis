@@ -1,12 +1,14 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { invalidateReconciliationQueries } from "../future-obligations/future-obligation-link-cache.ts";
 import { invalidateGoalHistoryQueries } from "../goals/goal-cache.ts";
+import { expenseKeys } from "./expense-query-keys.ts";
 
 /**
  * Invalidates the server-state caches affected by a successful Expense
  * create/update/delete.
  *
- * Always invalidated: ["expenses", userId] and every analytics family an
+ * Always invalidated: ["expenses", userId] (the paged list AND every cached
+ * single-expense read, which both live under that prefix) and every analytics family an
  * Expense feeds (monthly/category summaries, budget status, spending and
  * category trends, spending forecast, and the Financial Overview and its
  * income-expense trend). These are prefix matches, so every cached
@@ -35,7 +37,7 @@ export function invalidateExpenseQueries(
   touchedAccount: boolean,
 ): Promise<unknown> {
   const invalidations: Promise<unknown>[] = [
-    queryClient.invalidateQueries({ queryKey: ["expenses", userId] }),
+    queryClient.invalidateQueries({ queryKey: expenseKeys.all(userId) }),
     queryClient.invalidateQueries({
       queryKey: ["analytics", "monthly-summary", userId],
     }),

@@ -252,6 +252,12 @@ GET
 
 200
 
+GET
+
+/api/v1/expenses/{expense_id}
+
+200
+
 PATCH
 
 /api/v1/expenses/{expense_id}
@@ -283,6 +289,54 @@ snapshot (below) - including for a legacy unresolved Expense, whose
 snapshot stays fully NULL through any number of linkage changes; only a
 genuine monetary field change (amount, currency, or expense_date, the
 pre-existing rule below) can ever trigger FX resolution.
+
+List pagination (VF-MVP-BETA-001, BE-3 / M16)
+
+GET /api/v1/expenses is paginated on request and unchanged otherwise.
+
+Query parameters (both optional):
+
+limit - page size, an integer from 1 to 100. Default 50 when only offset is sent.
+offset - number of records to skip, an integer of 0 or more. Default 0 when only limit is sent.
+
+Without limit and offset the response is the complete bare JSON array
+exactly as before (backward compatible with every shipped client). With
+either of them the response is a page envelope:
+
+{
+  "items": [<ExpenseResponse>, ...],
+  "total": <integer: all expense records of the authenticated user, not only this page>,
+  "limit": <integer applied>,
+  "offset": <integer applied>
+}
+
+Ordering (both modes, so consecutive pages concatenate to the unpaginated
+list): expense_date DESC, created_at DESC, id DESC. The last two keys are tie-breakers
+that make the order total: records with the same date never swap places
+between requests, and a page neither repeats nor skips a record of an
+unchanged data set.
+
+Rules: records are always scoped to the authenticated user, in the page and
+in total; the page is cut by the database (LIMIT/OFFSET) and the Account
+links are read only for the records of the page; an offset at or beyond the
+end returns items [] with the real total (200); limit below 1 or above 100,
+a negative offset or a non-integer value is 422 (validation_error), never
+silently clamped. Pagination is read-only: it changes no amount, FX
+snapshot, ledger row, balance or event. total is a record COUNT; clients
+must not derive a money total from the loaded records. Offset paging is not
+a snapshot: a record created or deleted between two page requests can move
+later records, so a client de-duplicates by id and re-reads from the first
+page to refresh.
+
+Read one expense
+
+GET /api/v1/expenses/{expense_id}
+
+Returns the ExpenseResponse of one record of the authenticated user, with
+account_id derived from the ledger projection like in the list. A record
+that does not exist and a record of another user are both 404, so nothing
+about another user's data can be learned; a malformed id is 422. This is
+how a client opens a record that is not on any loaded page.
 
 Create Expense
 
@@ -2883,6 +2937,12 @@ GET
 
 200
 
+GET
+
+/api/v1/income/{income_id}
+
+200
+
 PATCH
 
 /api/v1/income/{income_id}
@@ -2896,10 +2956,58 @@ DELETE
 204
 
 Income represents money the user received - salary, freelance payment,
-refund, gift, or other. There is no GET /api/v1/income/{income_id}
-endpoint, matching the Goals/Accounts pattern. Income does not have its
+refund, gift, or other. GET /api/v1/income/{income_id} reads one record
+(VF-MVP-BETA-001, below). Income does not have its
 own category - the `source` field (see below) is the only classification
 this domain provides.
+
+List pagination (VF-MVP-BETA-001, BE-3 / M16)
+
+GET /api/v1/income is paginated on request and unchanged otherwise.
+
+Query parameters (both optional):
+
+limit - page size, an integer from 1 to 100. Default 50 when only offset is sent.
+offset - number of records to skip, an integer of 0 or more. Default 0 when only limit is sent.
+
+Without limit and offset the response is the complete bare JSON array
+exactly as before (backward compatible with every shipped client). With
+either of them the response is a page envelope:
+
+{
+  "items": [<IncomeResponse>, ...],
+  "total": <integer: all income records of the authenticated user, not only this page>,
+  "limit": <integer applied>,
+  "offset": <integer applied>
+}
+
+Ordering (both modes, so consecutive pages concatenate to the unpaginated
+list): received_at DESC, created_at DESC, id DESC. The last two keys are tie-breakers
+that make the order total: records with the same date never swap places
+between requests, and a page neither repeats nor skips a record of an
+unchanged data set.
+
+Rules: records are always scoped to the authenticated user, in the page and
+in total; the page is cut by the database (LIMIT/OFFSET) and the Account
+links are read only for the records of the page; an offset at or beyond the
+end returns items [] with the real total (200); limit below 1 or above 100,
+a negative offset or a non-integer value is 422 (validation_error), never
+silently clamped. Pagination is read-only: it changes no amount, FX
+snapshot, ledger row, balance or event. total is a record COUNT; clients
+must not derive a money total from the loaded records. Offset paging is not
+a snapshot: a record created or deleted between two page requests can move
+later records, so a client de-duplicates by id and re-reads from the first
+page to refresh.
+
+Read one income
+
+GET /api/v1/income/{income_id}
+
+Returns the IncomeResponse of one record of the authenticated user, with
+account_id derived from the ledger projection like in the list. A record
+that does not exist and a record of another user are both 404, so nothing
+about another user's data can be learned; a malformed id is 422. This is
+how a client opens a record that is not on any loaded page.
 
 Account linkage (VF-017D): Income may optionally be linked to an
 Account via `account_id` on POST/PATCH. Income remains the canonical

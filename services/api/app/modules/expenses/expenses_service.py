@@ -20,6 +20,7 @@ from app.modules.expenses.expenses_errors import (
 from app.modules.expenses.expenses_models import ExpenseModel
 from app.modules.expenses.expenses_schemas import (
     ExpenseCreate,
+    ExpensePageResponse,
     ExpenseResponse,
     ExpenseUpdate,
 )
@@ -458,6 +459,88 @@ def get_expenses(
         _build_expense_response(expense_model, account_links.get(expense_model.id))
         for expense_model in expense_models
     ]
+
+
+# Returns one page of the authenticated user's expenses, each with its
+# currently-linked account_id (or None) resolved, plus the user's total.
+# This function exists for the opt-in paginated GET /expenses
+# (VF-MVP-BETA-001). The page is cut by the database and the Account links
+# are read only for the ids on the page, so cost follows the page size, not
+# the length of the user's history. Read-only: nothing is written, and the
+# records are exactly those get_expenses would return, in the same order.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - user_id: authenticated user identifier used to filter expenses.
+# - limit: maximum page size (validated by the router).
+# - offset: number of expenses to skip (validated by the router).
+# Returns:
+# - ExpensePageResponse; items is empty when offset is past the end.
+def get_expenses_page(
+    db_session: Session,
+    user_id: UUID,
+    limit: int,
+    offset: int,
+) -> ExpensePageResponse:
+    expense_models, total = expenses_repository.get_expenses_page(
+        db_session=db_session,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
+
+    account_links = account_transaction_repository.get_expense_account_links_for_user(
+        db_session=db_session,
+        user_id=user_id,
+        expense_ids=[expense_model.id for expense_model in expense_models],
+    )
+
+    return ExpensePageResponse(
+        items=[
+            _build_expense_response(expense_model, account_links.get(expense_model.id))
+            for expense_model in expense_models
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# Returns one expense of the authenticated user with its currently-linked
+# account_id (or None) resolved.
+# This function exists for GET /expenses/{expense_id} (VF-MVP-BETA-001): with
+# a paginated list, the detail/edit screen can no longer find an older
+# expense by searching the list, so it asks for the record directly.
+# Ownership is enforced by the repository lookup: an id that does not exist
+# and an id owned by another user are indistinguishable (both 404), so
+# nothing about another user's data can be learned.
+# Parameters:
+# - db_session: active SQLAlchemy database session.
+# - expense_id: expense identifier from the path.
+# - user_id: authenticated user identifier that must own the expense.
+# Returns:
+# - ExpenseResponse.
+# Raises:
+# - ExpenseNotFoundError: when the expense does not exist or is not the user's.
+def get_expense(
+    db_session: Session,
+    expense_id: UUID,
+    user_id: UUID,
+) -> ExpenseResponse:
+    expense_model = expenses_repository.get_expense_by_id(
+        db_session=db_session,
+        expense_id=expense_id,
+        user_id=user_id,
+    )
+    projection = account_transaction_repository.get_expense_projection(
+        db_session=db_session,
+        expense_id=expense_model.id,
+        user_id=user_id,
+    )
+
+    return _build_expense_response(
+        expense_model,
+        projection.account_id if projection is not None else None,
+    )
 
 
 # Updates an existing expense owned by the authenticated user, evaluating
